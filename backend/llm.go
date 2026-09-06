@@ -44,6 +44,29 @@ This is only a preliminary, generic estimate with no knowledge of any specific
 person's work history. Never claim or imply that the estimate is personalized,
 based on the user's previous work, or based on historical averages.`
 
+// uncontrolledSystemPrompt intentionally leaves format, length, and stopping
+// condition unspecified, so its output can be compared against controlledSystemPrompt.
+const uncontrolledSystemPrompt = `You are a software task estimation assistant.
+Given a development task description, discuss what it involves, likely risks,
+and give a rough time estimate. Write your answer in Russian.`
+
+// buildControlledSystemPrompt extends systemPrompt with an explicit item-count
+// limit and, optionally, an explicit termination instruction, for the day-2
+// format-control comparison. An API-level stop sequence was tried instead of
+// the termination instruction but proved unreliable with this reasoning
+// model: LiteLLM sometimes cut the response during the model's hidden
+// reasoning phase (content came back null) when a literal "stop" string was set.
+func buildControlledSystemPrompt(maxItems int, useStopInstruction bool) string {
+	prompt := fmt.Sprintf("%s\n\nInclude at most %d items in \"risks\" and at most %d items in \"assumptions\".",
+		systemPrompt, maxItems, maxItems)
+	if useStopInstruction {
+		prompt += `
+Output only that JSON object and absolutely nothing else - no text before it,
+no text after it. Stop generating the moment the closing brace is written.`
+	}
+	return prompt
+}
+
 // LiteLLMClient talks to the company LiteLLM gateway using its OpenAI-compatible
 // chat completions endpoint.
 type LiteLLMClient struct {
@@ -71,6 +94,8 @@ type chatCompletionRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Stop        []string      `json:"stop,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -79,58 +104,71 @@ type chatCompletionResponse struct {
 	} `json:"choices"`
 }
 
-// Estimate sends the task to LiteLLM and returns a validated structured estimate.
-func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateResponse, error) {
+// chatComplete sends a chat-completion request to LiteLLM and returns the raw
+// message content, applying an optional max-token limit and stop sequences.
+func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, stop []string) (string, error) {
 	reqBody, err := json.Marshal(chatCompletionRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: task},
-		},
-		Temperature: 0.2,
+		Model:       c.model,
+		Messages:    messages,
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
+		Stop:        stop,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return "", fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+		return "", fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
+		return "", fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
+		return "", fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
+		return "", fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var completion chatCompletionResponse
 	if err := json.Unmarshal(body, &completion); err != nil {
-		return nil, fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
+		return "", fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
 	}
 	if len(completion.Choices) == 0 {
-		return nil, fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
+		return "", fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
 	}
 
-	content := stripCodeFences(completion.Choices[0].Message.Content)
+	return completion.Choices[0].Message.Content, nil
+}
+
+// Estimate sends the task to LiteLLM and returns a validated structured estimate.
+func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateResponse, error) {
+	content, err := c.chatComplete(ctx, []chatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: task},
+	}, 0.2, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	cleaned := stripCodeFences(content)
 
 	var estimate EstimateResponse
-	if err := json.Unmarshal([]byte(content), &estimate); err != nil {
+	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
 		return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
 	}
 	if err := estimate.Validate(); err != nil {
@@ -138,6 +176,88 @@ func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateRes
 	}
 
 	return &estimate, nil
+}
+
+// CompareOptions controls the "controlled" side of CompareFormats. The
+// "uncontrolled" side stays fixed, so it remains a meaningful baseline.
+type CompareOptions struct {
+	MaxTokens          int     `json:"max_tokens"`
+	MaxItems           int     `json:"max_items"`
+	Temperature        float64 `json:"temperature"`
+	UseStopInstruction bool    `json:"use_stop_instruction"`
+}
+
+// UncontrolledEstimate sends the task with no response-format constraints.
+// Its prompt and sampling settings are fixed, so calling it again for the
+// same task is redundant work the caller can skip and reuse instead.
+func (c *LiteLLMClient) UncontrolledEstimate(ctx context.Context, task string) (*RawResult, error) {
+	start := time.Now()
+	text, err := c.chatComplete(ctx, []chatMessage{
+		{Role: "system", Content: uncontrolledSystemPrompt},
+		{Role: "user", Content: task},
+	}, 0.2, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(text)
+
+	return &RawResult{
+		Text:        trimmed,
+		LengthChars: len([]rune(trimmed)),
+		LatencyMs:   time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// ControlledEstimate sends the task with an explicit format, length limit,
+// and (optionally) stop condition, per opts.
+func (c *LiteLLMClient) ControlledEstimate(ctx context.Context, task string, opts CompareOptions) (*ControlledResult, error) {
+	start := time.Now()
+	content, err := c.chatComplete(ctx, []chatMessage{
+		{Role: "system", Content: buildControlledSystemPrompt(opts.MaxItems, opts.UseStopInstruction)},
+		{Role: "user", Content: task},
+	}, opts.Temperature, opts.MaxTokens, nil)
+	if err != nil {
+		return nil, err
+	}
+	latency := time.Since(start).Milliseconds()
+
+	cleaned := stripCodeFences(content)
+
+	var estimate EstimateResponse
+	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
+		return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
+	}
+	if err := estimate.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+	}
+
+	return &ControlledResult{
+		Estimate:    estimate,
+		LengthChars: len([]rune(cleaned)),
+		LatencyMs:   latency,
+		Options:     opts,
+	}, nil
+}
+
+// CompareFormats sends the same task to LiteLLM twice — once with no response-
+// format constraints, once with an explicit format, length limit, and stop
+// condition — so the two responses can be compared side by side.
+func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts CompareOptions) (*CompareResponse, error) {
+	uncontrolled, err := c.UncontrolledEstimate(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+
+	controlled, err := c.ControlledEstimate(ctx, task, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompareResponse{
+		Task:         task,
+		Uncontrolled: *uncontrolled,
+		Controlled:   *controlled,
+	}, nil
 }
 
 // stripCodeFences defensively removes ```json ... ``` wrapping some models add

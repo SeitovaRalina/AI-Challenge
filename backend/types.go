@@ -23,6 +23,100 @@ type EstimateResponse struct {
 	Assumptions       []string `json:"assumptions"`
 }
 
+// CompareRequest is the payload accepted by POST /api/compare. All fields but
+// Task are optional and only affect the "controlled" side of the comparison.
+type CompareRequest struct {
+	Task               string   `json:"task"`
+	MaxTokens          int      `json:"max_tokens"`
+	MaxItems           int      `json:"max_items"`
+	Temperature        *float64 `json:"temperature"`
+	UseStopInstruction *bool    `json:"use_stop_instruction"`
+}
+
+const (
+	defaultCompareMaxTokens   = 1000
+	defaultCompareMaxItems    = 3
+	defaultCompareTemperature = 0.2
+)
+
+// Options applies defaults for unset fields and clamps user-supplied values
+// to safe ranges, so the frontend can send freeform numbers without the
+// backend ever building an unreasonable or malformed LLM request.
+func (r CompareRequest) Options() CompareOptions {
+	maxTokens := r.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultCompareMaxTokens
+	}
+	maxTokens = clampInt(maxTokens, 200, 4000)
+
+	maxItems := r.MaxItems
+	if maxItems <= 0 {
+		maxItems = defaultCompareMaxItems
+	}
+	maxItems = clampInt(maxItems, 1, 10)
+
+	temperature := defaultCompareTemperature
+	if r.Temperature != nil {
+		temperature = *r.Temperature
+	}
+	temperature = clampFloat(temperature, 0, 1)
+
+	useStopInstruction := true
+	if r.UseStopInstruction != nil {
+		useStopInstruction = *r.UseStopInstruction
+	}
+
+	return CompareOptions{
+		MaxTokens:          maxTokens,
+		MaxItems:           maxItems,
+		Temperature:        temperature,
+		UseStopInstruction: useStopInstruction,
+	}
+}
+
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func clampFloat(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+// RawResult is the free-form, unconstrained LLM response for the day-2 comparison.
+type RawResult struct {
+	Text        string `json:"text"`
+	LengthChars int    `json:"length_chars"`
+	LatencyMs   int64  `json:"latency_ms"`
+}
+
+// ControlledResult is the constrained, structured LLM response for the day-2 comparison.
+type ControlledResult struct {
+	Estimate    EstimateResponse `json:"estimate"`
+	LengthChars int              `json:"length_chars"`
+	LatencyMs   int64            `json:"latency_ms"`
+	Options     CompareOptions   `json:"options"`
+}
+
+// CompareResponse holds both variants of the same task sent to the LLM,
+// one without response-format constraints and one with them.
+type CompareResponse struct {
+	Task         string           `json:"task"`
+	Uncontrolled RawResult        `json:"uncontrolled"`
+	Controlled   ControlledResult `json:"controlled"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,
