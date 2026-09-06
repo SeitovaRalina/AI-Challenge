@@ -29,3 +29,6 @@ checking `docs/concept.md` for whether it fits the target architecture.
   The only exceptions are `days/*.md` (verbatim challenge assignment text)
   and the product UI/UX copy itself — both are Russian, by content
   requirement, not by omission.
+- PR descriptions follow `.github/pull_request_template.md` (Day's
+  assignment / What's implemented / Verified). Fill in that template rather
+  than inventing a different structure per PR.
