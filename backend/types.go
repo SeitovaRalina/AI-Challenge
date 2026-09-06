@@ -117,6 +117,34 @@ type CompareResponse struct {
 	Controlled   ControlledResult `json:"controlled"`
 }
 
+// ReasoningRequest is the payload accepted by POST /api/reasoning.
+type ReasoningRequest struct {
+	Task string `json:"task"`
+}
+
+// ReasoningStep is one reasoning strategy's result for the day-3 comparison.
+// Reasoning holds the free-form reasoning text for strategies that produce
+// one (step-by-step, expert panel); GeneratedPrompt holds the model-authored
+// prompt for the meta-prompting strategy. Both are empty for the direct
+// strategy, which has neither.
+type ReasoningStep struct {
+	Reasoning       string           `json:"reasoning,omitempty"`
+	GeneratedPrompt string           `json:"generated_prompt,omitempty"`
+	Estimate        EstimateResponse `json:"estimate"`
+	LengthChars     int              `json:"length_chars"`
+	LatencyMs       int64            `json:"latency_ms"`
+}
+
+// ReasoningResponse holds the same task solved via four reasoning
+// strategies, so they can be compared side by side.
+type ReasoningResponse struct {
+	Task        string        `json:"task"`
+	Direct      ReasoningStep `json:"direct"`
+	StepByStep  ReasoningStep `json:"step_by_step"`
+	MetaPrompt  ReasoningStep `json:"meta_prompt"`
+	ExpertPanel ReasoningStep `json:"expert_panel"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,

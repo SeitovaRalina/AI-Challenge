@@ -30,6 +30,7 @@ func main() {
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
 	mux.HandleFunc("/api/compare", compareHandler(client))
 	mux.HandleFunc("/api/compare/controlled", compareControlledHandler(client))
+	mux.HandleFunc("/api/reasoning", reasoningHandler(client))
 
 	port := os.Getenv("PORT")
 	if port == "" {
