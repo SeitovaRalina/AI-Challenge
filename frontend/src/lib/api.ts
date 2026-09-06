@@ -43,6 +43,22 @@ export interface CompareOptions {
   useStopInstruction: boolean
 }
 
+export interface ReasoningStep {
+  reasoning?: string
+  generated_prompt?: string
+  estimate: Estimate
+  length_chars: number
+  latency_ms: number
+}
+
+export interface ReasoningComparison {
+  task: string
+  direct: ReasoningStep
+  step_by_step: ReasoningStep
+  meta_prompt: ReasoningStep
+  expert_panel: ReasoningStep
+}
+
 export class ApiError extends Error {}
 
 async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
@@ -93,4 +109,8 @@ export function compareControlled(
     temperature: options.temperature,
     use_stop_instruction: options.useStopInstruction,
   })
+}
+
+export function compareReasoning(task: string): Promise<ReasoningComparison> {
+  return postJson<ReasoningComparison>('/api/reasoning', { task })
 }
