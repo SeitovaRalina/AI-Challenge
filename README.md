@@ -26,7 +26,7 @@ assumptions).
 Это **предварительная, обобщённая AI-оценка**. Истории пользователя пока нет,
 поэтому ничего здесь не персонализировано. Общее видение продукта —
 [`docs/concept.md`](docs/concept.md), точный скоуп этого дня —
-[`days/w01-d01-task-estimate.md`](days/w01-d01-task-estimate.md).
+[`days/w01-d01-llm-api-request.md`](days/w01-d01-llm-api-request.md).
 
 ## Стек
 
