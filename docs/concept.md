@@ -103,5 +103,7 @@ introduced only in the later weeks listed above — not before they're needed.
 
 ## Current milestone
 
-See [`../task.md`](../task.md) for the exact Day 1 scope, acceptance criteria, and
-constraints (Software Task → AI Preliminary Estimate).
+See [`../README.md`](../README.md) for the current milestone's implementation
+(Software Task → AI Preliminary Estimate) and
+[`../days/w01-d01-llm-api-request.md`](../days/w01-d01-llm-api-request.md) for
+the original challenge assignment text.

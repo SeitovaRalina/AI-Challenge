@@ -24,6 +24,8 @@ checking `docs/concept.md` for whether it fits the target architecture.
 - Keep changes scoped to the current day's milestone as described in
   `README.md`; later-phase features (RAG, MCP, auth, background workers,
   integrations) belong to later weeks of the roadmap in `docs/concept.md`.
-- Repository language: English (code, comments, commit messages, docs). The
-  `days/*.md` assignment files and the product UI are Russian — that's
-  content, not code, and stays as-is.
+- Documentation language: English. `README.md`, `AGENTS.md`, `docs/*`, code
+  comments, commit messages, and PR descriptions are all written in English.
+  The only exceptions are `days/*.md` (verbatim challenge assignment text)
+  and the product UI/UX copy itself — both are Russian, by content
+  requirement, not by omission.
