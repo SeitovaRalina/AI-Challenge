@@ -23,6 +23,28 @@ type EstimateResponse struct {
 	Assumptions       []string `json:"assumptions"`
 }
 
+// RawResult is the free-form, unconstrained LLM response for the day-2 comparison.
+type RawResult struct {
+	Text        string `json:"text"`
+	LengthChars int    `json:"length_chars"`
+	LatencyMs   int64  `json:"latency_ms"`
+}
+
+// ControlledResult is the constrained, structured LLM response for the day-2 comparison.
+type ControlledResult struct {
+	Estimate    EstimateResponse `json:"estimate"`
+	LengthChars int              `json:"length_chars"`
+	LatencyMs   int64            `json:"latency_ms"`
+}
+
+// CompareResponse holds both variants of the same task sent to the LLM,
+// one without response-format constraints and one with them.
+type CompareResponse struct {
+	Task         string           `json:"task"`
+	Uncontrolled RawResult        `json:"uncontrolled"`
+	Controlled   ControlledResult `json:"controlled"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,

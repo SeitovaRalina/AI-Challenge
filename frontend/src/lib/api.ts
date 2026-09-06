@@ -10,10 +10,28 @@ export interface Estimate {
   assumptions: string[]
 }
 
+export interface RawResult {
+  text: string
+  length_chars: number
+  latency_ms: number
+}
+
+export interface ControlledResult {
+  estimate: Estimate
+  length_chars: number
+  latency_ms: number
+}
+
+export interface Comparison {
+  task: string
+  uncontrolled: RawResult
+  controlled: ControlledResult
+}
+
 export class ApiError extends Error {}
 
-export async function estimateTask(task: string): Promise<Estimate> {
-  const response = await fetch('/api/estimate', {
+async function postJson<T>(url: string, task: string): Promise<T> {
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task }),
@@ -29,5 +47,13 @@ export async function estimateTask(task: string): Promise<Estimate> {
     throw new ApiError(message)
   }
 
-  return body as Estimate
+  return body as T
+}
+
+export function estimateTask(task: string): Promise<Estimate> {
+  return postJson<Estimate>('/api/estimate', task)
+}
+
+export function compareFormats(task: string): Promise<Comparison> {
+  return postJson<Comparison>('/api/compare', task)
 }

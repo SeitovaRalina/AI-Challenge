@@ -9,9 +9,16 @@ const EXAMPLE_TASK =
 interface TaskFormProps {
   onSubmit: (task: string) => void
   isSubmitting: boolean
+  submitLabel?: string
+  submittingLabel?: string
 }
 
-export function TaskForm({ onSubmit, isSubmitting }: TaskFormProps) {
+export function TaskForm({
+  onSubmit,
+  isSubmitting,
+  submitLabel = 'Оценить задачу',
+  submittingLabel = 'Оцениваем…',
+}: TaskFormProps) {
   const [task, setTask] = useState('')
 
   function handleSubmit(event: React.FormEvent) {
@@ -45,7 +52,7 @@ export function TaskForm({ onSubmit, isSubmitting }: TaskFormProps) {
         disabled={!task.trim() || isSubmitting}
         className="self-start"
       >
-        {isSubmitting ? 'Оцениваем…' : 'Оценить задачу'}
+        {isSubmitting ? submittingLabel : submitLabel}
       </Button>
     </form>
   )

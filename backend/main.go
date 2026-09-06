@@ -28,6 +28,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
+	mux.HandleFunc("/api/compare", compareHandler(client))
 
 	port := os.Getenv("PORT")
 	if port == "" {
