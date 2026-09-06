@@ -1,0 +1,13 @@
+.env
+
+# Frontend (Node/Vite)
+frontend/node_modules/
+frontend/dist/
+
+# Backend (Go)
+backend/backend
+backend/backend.exe
+
+# Agent Skills (regenerable via `npx skills experimental_install` + skills-lock.json)
+.agents/
+.claude/
