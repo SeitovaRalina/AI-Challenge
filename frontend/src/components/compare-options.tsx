@@ -7,7 +7,11 @@ interface CompareOptionsFormProps {
 
 export function CompareOptionsForm({ value, onChange }: CompareOptionsFormProps) {
   return (
-    <div className="flex flex-wrap items-end gap-5 rounded-lg border border-border p-4 text-sm">
+    <div className="flex flex-col gap-4 rounded-lg border border-border p-4 text-sm">
+      <p className="text-xs font-medium tracking-wide text-muted-foreground">
+        Параметры «С ограничениями»
+      </p>
+
       <div className="flex flex-col gap-1.5">
         <label htmlFor="max-tokens" className="text-xs text-muted-foreground">
           Лимит длины (max_tokens)
@@ -22,7 +26,7 @@ export function CompareOptionsForm({ value, onChange }: CompareOptionsFormProps)
           onChange={(event) =>
             onChange({ ...value, maxTokens: Number(event.target.value) })
           }
-          className="w-28 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
         />
       </div>
 
@@ -39,7 +43,7 @@ export function CompareOptionsForm({ value, onChange }: CompareOptionsFormProps)
           onChange={(event) =>
             onChange({ ...value, maxItems: Number(event.target.value) })
           }
-          className="w-20 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
         />
       </div>
 
@@ -57,11 +61,11 @@ export function CompareOptionsForm({ value, onChange }: CompareOptionsFormProps)
           onChange={(event) =>
             onChange({ ...value, temperature: Number(event.target.value) })
           }
-          className="w-20 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
         />
       </div>
 
-      <label className="flex items-center gap-2 pb-1.5 text-xs text-muted-foreground">
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
         <input
           type="checkbox"
           checked={value.useStopInstruction}
