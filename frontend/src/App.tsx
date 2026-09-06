@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { CompareOptionsForm } from '@/components/compare-options'
 import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
 import { TaskForm } from '@/components/task-form'
@@ -8,12 +9,20 @@ import {
   compareFormats,
   estimateTask,
   type Comparison,
+  type CompareOptions,
   type Estimate,
 } from '@/lib/api'
 import { cn } from 'cn'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
 type Mode = 'estimate' | 'compare'
+
+const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
+  maxTokens: 1000,
+  maxItems: 3,
+  temperature: 0.2,
+  useStopInstruction: true,
+}
 
 function App() {
   const [mode, setMode] = useState<Mode>('estimate')
@@ -25,6 +34,9 @@ function App() {
   const [compareStatus, setCompareStatus] = useState<Status>('idle')
   const [comparison, setComparison] = useState<Comparison | null>(null)
   const [compareError, setCompareError] = useState<string | null>(null)
+  const [compareOptions, setCompareOptions] = useState<CompareOptions>(
+    DEFAULT_COMPARE_OPTIONS,
+  )
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -45,7 +57,7 @@ function App() {
     setCompareStatus('loading')
     setCompareError(null)
     try {
-      const result = await compareFormats(task)
+      const result = await compareFormats(task, compareOptions)
       setComparison(result)
       setCompareStatus('success')
     } catch (err) {
@@ -131,12 +143,16 @@ function App() {
           </div>
         ) : (
           <div className="flex flex-col gap-8">
-            <div className="max-w-2xl">
+            <div className="flex max-w-2xl flex-col gap-4">
               <TaskForm
                 onSubmit={handleCompareSubmit}
                 isSubmitting={compareStatus === 'loading'}
                 submitLabel="Сравнить"
                 submittingLabel="Сравниваем…"
+              />
+              <CompareOptionsForm
+                value={compareOptions}
+                onChange={setCompareOptions}
               />
             </div>
             <FormatComparison

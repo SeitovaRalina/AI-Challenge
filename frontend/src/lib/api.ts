@@ -28,32 +28,48 @@ export interface Comparison {
   controlled: ControlledResult
 }
 
+export interface CompareOptions {
+  maxTokens: number
+  maxItems: number
+  temperature: number
+  useStopInstruction: boolean
+}
+
 export class ApiError extends Error {}
 
-async function postJson<T>(url: string, task: string): Promise<T> {
+async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task }),
+    body: JSON.stringify(body),
   })
 
-  const body = await response.json().catch(() => null)
+  const responseBody = await response.json().catch(() => null)
 
   if (!response.ok) {
     const message =
-      body && typeof body.error === 'string'
-        ? body.error
+      responseBody && typeof responseBody.error === 'string'
+        ? responseBody.error
         : `Запрос завершился с ошибкой ${response.status}`
     throw new ApiError(message)
   }
 
-  return body as T
+  return responseBody as T
 }
 
 export function estimateTask(task: string): Promise<Estimate> {
-  return postJson<Estimate>('/api/estimate', task)
+  return postJson<Estimate>('/api/estimate', { task })
 }
 
-export function compareFormats(task: string): Promise<Comparison> {
-  return postJson<Comparison>('/api/compare', task)
+export function compareFormats(
+  task: string,
+  options: CompareOptions,
+): Promise<Comparison> {
+  return postJson<Comparison>('/api/compare', {
+    task,
+    max_tokens: options.maxTokens,
+    max_items: options.maxItems,
+    temperature: options.temperature,
+    use_stop_instruction: options.useStopInstruction,
+  })
 }

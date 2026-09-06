@@ -73,7 +73,7 @@ func compareHandler(client *LiteLLMClient) http.HandlerFunc {
 			return
 		}
 
-		var req EstimateRequest
+		var req CompareRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
 			return
@@ -88,7 +88,7 @@ func compareHandler(client *LiteLLMClient) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
 
-		comparison, err := client.CompareFormats(ctx, task)
+		comparison, err := client.CompareFormats(ctx, task, req.Options())
 		if err != nil {
 			log.Printf("compare request failed: %v", err)
 			switch {

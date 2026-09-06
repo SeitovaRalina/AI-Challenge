@@ -50,17 +50,22 @@ const uncontrolledSystemPrompt = `You are a software task estimation assistant.
 Given a development task description, discuss what it involves, likely risks,
 and give a rough time estimate. Write your answer in Russian.`
 
-// controlledSystemPrompt extends systemPrompt with an explicit item-count
-// limit and an explicit termination instruction, for the day-2 format-control
-// comparison. An API-level stop sequence was tried instead of the termination
-// instruction but proved unreliable with this reasoning model: LiteLLM
-// sometimes cut the response during the model's hidden reasoning phase
-// (content came back null) when a literal "stop" string was set.
-const controlledSystemPrompt = systemPrompt + `
-
-Include at most 3 items in "risks" and at most 3 items in "assumptions".
+// buildControlledSystemPrompt extends systemPrompt with an explicit item-count
+// limit and, optionally, an explicit termination instruction, for the day-2
+// format-control comparison. An API-level stop sequence was tried instead of
+// the termination instruction but proved unreliable with this reasoning
+// model: LiteLLM sometimes cut the response during the model's hidden
+// reasoning phase (content came back null) when a literal "stop" string was set.
+func buildControlledSystemPrompt(maxItems int, useStopInstruction bool) string {
+	prompt := fmt.Sprintf("%s\n\nInclude at most %d items in \"risks\" and at most %d items in \"assumptions\".",
+		systemPrompt, maxItems, maxItems)
+	if useStopInstruction {
+		prompt += `
 Output only that JSON object and absolutely nothing else - no text before it,
 no text after it. Stop generating the moment the closing brace is written.`
+	}
+	return prompt
+}
 
 // LiteLLMClient talks to the company LiteLLM gateway using its OpenAI-compatible
 // chat completions endpoint.
@@ -101,11 +106,11 @@ type chatCompletionResponse struct {
 
 // chatComplete sends a chat-completion request to LiteLLM and returns the raw
 // message content, applying an optional max-token limit and stop sequences.
-func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage, maxTokens int, stop []string) (string, error) {
+func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, stop []string) (string, error) {
 	reqBody, err := json.Marshal(chatCompletionRequest{
 		Model:       c.model,
 		Messages:    messages,
-		Temperature: 0.2,
+		Temperature: temperature,
 		MaxTokens:   maxTokens,
 		Stop:        stop,
 	})
@@ -155,7 +160,7 @@ func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateRes
 	content, err := c.chatComplete(ctx, []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: task},
-	}, 0, nil)
+	}, 0.2, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -173,15 +178,24 @@ func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateRes
 	return &estimate, nil
 }
 
+// CompareOptions controls the "controlled" side of CompareFormats. The
+// "uncontrolled" side stays fixed, so it remains a meaningful baseline.
+type CompareOptions struct {
+	MaxTokens          int
+	MaxItems           int
+	Temperature        float64
+	UseStopInstruction bool
+}
+
 // CompareFormats sends the same task to LiteLLM twice — once with no response-
 // format constraints, once with an explicit format, length limit, and stop
 // condition — so the two responses can be compared side by side.
-func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string) (*CompareResponse, error) {
+func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts CompareOptions) (*CompareResponse, error) {
 	uncontrolledStart := time.Now()
 	uncontrolledText, err := c.chatComplete(ctx, []chatMessage{
 		{Role: "system", Content: uncontrolledSystemPrompt},
 		{Role: "user", Content: task},
-	}, 0, nil)
+	}, 0.2, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +203,9 @@ func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string) (*Compa
 
 	controlledStart := time.Now()
 	controlledContent, err := c.chatComplete(ctx, []chatMessage{
-		{Role: "system", Content: controlledSystemPrompt},
+		{Role: "system", Content: buildControlledSystemPrompt(opts.MaxItems, opts.UseStopInstruction)},
 		{Role: "user", Content: task},
-	}, 1000, nil)
+	}, opts.Temperature, opts.MaxTokens, nil)
 	if err != nil {
 		return nil, err
 	}
