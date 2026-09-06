@@ -11,6 +11,7 @@ interface TaskFormProps {
   isSubmitting: boolean
   submitLabel?: string
   submittingLabel?: string
+  noteBeforeSubmit?: React.ReactNode
 }
 
 export function TaskForm({
@@ -18,6 +19,7 @@ export function TaskForm({
   isSubmitting,
   submitLabel = 'Оценить задачу',
   submittingLabel = 'Оцениваем…',
+  noteBeforeSubmit,
 }: TaskFormProps) {
   const [task, setTask] = useState('')
 
@@ -47,6 +49,7 @@ export function TaskForm({
           тем полезнее будет оценка.
         </p>
       </div>
+      {noteBeforeSubmit}
       <Button
         type="submit"
         disabled={!task.trim() || isSubmitting}

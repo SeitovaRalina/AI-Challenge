@@ -106,6 +106,7 @@ type ControlledResult struct {
 	Estimate    EstimateResponse `json:"estimate"`
 	LengthChars int              `json:"length_chars"`
 	LatencyMs   int64            `json:"latency_ms"`
+	Options     CompareOptions   `json:"options"`
 }
 
 // CompareResponse holds both variants of the same task sent to the LLM,

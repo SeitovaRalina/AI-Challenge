@@ -6,11 +6,13 @@ import { FormatComparison } from '@/components/format-comparison'
 import { TaskForm } from '@/components/task-form'
 import {
   ApiError,
+  compareControlled,
   compareFormats,
   estimateTask,
   type Comparison,
   type CompareOptions,
   type Estimate,
+  type RawResult,
 } from '@/lib/api'
 import { cn } from 'cn'
 
@@ -37,6 +39,11 @@ function App() {
   const [compareOptions, setCompareOptions] = useState<CompareOptions>(
     DEFAULT_COMPARE_OPTIONS,
   )
+  const [uncontrolledCache, setUncontrolledCache] = useState<{
+    task: string
+    result: RawResult
+  } | null>(null)
+  const [uncontrolledReused, setUncontrolledReused] = useState(false)
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -57,8 +64,16 @@ function App() {
     setCompareStatus('loading')
     setCompareError(null)
     try {
-      const result = await compareFormats(task, compareOptions)
-      setComparison(result)
+      if (uncontrolledCache && uncontrolledCache.task === task) {
+        const controlled = await compareControlled(task, compareOptions)
+        setComparison({ task, uncontrolled: uncontrolledCache.result, controlled })
+        setUncontrolledReused(true)
+      } else {
+        const result = await compareFormats(task, compareOptions)
+        setComparison(result)
+        setUncontrolledCache({ task, result: result.uncontrolled })
+        setUncontrolledReused(false)
+      }
       setCompareStatus('success')
     } catch (err) {
       setCompareError(
@@ -149,6 +164,15 @@ function App() {
                 isSubmitting={compareStatus === 'loading'}
                 submitLabel="Сравнить"
                 submittingLabel="Сравниваем…"
+                noteBeforeSubmit={
+                  <p className="font-mono text-xs text-primary">
+                    Запрос «с ограничениями» отправится с параметрами:
+                    max_tokens={compareOptions.maxTokens}, max_items=
+                    {compareOptions.maxItems}, temperature=
+                    {compareOptions.temperature}, stop_instruction=
+                    {compareOptions.useStopInstruction ? 'да' : 'нет'}
+                  </p>
+                }
               />
               <CompareOptionsForm
                 value={compareOptions}
@@ -159,6 +183,7 @@ function App() {
               status={compareStatus}
               comparison={comparison}
               error={compareError}
+              uncontrolledReused={uncontrolledReused}
             />
           </div>
         )}

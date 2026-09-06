@@ -181,37 +181,47 @@ func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateRes
 // CompareOptions controls the "controlled" side of CompareFormats. The
 // "uncontrolled" side stays fixed, so it remains a meaningful baseline.
 type CompareOptions struct {
-	MaxTokens          int
-	MaxItems           int
-	Temperature        float64
-	UseStopInstruction bool
+	MaxTokens          int     `json:"max_tokens"`
+	MaxItems           int     `json:"max_items"`
+	Temperature        float64 `json:"temperature"`
+	UseStopInstruction bool    `json:"use_stop_instruction"`
 }
 
-// CompareFormats sends the same task to LiteLLM twice — once with no response-
-// format constraints, once with an explicit format, length limit, and stop
-// condition — so the two responses can be compared side by side.
-func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts CompareOptions) (*CompareResponse, error) {
-	uncontrolledStart := time.Now()
-	uncontrolledText, err := c.chatComplete(ctx, []chatMessage{
+// UncontrolledEstimate sends the task with no response-format constraints.
+// Its prompt and sampling settings are fixed, so calling it again for the
+// same task is redundant work the caller can skip and reuse instead.
+func (c *LiteLLMClient) UncontrolledEstimate(ctx context.Context, task string) (*RawResult, error) {
+	start := time.Now()
+	text, err := c.chatComplete(ctx, []chatMessage{
 		{Role: "system", Content: uncontrolledSystemPrompt},
 		{Role: "user", Content: task},
 	}, 0.2, 0, nil)
 	if err != nil {
 		return nil, err
 	}
-	uncontrolledLatency := time.Since(uncontrolledStart).Milliseconds()
+	trimmed := strings.TrimSpace(text)
 
-	controlledStart := time.Now()
-	controlledContent, err := c.chatComplete(ctx, []chatMessage{
+	return &RawResult{
+		Text:        trimmed,
+		LengthChars: len([]rune(trimmed)),
+		LatencyMs:   time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// ControlledEstimate sends the task with an explicit format, length limit,
+// and (optionally) stop condition, per opts.
+func (c *LiteLLMClient) ControlledEstimate(ctx context.Context, task string, opts CompareOptions) (*ControlledResult, error) {
+	start := time.Now()
+	content, err := c.chatComplete(ctx, []chatMessage{
 		{Role: "system", Content: buildControlledSystemPrompt(opts.MaxItems, opts.UseStopInstruction)},
 		{Role: "user", Content: task},
 	}, opts.Temperature, opts.MaxTokens, nil)
 	if err != nil {
 		return nil, err
 	}
-	controlledLatency := time.Since(controlledStart).Milliseconds()
+	latency := time.Since(start).Milliseconds()
 
-	cleaned := stripCodeFences(controlledContent)
+	cleaned := stripCodeFences(content)
 
 	var estimate EstimateResponse
 	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
@@ -221,18 +231,32 @@ func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts Co
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
 
+	return &ControlledResult{
+		Estimate:    estimate,
+		LengthChars: len([]rune(cleaned)),
+		LatencyMs:   latency,
+		Options:     opts,
+	}, nil
+}
+
+// CompareFormats sends the same task to LiteLLM twice — once with no response-
+// format constraints, once with an explicit format, length limit, and stop
+// condition — so the two responses can be compared side by side.
+func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts CompareOptions) (*CompareResponse, error) {
+	uncontrolled, err := c.UncontrolledEstimate(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+
+	controlled, err := c.ControlledEstimate(ctx, task, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	return &CompareResponse{
-		Task: task,
-		Uncontrolled: RawResult{
-			Text:        strings.TrimSpace(uncontrolledText),
-			LengthChars: len([]rune(strings.TrimSpace(uncontrolledText))),
-			LatencyMs:   uncontrolledLatency,
-		},
-		Controlled: ControlledResult{
-			Estimate:    estimate,
-			LengthChars: len([]rune(cleaned)),
-			LatencyMs:   controlledLatency,
-		},
+		Task:         task,
+		Uncontrolled: *uncontrolled,
+		Controlled:   *controlled,
 	}, nil
 }
 

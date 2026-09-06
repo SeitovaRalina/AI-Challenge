@@ -16,10 +16,18 @@ export interface RawResult {
   latency_ms: number
 }
 
+export interface ResolvedCompareOptions {
+  max_tokens: number
+  max_items: number
+  temperature: number
+  use_stop_instruction: boolean
+}
+
 export interface ControlledResult {
   estimate: Estimate
   length_chars: number
   latency_ms: number
+  options: ResolvedCompareOptions
 }
 
 export interface Comparison {
@@ -66,6 +74,19 @@ export function compareFormats(
   options: CompareOptions,
 ): Promise<Comparison> {
   return postJson<Comparison>('/api/compare', {
+    task,
+    max_tokens: options.maxTokens,
+    max_items: options.maxItems,
+    temperature: options.temperature,
+    use_stop_instruction: options.useStopInstruction,
+  })
+}
+
+export function compareControlled(
+  task: string,
+  options: CompareOptions,
+): Promise<ControlledResult> {
+  return postJson<ControlledResult>('/api/compare/controlled', {
     task,
     max_tokens: options.maxTokens,
     max_items: options.maxItems,
