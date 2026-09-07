@@ -27,7 +27,7 @@ export function TemperatureGauge({ values, max = 1.5 }: TemperatureGaugeProps) {
         {values.map((value) => (
           <span
             key={value}
-            className="absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-slate-900 shadow"
+            className="absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-slate-900/70 bg-white shadow"
             style={{ left: `${(value / max) * 100}%` }}
           />
         ))}
