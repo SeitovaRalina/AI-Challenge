@@ -9,22 +9,25 @@ import {
 } from '@/components/reasoning-comparison'
 import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
 import { TaskForm } from '@/components/task-form'
+import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
   ApiError,
   compareControlled,
   compareFormats,
   compareReasoning,
+  compareTemperatures,
   estimateTask,
   type Comparison,
   type CompareOptions,
   type Estimate,
   type RawResult,
   type ReasoningComparison as ReasoningComparisonData,
+  type TemperatureComparison as TemperatureComparisonData,
 } from '@/lib/api'
 import { cn } from 'cn'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'estimate' | 'compare' | 'reasoning'
+type Mode = 'estimate' | 'compare' | 'reasoning' | 'temperature'
 
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
   maxTokens: 1000,
@@ -48,6 +51,11 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
     title: 'Способы рассуждения',
     description:
       'Одна и та же задача решается через LLM четырьмя способами: прямой ответ, пошаговое рассуждение, мета-промпт (модель сама составляет промпт) и группа экспертов.',
+  },
+  temperature: {
+    title: 'Температура',
+    description:
+      'Один и тот же запрос уходит в LLM трижды — с temperature 0, 0.7 и 1.2, — чтобы сравнить точность, креативность и разнообразие ответов и понять, для каких задач подходит каждая настройка.',
   },
 }
 
@@ -76,6 +84,11 @@ function App() {
   const [reasoningError, setReasoningError] = useState<string | null>(null)
   const [reasoningReaction, setReasoningReaction] =
     useState<ReasoningReaction>(null)
+
+  const [temperatureStatus, setTemperatureStatus] = useState<Status>('idle')
+  const [temperatureComparison, setTemperatureComparison] =
+    useState<TemperatureComparisonData | null>(null)
+  const [temperatureError, setTemperatureError] = useState<string | null>(null)
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -128,6 +141,21 @@ function App() {
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
       )
       setReasoningStatus('error')
+    }
+  }
+
+  async function handleTemperatureSubmit(task: string) {
+    setTemperatureStatus('loading')
+    setTemperatureError(null)
+    try {
+      const result = await compareTemperatures(task)
+      setTemperatureComparison(result)
+      setTemperatureStatus('success')
+    } catch (err) {
+      setTemperatureError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+      setTemperatureStatus('error')
     }
   }
 
@@ -198,6 +226,18 @@ function App() {
           >
             Способы рассуждения
           </button>
+          <button
+            type="button"
+            onClick={() => setMode('temperature')}
+            className={cn(
+              'rounded-md px-3 py-1.5 font-medium transition-colors',
+              mode === 'temperature'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Температура
+          </button>
         </div>
 
         {mode === 'estimate' && (
@@ -267,6 +307,24 @@ function App() {
               error={reasoningError}
               reaction={reasoningReaction}
               onReactionChange={setReasoningReaction}
+            />
+          </div>
+        )}
+
+        {mode === 'temperature' && (
+          <div className="flex flex-col gap-8">
+            <div className="max-w-2xl">
+              <TaskForm
+                onSubmit={handleTemperatureSubmit}
+                isSubmitting={temperatureStatus === 'loading'}
+                submitLabel="Сравнить"
+                submittingLabel="Сравниваем…"
+              />
+            </div>
+            <TemperatureComparison
+              status={temperatureStatus}
+              comparison={temperatureComparison}
+              error={temperatureError}
             />
           </div>
         )}

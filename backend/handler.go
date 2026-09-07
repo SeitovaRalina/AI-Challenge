@@ -175,7 +175,7 @@ func temperatureHandler(client *LiteLLMClient) http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
 		defer cancel()
 
 		result, err := client.CompareTemperatures(ctx, task)

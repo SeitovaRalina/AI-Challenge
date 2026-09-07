@@ -9,11 +9,21 @@ import (
 	"time"
 )
 
+// temperatureSystemPrompt keeps this app's software-development-work framing
+// (unlike a generic assistant, it stays in character as a dev-work helper),
+// but — unlike uncontrolledSystemPrompt's "estimate a rough time" framing —
+// doesn't lock the request into hour estimation, since the day-4 challenge's
+// one chosen task can be logical, algorithmic, or analytical (e.g. naming,
+// architecture ideas), not necessarily "how long will this take".
+const temperatureSystemPrompt = `You are a helpful assistant for software developers and their teams.
+Answer the user's work-related request thoroughly and directly. Write your
+answer in Russian.`
+
 // temperatureAnalysisSystemPrompt asks the model to judge the same three
 // unconstrained responses the day-4 challenge asks to compare — by accuracy,
 // creativity and diversity — and to say which kinds of tasks each sampling
 // temperature suits, in more depth than the single-verdict day-3 judge.
-const temperatureAnalysisSystemPrompt = `You are analyzing the same software-task response generated three times by
+const temperatureAnalysisSystemPrompt = `You are analyzing the same response generated three times by
 an LLM, once at each of these sampling temperatures: 0, 0.7, and 1.2. Lower
 temperature makes output more deterministic and focused; higher temperature
 makes it more varied and exploratory, at some risk to precision.
@@ -46,13 +56,13 @@ commentary before or after it, matching exactly this schema:
 Keep the JSON keys and the "temperature" numeric values themselves exactly as
 given. Write every other string value in Russian.`
 
-// rawEstimateAtTemperature sends the task with the same unconstrained prompt
-// UncontrolledEstimate uses, but at the given sampling temperature, so the
-// three responses differ only in temperature.
-func (c *LiteLLMClient) rawEstimateAtTemperature(ctx context.Context, task string, temperature float64) (*TemperatureResult, error) {
+// rawResponseAtTemperature sends the task with a generic, domain-free system
+// prompt at the given sampling temperature, so the three responses differ
+// only in temperature.
+func (c *LiteLLMClient) rawResponseAtTemperature(ctx context.Context, task string, temperature float64) (*TemperatureResult, error) {
 	start := time.Now()
 	text, err := c.chatComplete(ctx, []chatMessage{
-		{Role: "system", Content: uncontrolledSystemPrompt},
+		{Role: "system", Content: temperatureSystemPrompt},
 		{Role: "user", Content: task},
 	}, temperature, 0, nil)
 	if err != nil {
@@ -118,7 +128,7 @@ func (c *LiteLLMClient) CompareTemperatures(ctx context.Context, task string) (*
 	for i, temperature := range temperatureValues {
 		go func(i int, temperature float64) {
 			defer wg.Done()
-			result, err := c.rawEstimateAtTemperature(ctx, task, temperature)
+			result, err := c.rawResponseAtTemperature(ctx, task, temperature)
 			if err != nil {
 				errs[i] = err
 				return
