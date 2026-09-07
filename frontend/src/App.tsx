@@ -3,7 +3,11 @@ import { useState } from 'react'
 import { CompareOptionsForm } from '@/components/compare-options'
 import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
-import { ReasoningComparison } from '@/components/reasoning-comparison'
+import {
+  ReasoningComparison,
+  type ReasoningReaction,
+} from '@/components/reasoning-comparison'
+import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
 import { TaskForm } from '@/components/task-form'
 import {
   ApiError,
@@ -70,6 +74,8 @@ function App() {
   const [reasoningComparison, setReasoningComparison] =
     useState<ReasoningComparisonData | null>(null)
   const [reasoningError, setReasoningError] = useState<string | null>(null)
+  const [reasoningReaction, setReasoningReaction] =
+    useState<ReasoningReaction>(null)
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -112,6 +118,7 @@ function App() {
   async function handleReasoningSubmit(task: string) {
     setReasoningStatus('loading')
     setReasoningError(null)
+    setReasoningReaction(null)
     try {
       const result = await compareReasoning(task)
       setReasoningComparison(result)
@@ -241,18 +248,25 @@ function App() {
 
         {mode === 'reasoning' && (
           <div className="flex flex-col gap-8">
-            <div className="max-w-2xl">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
               <TaskForm
                 onSubmit={handleReasoningSubmit}
                 isSubmitting={reasoningStatus === 'loading'}
                 submitLabel="Решить"
                 submittingLabel="Решаем…"
               />
+              <ReasoningStatusPanel
+                status={reasoningStatus}
+                comparison={reasoningComparison}
+                reaction={reasoningReaction}
+              />
             </div>
             <ReasoningComparison
               status={reasoningStatus}
               comparison={reasoningComparison}
               error={reasoningError}
+              reaction={reasoningReaction}
+              onReactionChange={setReasoningReaction}
             />
           </div>
         )}
