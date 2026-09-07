@@ -13,7 +13,7 @@ Challenge details: https://mobiledeveloper.tech/ai_advent_9
 
 ---
 
-# AI Work Intelligence Assistant — Week 1 Day 1 (LLM Fundamentals)
+# AI Work Intelligence Assistant
 
 Software Task → AI Preliminary Estimate.
 
@@ -24,9 +24,9 @@ preliminary estimate (summary, category, complexity, hour range, risks,
 assumptions).
 
 This is a **preliminary, generic AI estimate**. There is no user history yet, so
-nothing here is personalized. Overall product vision —
-[`docs/concept.md`](docs/concept.md); this day's exact scope —
-[`days/w01-d01-llm-api-request.md`](days/w01-d01-llm-api-request.md).
+nothing here is personalized. See [`docs/concept.md`](docs/concept.md) for the
+overall product vision, and [`days/`](days/) for each day's exact assignment
+scope as the product grows.
 
 Note: the product UI itself is in Russian (target audience), while this
 documentation is in English.
@@ -86,9 +86,3 @@ curl -s http://localhost:8080/api/estimate \
   -X POST -H "Content-Type: application/json" \
   -d '{"task":"Upgrade a legacy Flutter app to the latest Flutter version, update dependencies, fix iOS and Android build issues, and prepare new builds."}'
 ```
-
-## Notes
-
-- No persistence, no auth, no history — this stage is a single request/response
-  cycle.
-- Never commit `.env` files or hardcode the LiteLLM key.

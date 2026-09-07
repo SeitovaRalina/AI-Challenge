@@ -81,7 +81,7 @@ func NewLiteLLMClient(baseURL, apiKey, model string) *LiteLLMClient {
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     apiKey,
 		model:      model,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient: &http.Client{Timeout: 150 * time.Second},
 	}
 }
 
@@ -155,6 +155,23 @@ func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage
 	return completion.Choices[0].Message.Content, nil
 }
 
+// parseEstimateJSON strips optional code fences, unmarshals, and validates a
+// model response against the EstimateResponse schema. It returns the cleaned
+// JSON text alongside the parsed estimate so callers can report its length.
+func parseEstimateJSON(raw string) (*EstimateResponse, string, error) {
+	cleaned := stripCodeFences(raw)
+
+	var estimate EstimateResponse
+	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
+		return nil, cleaned, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
+	}
+	if err := estimate.Validate(); err != nil {
+		return nil, cleaned, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+	}
+
+	return &estimate, cleaned, nil
+}
+
 // Estimate sends the task to LiteLLM and returns a validated structured estimate.
 func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateResponse, error) {
 	content, err := c.chatComplete(ctx, []chatMessage{
@@ -165,17 +182,12 @@ func (c *LiteLLMClient) Estimate(ctx context.Context, task string) (*EstimateRes
 		return nil, err
 	}
 
-	cleaned := stripCodeFences(content)
-
-	var estimate EstimateResponse
-	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
-		return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
-	}
-	if err := estimate.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+	estimate, _, err := parseEstimateJSON(content)
+	if err != nil {
+		return nil, err
 	}
 
-	return &estimate, nil
+	return estimate, nil
 }
 
 // CompareOptions controls the "controlled" side of CompareFormats. The
@@ -221,18 +233,13 @@ func (c *LiteLLMClient) ControlledEstimate(ctx context.Context, task string, opt
 	}
 	latency := time.Since(start).Milliseconds()
 
-	cleaned := stripCodeFences(content)
-
-	var estimate EstimateResponse
-	if err := json.Unmarshal([]byte(cleaned), &estimate); err != nil {
-		return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
-	}
-	if err := estimate.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+	estimate, cleaned, err := parseEstimateJSON(content)
+	if err != nil {
+		return nil, err
 	}
 
 	return &ControlledResult{
-		Estimate:    estimate,
+		Estimate:    *estimate,
 		LengthChars: len([]rune(cleaned)),
 		LatencyMs:   latency,
 		Options:     opts,

@@ -117,6 +117,81 @@ type CompareResponse struct {
 	Controlled   ControlledResult `json:"controlled"`
 }
 
+// ReasoningRequest is the payload accepted by POST /api/reasoning.
+type ReasoningRequest struct {
+	Task string `json:"task"`
+}
+
+// ExpertTurn is one persona's contribution to the expert-panel strategy's
+// internal discussion, parsed out of the model's raw reasoning text.
+type ExpertTurn struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
+// ReasoningStep is one reasoning strategy's result for the day-3 comparison.
+// Reasoning holds free-form reasoning text (step-by-step, or expert-panel
+// when its discussion couldn't be split into Panel turns); Panel holds the
+// expert-panel strategy's discussion structured by speaker; GeneratedPrompt
+// holds the model-authored prompt for the meta-prompting strategy. All three
+// are empty for the direct strategy, which has none of them.
+type ReasoningStep struct {
+	Reasoning       string           `json:"reasoning,omitempty"`
+	Panel           []ExpertTurn     `json:"panel,omitempty"`
+	GeneratedPrompt string           `json:"generated_prompt,omitempty"`
+	Estimate        EstimateResponse `json:"estimate"`
+	LengthChars     int              `json:"length_chars"`
+	LatencyMs       int64            `json:"latency_ms"`
+}
+
+// ReasoningStrategy identifies one of the four day-3 reasoning strategies.
+type ReasoningStrategy string
+
+const (
+	StrategyDirect      ReasoningStrategy = "direct"
+	StrategyStepByStep  ReasoningStrategy = "step_by_step"
+	StrategyMetaPrompt  ReasoningStrategy = "meta_prompt"
+	StrategyExpertPanel ReasoningStrategy = "expert_panel"
+)
+
+var validReasoningStrategy = map[ReasoningStrategy]bool{
+	StrategyDirect:      true,
+	StrategyStepByStep:  true,
+	StrategyMetaPrompt:  true,
+	StrategyExpertPanel: true,
+}
+
+// ReasoningVerdict is an LLM judge's comparison of the four strategies'
+// results for the same task.
+type ReasoningVerdict struct {
+	Differs      bool              `json:"differs"`
+	MostAccurate ReasoningStrategy `json:"most_accurate"`
+	Rationale    string            `json:"rationale"`
+}
+
+// Validate rejects a judge response that doesn't name one of the four known
+// strategies or gives no rationale.
+func (v ReasoningVerdict) Validate() error {
+	if !validReasoningStrategy[v.MostAccurate] {
+		return fmt.Errorf("most_accurate must be one of direct, step_by_step, meta_prompt, or expert_panel, got %q", v.MostAccurate)
+	}
+	if strings.TrimSpace(v.Rationale) == "" {
+		return errors.New("rationale must not be empty")
+	}
+	return nil
+}
+
+// ReasoningResponse holds the same task solved via four reasoning
+// strategies, plus an LLM judge's verdict on which is most accurate.
+type ReasoningResponse struct {
+	Task        string           `json:"task"`
+	Direct      ReasoningStep    `json:"direct"`
+	StepByStep  ReasoningStep    `json:"step_by_step"`
+	MetaPrompt  ReasoningStep    `json:"meta_prompt"`
+	ExpertPanel ReasoningStep    `json:"expert_panel"`
+	Verdict     ReasoningVerdict `json:"verdict"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,
