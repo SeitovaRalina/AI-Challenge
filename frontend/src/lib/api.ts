@@ -78,6 +78,32 @@ export interface ReasoningComparison {
   verdict: ReasoningVerdict
 }
 
+export interface TemperatureResult {
+  temperature: number
+  text: string
+  length_chars: number
+  latency_ms: number
+}
+
+export interface TemperatureAnalysis {
+  temperature: number
+  accuracy: string
+  creativity: string
+  diversity: string
+  best_for: string[]
+}
+
+export interface TemperatureVerdict {
+  analysis: TemperatureAnalysis[]
+  summary: string
+}
+
+export interface TemperatureComparison {
+  task: string
+  results: TemperatureResult[]
+  verdict: TemperatureVerdict
+}
+
 export class ApiError extends Error {}
 
 async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
@@ -132,4 +158,8 @@ export function compareControlled(
 
 export function compareReasoning(task: string): Promise<ReasoningComparison> {
   return postJson<ReasoningComparison>('/api/reasoning', { task })
+}
+
+export function compareTemperatures(task: string): Promise<TemperatureComparison> {
+  return postJson<TemperatureComparison>('/api/temperature', { task })
 }
