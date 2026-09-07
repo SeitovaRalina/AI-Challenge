@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +32,72 @@ Give each persona two or three sentences, each on its own line prefixed with
 its name, e.g. "Аналитик: ...". After all three have spoken, output the line
 ` + resultMarker + ` by itself, then nothing but a final JSON object that
 reflects the panel's consensus.`
+
+// expertRoles lists the panel personas in speaking order, matching the
+// labels expertPanelSystemPrompt instructs the model to prefix each turn
+// with, so parseExpertPanel can split the transcript by speaker.
+var expertRoles = []string{"Аналитик", "Инженер", "Критик"}
+
+// strategyRussianLabels gives the human-readable Russian name for each
+// strategy, used to translate any raw enum identifier the judge model still
+// slips into its rationale prose (see rewriteStrategyMentions).
+var strategyRussianLabels = map[ReasoningStrategy]string{
+	StrategyDirect:      "прямой ответ",
+	StrategyStepByStep:  "пошаговое рассуждение",
+	StrategyMetaPrompt:  "мета-промпт",
+	StrategyExpertPanel: "экспертная группа",
+}
+
+// strategyMentionPattern matches any raw strategy identifier as a standalone
+// word, so rewriteStrategyMentions can swap it for its Russian label without
+// touching partial matches inside other words.
+var strategyMentionPattern = regexp.MustCompile(`\b(direct|step_by_step|meta_prompt|expert_panel)\b`)
+
+// rewriteStrategyMentions replaces any raw strategy identifier (e.g.
+// "expert_panel") found in free-form rationale text with its Russian label,
+// as a safety net in case the judge model ignores judgeSystemPrompt's
+// instruction to always name strategies in Russian.
+func rewriteStrategyMentions(text string) string {
+	return strategyMentionPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if label, ok := strategyRussianLabels[ReasoningStrategy(match)]; ok {
+			return label
+		}
+		return match
+	})
+}
+
+const judgeSystemPrompt = `You are comparing four AI-generated software-development effort
+estimates produced for the exact same task, using four different reasoning
+strategies:
+- "direct": no additional reasoning instructions.
+- "step_by_step": the model was told to reason step by step before answering.
+- "meta_prompt": the model first wrote its own prompt for the task, then that
+  prompt was used to produce the estimate.
+- "expert_panel": a simulated panel of an analyst, an engineer, and a critic
+  discussed the task before a synthesized estimate.
+
+Given the task and the four resulting estimates below, decide:
+1. Whether the four estimates differ meaningfully (in hours, complexity, or
+   key risks/assumptions) rather than just cosmetically.
+2. Which single strategy produced the most accurate, best-reasoned estimate.
+3. A short rationale in Russian (two to four sentences) explaining your
+   choice and, if relevant, what differs between them.
+
+Respond with ONLY a single JSON object, no markdown code fences, no
+commentary before or after it, matching exactly this schema:
+
+{
+  "differs": true | false,
+  "most_accurate": "direct" | "step_by_step" | "meta_prompt" | "expert_panel",
+  "rationale": "..."
+}
+
+Write "rationale" in Russian. When referring to a strategy inside the
+rationale text, always use its Russian name — «прямой ответ» for direct,
+«пошаговое рассуждение» for step_by_step, «мета-промпт» for meta_prompt,
+«экспертная группа» for expert_panel — and never the raw English identifier.
+The "most_accurate" field itself must still be one of the exact raw enum
+values above (never translate that field).`
 
 const metaPromptSystemPrompt = `You are an expert prompt engineer. A user wants an LLM to
 produce an accurate software-development effort estimate for the task
@@ -101,6 +170,48 @@ func (c *LiteLLMClient) stepByStepEstimate(ctx context.Context, task string) (*R
 	}, nil
 }
 
+// parseExpertPanel splits a panel discussion transcript into per-speaker
+// turns, based on the "Имя: текст" line prefixes expertPanelSystemPrompt
+// instructs the model to use. Returns nil if no known role prefix is found,
+// so the caller can fall back to showing the raw transcript instead.
+func parseExpertPanel(transcript string) []ExpertTurn {
+	var turns []ExpertTurn
+	var current *ExpertTurn
+
+	for _, line := range strings.Split(transcript, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		matchedRole := ""
+		for _, role := range expertRoles {
+			if strings.HasPrefix(trimmed, role+":") {
+				matchedRole = role
+				break
+			}
+		}
+
+		if matchedRole != "" {
+			if current != nil {
+				current.Text = strings.TrimSpace(current.Text)
+				turns = append(turns, *current)
+			}
+			current = &ExpertTurn{
+				Role: matchedRole,
+				Text: strings.TrimSpace(strings.TrimPrefix(trimmed, matchedRole+":")),
+			}
+			continue
+		}
+
+		if current != nil && trimmed != "" {
+			current.Text = strings.TrimSpace(current.Text + "\n" + trimmed)
+		}
+	}
+	if current != nil {
+		turns = append(turns, *current)
+	}
+
+	return turns
+}
+
 // expertPanelEstimate asks the model to role-play a small panel of experts
 // before synthesizing a final estimate.
 func (c *LiteLLMClient) expertPanelEstimate(ctx context.Context, task string) (*ReasoningStep, error) {
@@ -120,12 +231,17 @@ func (c *LiteLLMClient) expertPanelEstimate(ctx context.Context, task string) (*
 		return nil, err
 	}
 
-	return &ReasoningStep{
-		Reasoning:   reasoning,
+	step := &ReasoningStep{
 		Estimate:    *estimate,
 		LengthChars: len([]rune(cleaned)),
 		LatencyMs:   latency,
-	}, nil
+	}
+	if panel := parseExpertPanel(reasoning); len(panel) > 0 {
+		step.Panel = panel
+	} else {
+		step.Reasoning = reasoning
+	}
+	return step, nil
 }
 
 // metaPromptEstimate first asks the model to compose the prompt it thinks
@@ -166,9 +282,51 @@ func (c *LiteLLMClient) metaPromptEstimate(ctx context.Context, task string) (*R
 	}, nil
 }
 
+// formatEstimateForJudge renders one strategy's estimate as plain text for
+// the judge prompt, labeled by strategy so the judge can refer back to it.
+func formatEstimateForJudge(label ReasoningStrategy, e EstimateResponse) string {
+	return fmt.Sprintf(
+		"%s:\n- category: %s\n- complexity: %s\n- estimated hours: %v-%v\n- summary: %s\n- risks: %s\n- assumptions: %s",
+		label, e.Category, e.Complexity, e.EstimatedHoursMin, e.EstimatedHoursMax, e.Summary,
+		strings.Join(e.Risks, "; "), strings.Join(e.Assumptions, "; "),
+	)
+}
+
+// judgeReasoning asks the model to compare the four strategies' estimates
+// for the same task and decide which one is most accurate.
+func (c *LiteLLMClient) judgeReasoning(ctx context.Context, task string, direct, stepByStep, metaPrompt, expertPanel *ReasoningStep) (*ReasoningVerdict, error) {
+	userMessage := task + "\n\n" + strings.Join([]string{
+		formatEstimateForJudge(StrategyDirect, direct.Estimate),
+		formatEstimateForJudge(StrategyStepByStep, stepByStep.Estimate),
+		formatEstimateForJudge(StrategyMetaPrompt, metaPrompt.Estimate),
+		formatEstimateForJudge(StrategyExpertPanel, expertPanel.Estimate),
+	}, "\n\n")
+
+	content, err := c.chatComplete(ctx, []chatMessage{
+		{Role: "system", Content: judgeSystemPrompt},
+		{Role: "user", Content: userMessage},
+	}, 0.2, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	cleaned := stripCodeFences(content)
+	var verdict ReasoningVerdict
+	if err := json.Unmarshal([]byte(cleaned), &verdict); err != nil {
+		return nil, fmt.Errorf("%w: judge did not return valid JSON: %v", ErrInvalidOutput, err)
+	}
+	if err := verdict.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+	}
+	verdict.Rationale = rewriteStrategyMentions(verdict.Rationale)
+
+	return &verdict, nil
+}
+
 // CompareReasoning solves the same task with four reasoning strategies in
-// parallel — direct, step-by-step, meta-prompting, and an expert panel — so
-// their outputs can be compared side by side.
+// parallel — direct, step-by-step, meta-prompting, and an expert panel —
+// then asks the model to judge which one is most accurate, so the four
+// results and that verdict can be shown together.
 func (c *LiteLLMClient) CompareReasoning(ctx context.Context, task string) (*ReasoningResponse, error) {
 	var (
 		direct, stepByStep, metaPrompt, expertPanel *ReasoningStep
@@ -189,11 +347,17 @@ func (c *LiteLLMClient) CompareReasoning(ctx context.Context, task string) (*Rea
 		}
 	}
 
+	verdict, err := c.judgeReasoning(ctx, task, direct, stepByStep, metaPrompt, expertPanel)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ReasoningResponse{
 		Task:        task,
 		Direct:      *direct,
 		StepByStep:  *stepByStep,
 		MetaPrompt:  *metaPrompt,
 		ExpertPanel: *expertPanel,
+		Verdict:     *verdict,
 	}, nil
 }

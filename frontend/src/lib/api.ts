@@ -43,12 +43,30 @@ export interface CompareOptions {
   useStopInstruction: boolean
 }
 
+export interface ExpertTurn {
+  role: string
+  text: string
+}
+
+export type ReasoningStrategy =
+  | 'direct'
+  | 'step_by_step'
+  | 'meta_prompt'
+  | 'expert_panel'
+
 export interface ReasoningStep {
   reasoning?: string
+  panel?: ExpertTurn[]
   generated_prompt?: string
   estimate: Estimate
   length_chars: number
   latency_ms: number
+}
+
+export interface ReasoningVerdict {
+  differs: boolean
+  most_accurate: ReasoningStrategy
+  rationale: string
 }
 
 export interface ReasoningComparison {
@@ -57,6 +75,7 @@ export interface ReasoningComparison {
   step_by_step: ReasoningStep
   meta_prompt: ReasoningStep
   expert_panel: ReasoningStep
+  verdict: ReasoningVerdict
 }
 
 export class ApiError extends Error {}
