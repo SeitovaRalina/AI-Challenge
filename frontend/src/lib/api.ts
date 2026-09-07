@@ -104,6 +104,38 @@ export interface TemperatureComparison {
   verdict: TemperatureVerdict
 }
 
+export type ModelTier = 'weak' | 'medium' | 'strong'
+
+export interface ModelResult {
+  tier: ModelTier
+  model_id: string
+  name: string
+  description: string
+  docs_url: string
+  text: string
+  latency_ms: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd?: number
+}
+
+export interface ModelQualityAssessment {
+  tier: ModelTier
+  quality: string
+}
+
+export interface ModelVerdict {
+  quality: ModelQualityAssessment[]
+  summary: string
+}
+
+export interface ModelComparison {
+  task: string
+  results: ModelResult[]
+  verdict: ModelVerdict
+}
+
 export class ApiError extends Error {}
 
 async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
@@ -162,4 +194,8 @@ export function compareReasoning(task: string): Promise<ReasoningComparison> {
 
 export function compareTemperatures(task: string): Promise<TemperatureComparison> {
   return postJson<TemperatureComparison>('/api/temperature', { task })
+}
+
+export function compareModels(task: string): Promise<ModelComparison> {
+  return postJson<ModelComparison>('/api/models', { task })
 }
