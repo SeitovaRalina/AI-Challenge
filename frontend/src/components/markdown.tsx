@@ -12,10 +12,24 @@ const components: Components = {
   strong: ({ children }) => (
     <strong className="font-semibold text-foreground">{children}</strong>
   ),
-  code: ({ children }) => (
-    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
+  code: ({ className, children }) => {
+    // Fenced code blocks with a language tag (```js) get a "language-js"
+    // className from remark; inline `code` never does. Only the inline case
+    // gets the small pill styling — block code is styled by `pre` below, so
+    // it isn't double-boxed.
+    if (className) {
+      return <code className={className}>{children}</code>
+    }
+    return (
+      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
+        {children}
+      </code>
+    )
+  },
+  pre: ({ children }) => (
+    <pre className="mb-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed last:mb-0">
       {children}
-    </code>
+    </pre>
   ),
   a: ({ children, href }) => (
     <a href={href} className="underline underline-offset-2" target="_blank" rel="noreferrer">

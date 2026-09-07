@@ -1,9 +1,10 @@
+import { Lightbulb } from 'lucide-react'
+
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Markdown } from '@/components/markdown'
 import { Skeleton } from '@/components/ui/skeleton'
-import { TemperatureGauge } from '@/components/temperature-gauge'
+import { TEMPERATURE_COLORS, TemperatureGauge } from '@/components/temperature-gauge'
 import type {
   TemperatureAnalysis,
   TemperatureComparison as TemperatureComparisonData,
@@ -25,6 +26,12 @@ const TEMPERATURE_NAMES: Record<string, string> = {
 function temperatureLabel(value: number): string {
   const name = TEMPERATURE_NAMES[String(value)]
   return name ? `${name} (t=${value})` : `t=${value}`
+}
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="text-sm font-semibold text-foreground">{children}</h3>
+  )
 }
 
 function ColumnSkeleton() {
@@ -57,47 +64,70 @@ function ResultCard({ result }: { result: TemperatureResult }) {
   )
 }
 
-function AnalysisCard({ analysis }: { analysis: TemperatureAnalysis }) {
+interface AnalysisRow {
+  label: string
+  render: (analysis: TemperatureAnalysis) => React.ReactNode
+}
+
+const ANALYSIS_ROWS: AnalysisRow[] = [
+  { label: 'Точность', render: (a) => a.accuracy },
+  { label: 'Креативность', render: (a) => a.creativity },
+  { label: 'Разнообразие', render: (a) => a.diversity },
+  {
+    label: 'Подходит для',
+    render: (a) => (
+      <ul className="flex flex-col gap-1">
+        {a.best_for.map((item) => (
+          <li key={item} className="border-l-2 border-primary/40 pl-2">
+            {item}
+          </li>
+        ))}
+      </ul>
+    ),
+  },
+]
+
+function AnalysisTable({ analysis }: { analysis: TemperatureAnalysis[] }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {temperatureLabel(analysis.temperature)}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3 text-sm">
-        <div>
-          <p className="text-xs font-medium tracking-wide text-muted-foreground">
-            Точность
-          </p>
-          <p className="text-foreground">{analysis.accuracy}</p>
-        </div>
-        <div>
-          <p className="text-xs font-medium tracking-wide text-muted-foreground">
-            Креативность
-          </p>
-          <p className="text-foreground">{analysis.creativity}</p>
-        </div>
-        <div>
-          <p className="text-xs font-medium tracking-wide text-muted-foreground">
-            Разнообразие
-          </p>
-          <p className="text-foreground">{analysis.diversity}</p>
-        </div>
-        <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-          <p className="text-xs font-medium tracking-wide text-muted-foreground">
-            Подходит для
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {analysis.best_for.map((item) => (
-              <Badge key={item} variant="outline">
-                {item}
-              </Badge>
+    <div className="overflow-x-auto rounded-xl ring-1 ring-foreground/10">
+      <table className="w-full min-w-[640px] border-collapse text-sm">
+        <thead>
+          <tr className="bg-muted/50">
+            <th className="w-36 border-b border-border px-4 py-3 text-left text-xs font-medium tracking-wide text-muted-foreground">
+              Критерий
+            </th>
+            {analysis.map((a) => (
+              <th
+                key={a.temperature}
+                className="border-b border-border px-4 py-3 text-left text-xs font-medium tracking-wide text-muted-foreground"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ background: TEMPERATURE_COLORS[String(a.temperature)] }}
+                  />
+                  {temperatureLabel(a.temperature)}
+                </span>
+              </th>
             ))}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+          </tr>
+        </thead>
+        <tbody>
+          {ANALYSIS_ROWS.map((row) => (
+            <tr key={row.label} className="align-top odd:bg-muted/20">
+              <td className="px-4 py-3 text-xs font-medium tracking-wide text-muted-foreground">
+                {row.label}
+              </td>
+              {analysis.map((a) => (
+                <td key={a.temperature} className="px-4 py-3 text-foreground">
+                  {row.render(a)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -145,23 +175,28 @@ export function TemperatureComparison({
     <div className="flex flex-col gap-6">
       <TemperatureGauge values={comparison.results.map((r) => r.temperature)} />
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {comparison.results.map((result) => (
-          <ResultCard key={result.temperature} result={result} />
-        ))}
+      <div className="flex flex-col gap-3">
+        <SectionHeading>Ответы модели</SectionHeading>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {comparison.results.map((result) => (
+            <ResultCard key={result.temperature} result={result} />
+          ))}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {comparison.verdict.analysis.map((analysis) => (
-          <AnalysisCard key={analysis.temperature} analysis={analysis} />
-        ))}
+      <div className="flex flex-col gap-3">
+        <SectionHeading>Сравнение по критериям</SectionHeading>
+        <AnalysisTable analysis={comparison.verdict.analysis} />
       </div>
 
-      <Card>
+      <Card className="ring-2 ring-primary/40">
         <CardHeader>
-          <CardTitle className="text-sm font-medium text-muted-foreground">
-            Общий вывод
-          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Lightbulb className="size-4 text-primary" />
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Общий вывод
+            </CardTitle>
+          </div>
         </CardHeader>
         <CardContent>
           <Markdown>{comparison.verdict.summary}</Markdown>
