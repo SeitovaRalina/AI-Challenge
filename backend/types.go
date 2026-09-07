@@ -192,6 +192,96 @@ type ReasoningResponse struct {
 	Verdict     ReasoningVerdict `json:"verdict"`
 }
 
+// TemperatureRequest is the payload accepted by POST /api/temperature.
+type TemperatureRequest struct {
+	Task string `json:"task"`
+}
+
+// temperatureValues are the three sampling temperatures compared for the
+// day-4 challenge, in low-to-high order.
+var temperatureValues = []float64{0, 0.7, 1.2}
+
+// TemperatureResult is one temperature's raw, unconstrained response to the
+// same task, alongside its sampling temperature.
+type TemperatureResult struct {
+	Temperature float64 `json:"temperature"`
+	Text        string  `json:"text"`
+	LengthChars int     `json:"length_chars"`
+	LatencyMs   int64   `json:"latency_ms"`
+}
+
+// TemperatureAnalysis is an LLM judge's breakdown of one temperature's
+// response along the three axes the day-4 challenge asks to compare, plus
+// the kinds of tasks that temperature suits.
+type TemperatureAnalysis struct {
+	Temperature float64  `json:"temperature"`
+	Accuracy    string   `json:"accuracy"`
+	Creativity  string   `json:"creativity"`
+	Diversity   string   `json:"diversity"`
+	BestFor     []string `json:"best_for"`
+}
+
+// Validate rejects an analysis entry that doesn't name one of the three
+// compared temperatures or is missing any of its required prose fields.
+func (a TemperatureAnalysis) Validate() error {
+	valid := false
+	for _, t := range temperatureValues {
+		if a.Temperature == t {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("temperature must be one of %v, got %v", temperatureValues, a.Temperature)
+	}
+	if strings.TrimSpace(a.Accuracy) == "" {
+		return errors.New("accuracy must not be empty")
+	}
+	if strings.TrimSpace(a.Creativity) == "" {
+		return errors.New("creativity must not be empty")
+	}
+	if strings.TrimSpace(a.Diversity) == "" {
+		return errors.New("diversity must not be empty")
+	}
+	if len(a.BestFor) == 0 {
+		return errors.New("best_for must not be empty")
+	}
+	return nil
+}
+
+// TemperatureVerdict is the LLM judge's full comparison of the three
+// temperature responses: a per-temperature breakdown plus an overall
+// takeaway.
+type TemperatureVerdict struct {
+	Analysis []TemperatureAnalysis `json:"analysis"`
+	Summary  string                `json:"summary"`
+}
+
+// Validate rejects a verdict that doesn't cover exactly the three compared
+// temperatures or gives no overall summary.
+func (v TemperatureVerdict) Validate() error {
+	if len(v.Analysis) != len(temperatureValues) {
+		return fmt.Errorf("analysis must have %d entries, got %d", len(temperatureValues), len(v.Analysis))
+	}
+	for _, a := range v.Analysis {
+		if err := a.Validate(); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(v.Summary) == "" {
+		return errors.New("summary must not be empty")
+	}
+	return nil
+}
+
+// TemperatureResponse holds the same task solved at three sampling
+// temperatures, plus an LLM judge's comparison of the three.
+type TemperatureResponse struct {
+	Task    string              `json:"task"`
+	Results []TemperatureResult `json:"results"`
+	Verdict TemperatureVerdict  `json:"verdict"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,
