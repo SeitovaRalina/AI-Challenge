@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { CompareOptionsForm } from '@/components/compare-options'
 import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
+import { ModelComparison } from '@/components/model-comparison'
+import { ModelLineup } from '@/components/model-lineup'
 import {
   ReasoningComparison,
   type ReasoningReaction,
@@ -14,12 +16,14 @@ import {
   ApiError,
   compareControlled,
   compareFormats,
+  compareModels,
   compareReasoning,
   compareTemperatures,
   estimateTask,
   type Comparison,
   type CompareOptions,
   type Estimate,
+  type ModelComparison as ModelComparisonData,
   type RawResult,
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
@@ -27,7 +31,7 @@ import {
 import { cn } from 'cn'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'estimate' | 'compare' | 'reasoning' | 'temperature'
+type Mode = 'estimate' | 'compare' | 'reasoning' | 'temperature' | 'models'
 
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
   maxTokens: 1000,
@@ -56,6 +60,11 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
     title: 'Температура',
     description:
       'Один и тот же запрос уходит в LLM трижды — с temperature 0, 0.7 и 1.2, — чтобы сравнить точность, креативность и разнообразие ответов и понять, для каких задач подходит каждая настройка.',
+  },
+  models: {
+    title: 'Версии моделей',
+    description:
+      'Один и тот же запрос решают три модели возрастающей мощности — от слабой до сильной, — чтобы сравнить качество, скорость и стоимость ответа и понять, когда доплата за более мощную модель оправдана.',
   },
 }
 
@@ -89,6 +98,11 @@ function App() {
   const [temperatureComparison, setTemperatureComparison] =
     useState<TemperatureComparisonData | null>(null)
   const [temperatureError, setTemperatureError] = useState<string | null>(null)
+
+  const [modelsStatus, setModelsStatus] = useState<Status>('idle')
+  const [modelsComparison, setModelsComparison] =
+    useState<ModelComparisonData | null>(null)
+  const [modelsError, setModelsError] = useState<string | null>(null)
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -156,6 +170,21 @@ function App() {
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
       )
       setTemperatureStatus('error')
+    }
+  }
+
+  async function handleModelsSubmit(task: string) {
+    setModelsStatus('loading')
+    setModelsError(null)
+    try {
+      const result = await compareModels(task)
+      setModelsComparison(result)
+      setModelsStatus('success')
+    } catch (err) {
+      setModelsError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+      setModelsStatus('error')
     }
   }
 
@@ -237,6 +266,18 @@ function App() {
             )}
           >
             Температура
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('models')}
+            className={cn(
+              'rounded-md px-3 py-1.5 font-medium transition-colors',
+              mode === 'models'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Версии моделей
           </button>
         </div>
 
@@ -325,6 +366,25 @@ function App() {
               status={temperatureStatus}
               comparison={temperatureComparison}
               error={temperatureError}
+            />
+          </div>
+        )}
+
+        {mode === 'models' && (
+          <div className="flex flex-col gap-8">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+              <TaskForm
+                onSubmit={handleModelsSubmit}
+                isSubmitting={modelsStatus === 'loading'}
+                submitLabel="Сравнить"
+                submittingLabel="Сравниваем…"
+              />
+              <ModelLineup />
+            </div>
+            <ModelComparison
+              status={modelsStatus}
+              comparison={modelsComparison}
+              error={modelsError}
             />
           </div>
         )}

@@ -282,6 +282,142 @@ type TemperatureResponse struct {
 	Verdict TemperatureVerdict  `json:"verdict"`
 }
 
+// ModelRequest is the payload accepted by POST /api/models.
+type ModelRequest struct {
+	Task string `json:"task"`
+}
+
+// ModelTier identifies one of the three day-5 model-capability tiers. The
+// three are ordered by each model's own documented count of active MoE
+// parameters, not by vendor branding — this LiteLLM gateway's "claude-*" and
+// "gpt-*" model IDs are cosmetic aliases that get routed to an arbitrary
+// (if stable per-alias) backend, not the real Anthropic/OpenAI models, so
+// they can't be trusted to reflect a genuine weak/medium/strong ordering.
+type ModelTier string
+
+const (
+	ModelTierWeak   ModelTier = "weak"
+	ModelTierMedium ModelTier = "medium"
+	ModelTierStrong ModelTier = "strong"
+)
+
+var validModelTier = map[ModelTier]bool{
+	ModelTierWeak:   true,
+	ModelTierMedium: true,
+	ModelTierStrong: true,
+}
+
+// ModelInfo describes one of the three compared models: its real LiteLLM
+// model ID (directly named, not a branded alias), a display name, a Russian
+// description noting its documented active-parameter count, and a link to
+// its official model card.
+type ModelInfo struct {
+	Tier        ModelTier
+	ModelID     string
+	Name        string
+	Description string
+	DocsURL     string
+}
+
+// comparedModels are the three models day-5 compares, weak to strong, picked
+// because each ID names its real underlying model directly (verified: a
+// repeated request for the same ID always routes to the same backend) with a
+// documented, monotonically increasing active-parameter count: GLM-4.7-Flash
+// (3B active / 31.2B total), DeepSeek-V4-Flash (13B active / 284B total),
+// DeepSeek-V4-Pro (49B active / 1.6T total).
+var comparedModels = []ModelInfo{
+	{
+		Tier:        ModelTierWeak,
+		ModelID:     "glm-4.7-flash",
+		Name:        "GLM-4.7-Flash",
+		Description: "Слабая модель — 3B активных параметров (31.2B всего, MoE).",
+		DocsURL:     "https://huggingface.co/zai-org/GLM-4.7-Flash",
+	},
+	{
+		Tier:        ModelTierMedium,
+		ModelID:     "deepseek-v4-flash-0731",
+		Name:        "DeepSeek-V4-Flash",
+		Description: "Средняя модель — 13B активных параметров (284B всего, MoE).",
+		DocsURL:     "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
+	},
+	{
+		Tier:        ModelTierStrong,
+		ModelID:     "deepseek-v4-pro",
+		Name:        "DeepSeek-V4-Pro",
+		Description: "Сильная модель — 49B активных параметров (1.6T всего, MoE).",
+		DocsURL:     "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro",
+	},
+}
+
+// ModelResult is one model's measured response to the same task: latency,
+// token usage, and cost are read directly from the LiteLLM gateway's own
+// response, never estimated.
+type ModelResult struct {
+	Tier             ModelTier `json:"tier"`
+	ModelID          string    `json:"model_id"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description"`
+	DocsURL          string    `json:"docs_url"`
+	Text             string    `json:"text"`
+	LatencyMs        int64     `json:"latency_ms"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	CostUsd          *float64  `json:"cost_usd,omitempty"`
+}
+
+// ModelQualityAssessment is the LLM judge's take on one model's answer
+// quality only. Speed, token usage, and cost are measured directly (see
+// ModelResult) rather than judged.
+type ModelQualityAssessment struct {
+	Tier    ModelTier `json:"tier"`
+	Quality string    `json:"quality"`
+}
+
+// Validate rejects a quality assessment that doesn't name one of the three
+// known tiers or gives no assessment text.
+func (a ModelQualityAssessment) Validate() error {
+	if !validModelTier[a.Tier] {
+		return fmt.Errorf("tier must be one of weak, medium, or strong, got %q", a.Tier)
+	}
+	if strings.TrimSpace(a.Quality) == "" {
+		return errors.New("quality must not be empty")
+	}
+	return nil
+}
+
+// ModelVerdict is the LLM judge's quality comparison across the three
+// models, plus an overall takeaway with a task-specific recommendation.
+type ModelVerdict struct {
+	Quality []ModelQualityAssessment `json:"quality"`
+	Summary string                   `json:"summary"`
+}
+
+// Validate rejects a verdict that doesn't cover exactly the three compared
+// tiers or gives no overall summary.
+func (v ModelVerdict) Validate() error {
+	if len(v.Quality) != len(comparedModels) {
+		return fmt.Errorf("quality must have %d entries, got %d", len(comparedModels), len(v.Quality))
+	}
+	for _, q := range v.Quality {
+		if err := q.Validate(); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(v.Summary) == "" {
+		return errors.New("summary must not be empty")
+	}
+	return nil
+}
+
+// ModelComparisonResponse holds the same task solved by three models of
+// increasing capability tier, plus an LLM judge's quality comparison.
+type ModelComparisonResponse struct {
+	Task    string        `json:"task"`
+	Results []ModelResult `json:"results"`
+	Verdict ModelVerdict  `json:"verdict"`
+}
+
 var validComplexity = map[string]bool{"low": true, "medium": true, "high": true}
 
 // Validate rejects model output that doesn't satisfy the application's schema,

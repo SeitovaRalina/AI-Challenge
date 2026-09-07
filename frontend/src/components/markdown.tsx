@@ -1,4 +1,9 @@
+import 'katex/dist/katex.min.css'
+
 import ReactMarkdown, { type Components } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 
 const components: Components = {
   p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
@@ -36,6 +41,19 @@ const components: Components = {
       {children}
     </a>
   ),
+  table: ({ children }) => (
+    <div className="mb-2 overflow-x-auto rounded-md ring-1 ring-foreground/10 last:mb-0">
+      <table className="w-full border-collapse text-sm">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-muted/50">{children}</thead>,
+  tr: ({ children }) => <tr className="border-b border-border last:border-0">{children}</tr>,
+  th: ({ children }) => (
+    <th className="px-3 py-2 text-left text-xs font-medium tracking-wide text-muted-foreground">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => <td className="px-3 py-2 align-top">{children}</td>,
 }
 
 interface MarkdownProps {
@@ -45,7 +63,13 @@ interface MarkdownProps {
 export function Markdown({ children }: MarkdownProps) {
   return (
     <div className="text-sm leading-relaxed text-foreground">
-      <ReactMarkdown components={components}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        components={components}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   )
 }

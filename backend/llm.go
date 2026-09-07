@@ -77,11 +77,15 @@ type LiteLLMClient struct {
 }
 
 func NewLiteLLMClient(baseURL, apiKey, model string) *LiteLLMClient {
+	// httpClient.Timeout is kept above every handler's request context
+	// timeout (currently 180s, for the multi-call reasoning/temperature/
+	// model endpoints) so a slow upstream call fails with that context's
+	// clean error instead of this client-wide timeout firing first.
 	return &LiteLLMClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		apiKey:     apiKey,
 		model:      model,
-		httpClient: &http.Client{Timeout: 150 * time.Second},
+		httpClient: &http.Client{Timeout: 220 * time.Second},
 	}
 }
 
@@ -98,60 +102,84 @@ type chatCompletionRequest struct {
 	Stop        []string      `json:"stop,omitempty"`
 }
 
+// chatCompletionUsage is the token/cost accounting the LiteLLM gateway
+// includes on every completion. Cost is a pointer since some upstream
+// providers may not report it.
+type chatCompletionUsage struct {
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	TotalTokens      int      `json:"total_tokens"`
+	Cost             *float64 `json:"cost"`
+}
+
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
+	Usage *chatCompletionUsage `json:"usage"`
 }
 
-// chatComplete sends a chat-completion request to LiteLLM and returns the raw
-// message content, applying an optional max-token limit and stop sequences.
-func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, stop []string) (string, error) {
+// doChatCompletion sends a chat-completion request to LiteLLM for the given
+// model and returns the full parsed response (message content plus token
+// usage and cost), so callers that only need the text (chatComplete) and
+// callers that also need usage (the day-5 model comparison) share one
+// request/response implementation.
+func (c *LiteLLMClient) doChatCompletion(ctx context.Context, model string, messages []chatMessage, temperature float64, maxTokens int, stop []string) (*chatCompletionResponse, error) {
 	reqBody, err := json.Marshal(chatCompletionRequest{
-		Model:       c.model,
+		Model:       model,
 		Messages:    messages,
 		Temperature: temperature,
 		MaxTokens:   maxTokens,
 		Stop:        stop,
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
+		return nil, fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return "", fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
+		return nil, fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
 	case resp.StatusCode != http.StatusOK:
-		return "", fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
+		return nil, fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var completion chatCompletionResponse
 	if err := json.Unmarshal(body, &completion); err != nil {
-		return "", fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
+		return nil, fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
 	}
 	if len(completion.Choices) == 0 {
-		return "", fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
+		return nil, fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
 	}
 
+	return &completion, nil
+}
+
+// chatComplete sends a chat-completion request to LiteLLM using the app's
+// configured default model, and returns the raw message content.
+func (c *LiteLLMClient) chatComplete(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, stop []string) (string, error) {
+	completion, err := c.doChatCompletion(ctx, c.model, messages, temperature, maxTokens, stop)
+	if err != nil {
+		return "", err
+	}
 	return completion.Choices[0].Message.Content, nil
 }
 
