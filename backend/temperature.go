@@ -37,9 +37,12 @@ For EACH of the three responses, assess in Russian:
 - "best_for": 2-4 short Russian phrases naming concrete kinds of tasks this
   temperature suits well (e.g. "код-ревью и багфиксы", "мозговой штурм идей")
 
-Then write an overall "summary" in Russian (3-5 sentences) tying the three
-together: how the responses actually differed here, and general guidance for
-picking a temperature for a given kind of task.
+Then write an overall "summary" in Russian (4-6 sentences): first tie the
+three together — how the responses actually differed here, and general
+guidance for picking a temperature for a given kind of task — then end with
+an explicit recommendation for THIS specific task: name which one of the
+three temperatures suits it best and why, in concrete terms tied to what this
+particular task needs (not a generic restatement of the guidance above).
 
 Respond with ONLY a single JSON object, no markdown code fences, no
 commentary before or after it, matching exactly this schema:
