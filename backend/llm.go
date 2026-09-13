@@ -115,7 +115,8 @@ type chatCompletionUsage struct {
 
 type chatCompletionResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *chatCompletionUsage `json:"usage"`
 }

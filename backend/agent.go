@@ -278,14 +278,26 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	// Pre-call overflow guard: the previous turn's prompt_tokens is the
 	// model's own count of the entire conversation as of that call, and this
 	// turn's history is at most a couple of messages larger — close enough to
-	// refuse a call that would certainly overflow without spending it. This
-	// is also what makes the artificially low demo limit (CHAT_CONTEXT_TOKEN_LIMIT)
-	// break the dialog deterministically instead of depending on ever
-	// actually hitting the real model's context window.
-	if a.contextTokenLimit > 0 && lastPromptTokens >= a.contextTokenLimit {
-		log.Printf("agent: chat %s: context limit reached (%d/%d tokens), skipping LLM call",
-			chatID, lastPromptTokens, a.contextTokenLimit)
-		return a.finishOverflowTurn(chat, userMessage, userSentAt, lastPromptTokens)
+	// treat as this turn's starting budget. Rather than let the model write
+	// an unbounded reply and only check the total afterward (which is how
+	// the total can end up past the limit instead of at it), we cap the real
+	// call's max_tokens to whatever room is left — the same way a real
+	// model's context window bounds a single turn's completion — so the
+	// upstream API itself truncates (finish_reason "length") if the answer
+	// would need more room than remains. Below minCompletionBudget there
+	// isn't enough room left for a coherent reply (the model couldn't even
+	// open the JSON envelope), so that case still skips the call entirely,
+	// exactly like a real API's upfront context_length_exceeded rejection.
+	const minCompletionBudget = 64
+	remainingBudget := 0
+	if a.contextTokenLimit > 0 {
+		remainingBudget = a.contextTokenLimit - lastPromptTokens
+	}
+	if a.contextTokenLimit > 0 && remainingBudget < minCompletionBudget {
+		log.Printf("agent: chat %s: context limit reached (%d/%d tokens, %d left), skipping LLM call",
+			chatID, lastPromptTokens, a.contextTokenLimit, remainingBudget)
+		reply := contextFullReplyText(lastPromptTokens, a.contextTokenLimit)
+		return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
 	}
 
 	messages := make([]chatMessage, 0, len(history)+3)
@@ -306,23 +318,50 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
+	maxTokens := 0
+	if a.contextTokenLimit > 0 {
+		maxTokens = remainingBudget
+	}
+
 	callStart := time.Now()
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, 0, nil)
+	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, maxTokens, nil)
 	if err != nil {
 		// A real upstream context-length rejection is handled the same
 		// gracefully-in-chat way as the pre-call guard above, instead of
 		// surfacing as a 502 to the user.
 		if errors.Is(err, ErrContextOverflow) {
 			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
-			return a.finishOverflowTurn(chat, userMessage, userSentAt, lastPromptTokens)
+			reply := contextFullReplyText(lastPromptTokens, a.contextTokenLimit)
+			return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
 		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
 	}
-	log.Printf("agent: chat %s: LLM call took %s", chatID, time.Since(callStart).Round(time.Millisecond))
+	finishReason := completion.Choices[0].FinishReason
+	log.Printf("agent: chat %s: LLM call took %s (finish_reason=%s)", chatID, time.Since(callStart).Round(time.Millisecond), finishReason)
+	if finishReason == "length" {
+		log.Printf("agent: chat %s: response truncated by the %d-token context budget — real API enforced the simulated context window", chatID, maxTokens)
+	}
 
 	turn, err := parseAgentTurn(completion.Choices[0].Message.Content)
 	if err != nil {
+		// A reasoning model can spend its entire truncated budget on hidden
+		// reasoning and never emit any visible content at all — worse than a
+		// mid-sentence cutoff, there's nothing to fall back to as prose
+		// either. This is NOT the dialog running out of room (the history
+		// itself may be nowhere near the limit) — it's this one reply that
+		// needed more than the remaining per-turn budget, so it gets its
+		// own honest message instead of the "context limit reached" one.
+		if finishReason == "length" {
+			log.Printf("agent: chat %s: truncated response was unusable (finish_reason=length, %d-token budget): %v", chatID, maxTokens, err)
+			// The call genuinely happened and cost real tokens — usage is
+			// still populated even though the content came out unusable, so
+			// the chat's running totals must reflect it (chat.LastPromptTokens
+			// included) instead of staying frozen at the stale pre-call value.
+			usage := tokenUsageFrom(completion.Usage)
+			reply := truncatedReplyText(maxTokens)
+			return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, usage)
+		}
 		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(completion.Choices[0].Message.Content))
 		return nil, err
 	}
@@ -380,10 +419,10 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	}, nil
 }
 
-// overflowReplyText is shown in the chat itself (not as an HTTP error) when
-// the context token limit blocks a turn, so overflow reads as a handled
-// product state instead of a crash.
-func overflowReplyText(tokens, limit int) string {
+// contextFullReplyText is shown when the dialog's history genuinely leaves
+// no usable room left — the two cases where the LLM was never even called
+// (the pre-call guard) or was rejected outright by the upstream API.
+func contextFullReplyText(tokens, limit int) string {
 	return fmt.Sprintf(
 		"⚠️ Достигнут лимит контекста диалога: %d / %d токенов. "+
 			"Продолжить этот диалог нельзя — начните новый чат.",
@@ -391,23 +430,57 @@ func overflowReplyText(tokens, limit int) string {
 	)
 }
 
-// finishOverflowTurn appends the user's message and a synthetic overflow
-// reply to chat without ever calling the LLM, persists it, and returns the
-// same AgentReply shape a normal turn would — so the frontend needs no
-// special-casing for this path.
-func (a *Agent) finishOverflowTurn(chat *Chat, userMessage string, userSentAt time.Time, lastPromptTokens int) (*AgentReply, error) {
+// truncatedReplyText is shown when the history itself still had room, but
+// this one turn's reply needed more than what remained and got cut off by
+// the model provider (finish_reason "length") into something unusable. This
+// is a different situation from contextFullReplyText — the dialog is not
+// full, this specific answer just didn't fit — so it gets its own honest
+// wording instead of reusing "context limit reached" (which would be
+// misleading, e.g. "882 / 1200" while insisting the limit was hit).
+func truncatedReplyText(budget int) string {
+	return fmt.Sprintf(
+		"⚠️ Ответ модели получился длиннее допустимого бюджета для одного "+
+			"хода (%d токенов) и был обрезан. Попробуйте задать более "+
+			"короткий или простой вопрос, либо начните новый чат.",
+		budget,
+	)
+}
+
+// finishGracefulTurn appends the user's message and a synthetic reply to
+// chat, persists it, and returns the same AgentReply shape a normal turn
+// would — so the frontend needs no special-casing for any of the paths that
+// call it. reply is built by the caller (contextFullReplyText or
+// truncatedReplyText) so each failure mode gets accurate wording.
+//
+// usage is nil when the LLM was never actually called (the pre-call guard,
+// or an outright upstream rejection). When a call DID happen but its
+// content came out unusable (a truncated response that couldn't be
+// parsed), pass its real usage: the request genuinely happened and cost
+// real tokens, so the chat's running totals must reflect it.
+func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSentAt time.Time, usage *TokenUsage) (*AgentReply, error) {
 	assistantSentAt := time.Now()
-	reply := overflowReplyText(lastPromptTokens, a.contextTokenLimit)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	chat.Messages = append(chat.Messages,
-		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt},
-		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt},
+		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
+		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
+	}
+	if usage != nil {
+		chat.LastPromptTokens = usage.PromptTokens
+		chat.CumulativeTotalTokens += usage.TotalTokens
+		if usage.CostUsd != nil {
+			if chat.CumulativeCostUsd == nil {
+				cost := *usage.CostUsd
+				chat.CumulativeCostUsd = &cost
+			} else {
+				*chat.CumulativeCostUsd += *usage.CostUsd
+			}
+		}
 	}
 	if err := a.store.Save(chat); err != nil {
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
@@ -417,7 +490,7 @@ func (a *Agent) finishOverflowTurn(chat *Chat, userMessage string, userSentAt ti
 		Reply:                     reply,
 		Estimate:                  chat.Estimate,
 		Title:                     chat.Title,
-		Usage:                     nil,
+		Usage:                     usage,
 		UserMessageCreatedAt:      userSentAt,
 		AssistantMessageCreatedAt: assistantSentAt,
 		LastPromptTokens:          chat.LastPromptTokens,
@@ -449,15 +522,24 @@ func parseAgentTurn(raw string) (*agentTurn, error) {
 
 	var turn agentTurn
 	if err := json.Unmarshal([]byte(cleaned), &turn); err != nil {
-		// For a plain conversational follow-up (e.g. "sum these subtask
-		// hours for me") the model sometimes drops the JSON envelope
-		// entirely and just answers in prose. Treat that prose as the
-		// reply instead of failing the whole turn — it's still a useful
-		// answer, and no estimate update was implied anyway.
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
 		}
+		// cleaned starting with "{" means the model was clearly attempting
+		// the JSON envelope and it came out broken (most often: cut off
+		// mid-object by a max_tokens budget) — showing that raw fragment as
+		// if it were the chat reply is worse than an error, so treat it as
+		// a real failure and let the caller decide (e.g. a truncation
+		// budget turns this into a graceful context-limit notice).
+		if strings.HasPrefix(cleaned, "{") {
+			return nil, fmt.Errorf("%w: model's JSON response was malformed or cut off: %v", ErrInvalidOutput, err)
+		}
+		// Otherwise this is a plain conversational follow-up (e.g. "sum
+		// these subtask hours for me") where the model dropped the JSON
+		// envelope entirely and just answered in prose. Treat that prose as
+		// the reply instead of failing the turn — it's still a useful
+		// answer, and no estimate update was implied anyway.
 		log.Printf("agent: model dropped the JSON envelope, falling back to its raw text as the reply")
 		return &agentTurn{Reply: trimmed}, nil
 	}
