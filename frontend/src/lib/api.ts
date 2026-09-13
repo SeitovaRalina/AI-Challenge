@@ -138,11 +138,14 @@ export interface ModelComparison {
 
 export class ApiError extends Error {}
 
-async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
+async function request<T>(
+  url: string,
+  init?: { method?: string; body?: Record<string, unknown> },
+): Promise<T> {
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    method: init?.method ?? 'GET',
+    headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+    body: init?.body ? JSON.stringify(init.body) : undefined,
   })
 
   const responseBody = await response.json().catch(() => null)
@@ -156,6 +159,10 @@ async function postJson<T>(url: string, body: Record<string, unknown>): Promise<
   }
 
   return responseBody as T
+}
+
+function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
+  return request<T>(url, { method: 'POST', body })
 }
 
 export function estimateTask(task: string): Promise<Estimate> {
@@ -198,4 +205,59 @@ export function compareTemperatures(task: string): Promise<TemperatureComparison
 
 export function compareModels(task: string): Promise<ModelComparison> {
   return postJson<ModelComparison>('/api/models', { task })
+}
+
+export interface ChatSummary {
+  id: string
+  title: string
+  created_at: string
+}
+
+export interface AgentMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatDetail {
+  id: string
+  title: string
+  created_at: string
+  messages: AgentMessage[]
+  estimate: Estimate | null
+}
+
+export interface AgentReply {
+  reply: string
+  estimate: Estimate | null
+  title: string
+}
+
+export function listChats(): Promise<ChatSummary[]> {
+  return request<ChatSummary[]>('/api/agent/chats')
+}
+
+export function createChat(): Promise<ChatSummary> {
+  return postJson<ChatSummary>('/api/agent/chats', {})
+}
+
+export function getChat(chatId: string): Promise<ChatDetail> {
+  return request<ChatDetail>(`/api/agent/chats/${chatId}`)
+}
+
+export function deleteChat(chatId: string): Promise<void> {
+  return request<void>(`/api/agent/chats/${chatId}`, { method: 'DELETE' })
+}
+
+export function renameChat(chatId: string, title: string): Promise<ChatSummary> {
+  return request<ChatSummary>(`/api/agent/chats/${chatId}`, {
+    method: 'PATCH',
+    body: { title },
+  })
+}
+
+export function postAgentMessage(
+  chatId: string,
+  message: string,
+): Promise<AgentReply> {
+  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, { message })
 }
