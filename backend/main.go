@@ -24,8 +24,13 @@ func main() {
 		baseURL = "https://llm.effective.land"
 	}
 
+	dataDir := os.Getenv("CHAT_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data/sessions"
+	}
+
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	agent := NewAgent(client)
+	agent := NewAgent(client, NewChatStore(dataDir))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
