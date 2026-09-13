@@ -11,16 +11,46 @@ type EstimateRequest struct {
 	Task string `json:"task"`
 }
 
+// Subtask is one logical piece of a larger task, with its own hour range.
+// Only the agent chat prompt (see agentSystemPrompt in llm.go) asks the model
+// to break a task down this way — the base estimate prompt used by the day
+// 1-5 flows never populates it, so it stays an optional, additive field.
+type Subtask struct {
+	Name              string  `json:"name"`
+	Description       string  `json:"description"`
+	EstimatedHoursMin float64 `json:"estimated_hours_min"`
+	EstimatedHoursMax float64 `json:"estimated_hours_max"`
+}
+
+// Validate rejects a subtask missing its name/description or with an
+// inverted hour range.
+func (s Subtask) Validate() error {
+	if strings.TrimSpace(s.Name) == "" {
+		return errors.New("subtask name must not be empty")
+	}
+	if strings.TrimSpace(s.Description) == "" {
+		return errors.New("subtask description must not be empty")
+	}
+	if s.EstimatedHoursMin < 0 || s.EstimatedHoursMax < 0 {
+		return errors.New("subtask estimated hours must not be negative")
+	}
+	if s.EstimatedHoursMin > s.EstimatedHoursMax {
+		return errors.New("subtask estimated_hours_min must not exceed estimated_hours_max")
+	}
+	return nil
+}
+
 // EstimateResponse is the structured estimate returned to the frontend.
 // It mirrors the JSON schema requested from the LLM in llm.go.
 type EstimateResponse struct {
-	Summary           string   `json:"summary"`
-	Category          string   `json:"category"`
-	Complexity        string   `json:"complexity"`
-	EstimatedHoursMin float64  `json:"estimated_hours_min"`
-	EstimatedHoursMax float64  `json:"estimated_hours_max"`
-	Risks             []string `json:"risks"`
-	Assumptions       []string `json:"assumptions"`
+	Summary           string    `json:"summary"`
+	Category          string    `json:"category"`
+	Complexity        string    `json:"complexity"`
+	EstimatedHoursMin float64   `json:"estimated_hours_min"`
+	EstimatedHoursMax float64   `json:"estimated_hours_max"`
+	Risks             []string  `json:"risks"`
+	Assumptions       []string  `json:"assumptions"`
+	Subtasks          []Subtask `json:"subtasks,omitempty"`
 }
 
 // CompareRequest is the payload accepted by POST /api/compare. All fields but
@@ -444,5 +474,40 @@ func (e EstimateResponse) Validate() error {
 	if e.Assumptions == nil {
 		return errors.New("assumptions must be an array")
 	}
+	for _, s := range e.Subtasks {
+		if err := s.Validate(); err != nil {
+			return fmt.Errorf("subtasks: %w", err)
+		}
+	}
 	return nil
+}
+
+// ReconcileWithSubtasks forces the top-level hour range to exactly equal the
+// sum of the subtasks' own ranges whenever subtasks are present, since the
+// model's arithmetic is not trustworthy on its own. It reports whether the
+// top-level numbers actually changed, so the caller can log when the model's
+// total disagreed with its own breakdown.
+func (e *EstimateResponse) ReconcileWithSubtasks() bool {
+	if len(e.Subtasks) == 0 {
+		return false
+	}
+
+	var sumMin, sumMax float64
+	for _, s := range e.Subtasks {
+		sumMin += s.EstimatedHoursMin
+		sumMax += s.EstimatedHoursMax
+	}
+
+	const epsilon = 0.05
+	changed := absDiff(e.EstimatedHoursMin, sumMin) > epsilon || absDiff(e.EstimatedHoursMax, sumMax) > epsilon
+	e.EstimatedHoursMin = sumMin
+	e.EstimatedHoursMax = sumMax
+	return changed
+}
+
+func absDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }

@@ -21,11 +21,17 @@ The user describes a development task in a chat interface; a Go-side `Agent`
 entity (`backend/agent.go`) owns the conversation, calls the company LiteLLM
 gateway, validates the model's JSON response against the app schema, and
 returns a preliminary estimate (summary, category, complexity, hour range,
-risks, assumptions) plus a conversational reply. Follow-up messages in the
-same chat reuse its full history, so the user can refine the estimate by
-adding details or constraints instead of resubmitting a whole new task.
-Several chats can be open at once, each with its own isolated history
-(in-memory only for now — see [`days/w02-d06-agent.md`](days/w02-d06-agent.md)).
+risks, assumptions, and — for large enough tasks — a subtask breakdown with
+its own per-subtask hour range) plus a conversational reply. Follow-up
+messages in the same chat reuse its full history plus the exact current
+estimate, so the user can refine the estimate, or ask "how long will subtask
+X take", and get an answer grounded in the real numbers rather than a guess.
+Several chats can be open at once, each with its own isolated history.
+
+Every chat is persisted to disk as it's used (one JSON file per chat under
+`backend/data/sessions/`, path configurable via `CHAT_DATA_DIR`) and reloaded
+on startup, so restarting the backend does not lose any conversation — see
+[`days/w02-d07-context-persistence.md`](days/w02-d07-context-persistence.md).
 
 This is a **preliminary, generic AI estimate**. There is no user history yet, so
 nothing here is personalized. See [`docs/concept.md`](docs/concept.md) for the

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUp } from 'lucide-react'
 
 import emptyStateGif from '@/assets/empty_state.gif'
 import { ChatEstimateCard } from '@/components/chat-estimate-card'
@@ -126,16 +125,15 @@ export function ChatPanel({
               onKeyDown={handleKeyDown}
               placeholder="Опишите задачу или уточните детали…"
               rows={1}
-              className="block max-h-[200px] min-h-11 w-full resize-none overflow-hidden rounded-lg border border-input bg-transparent py-2.5 pr-14 pl-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="block max-h-[200px] min-h-11 w-full resize-none overflow-hidden rounded-lg border border-input bg-transparent py-2.5 pr-24 pl-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
             />
             <Button
               type="submit"
-              size="icon"
+              size="sm"
               disabled={!draft.trim() || isSending}
-              title="Отправить"
               className="absolute right-1.5 bottom-1.5"
             >
-              <ArrowUp className="h-4 w-4" />
+              {isSending ? 'Отправляем…' : 'Отправить'}
             </Button>
           </div>
         </form>

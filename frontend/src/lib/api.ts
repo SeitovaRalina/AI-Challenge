@@ -1,5 +1,12 @@
 export type Complexity = 'low' | 'medium' | 'high'
 
+export interface Subtask {
+  name: string
+  description: string
+  estimated_hours_min: number
+  estimated_hours_max: number
+}
+
 export interface Estimate {
   summary: string
   category: string
@@ -8,6 +15,7 @@ export interface Estimate {
   estimated_hours_max: number
   risks: string[]
   assumptions: string[]
+  subtasks?: Subtask[]
 }
 
 export interface RawResult {

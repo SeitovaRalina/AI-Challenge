@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -24,8 +25,13 @@ func main() {
 		baseURL = "https://llm.effective.land"
 	}
 
+	dataDir := os.Getenv("CHAT_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data/sessions"
+	}
+
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	agent := NewAgent(client)
+	agent := NewAgent(client, NewChatStore(dataDir))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -47,7 +53,31 @@ func main() {
 	}
 
 	log.Printf("backend listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(mux)))
+	log.Fatal(http.ListenAndServe(":"+port, withCORS(withRequestLog(mux))))
+}
+
+// withRequestLog logs every request's method, path, resulting status, and
+// duration, so backend behavior can be traced from the terminal without
+// attaching a debugger.
+func withRequestLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		log.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+// statusWriter captures the status code a handler writes, since
+// http.ResponseWriter doesn't expose it after the fact.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
 
 // withCORS allows the local Vite dev server to call the API directly.
