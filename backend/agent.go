@@ -77,18 +77,24 @@ type AgentMessage struct {
 
 // Chat is one independent conversation the Agent holds in memory: its own
 // message history and the latest estimate produced within it, isolated from
-// every other chat. LastPromptTokens is the prompt_tokens of the most recent
-// LLM call — the full conversation-so-far as the model actually counted it —
-// and is what PostMessage compares against the agent's context token limit
-// before spending another call; CumulativeTotalTokens/CumulativeCostUsd are a
-// running sum across every turn, for display only.
+// every other chat. LastContextTokens is prompt_tokens + completion_tokens of
+// the most recent LLM call — the full conversation-so-far AND the reply it
+// just produced, since that reply is appended to history and will itself be
+// sent back as part of the prompt on the next turn. It's what PostMessage
+// compares against the agent's context token limit before spending another
+// call, and what the UI shows as "context used" — using prompt_tokens alone
+// would under-count by exactly the size of the last reply, since a reply
+// that was just generated already occupies context space going forward, even
+// though it was never itself sent as part of a prompt yet.
+// CumulativeTotalTokens/CumulativeCostUsd are a running sum across every
+// turn, for display only.
 type Chat struct {
 	ID                    string            `json:"id"`
 	Title                 string            `json:"title"`
 	CreatedAt             time.Time         `json:"created_at"`
 	Messages              []AgentMessage    `json:"messages"`
 	Estimate              *EstimateResponse `json:"estimate"`
-	LastPromptTokens      int               `json:"last_prompt_tokens"`
+	LastContextTokens     int               `json:"last_context_tokens"`
 	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
 	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
 }
@@ -241,16 +247,16 @@ func (a *Agent) GetChat(chatID string) (*Chat, error) {
 // context-overflow guard skipped it), and the chat's running token/cost
 // totals so the frontend never has to re-derive them from message history.
 type AgentReply struct {
-	Reply                      string            `json:"reply"`
-	Estimate                   *EstimateResponse `json:"estimate"`
-	Title                      string            `json:"title"`
-	Usage                      *TokenUsage       `json:"usage"`
-	UserMessageCreatedAt       time.Time         `json:"user_message_created_at"`
-	AssistantMessageCreatedAt  time.Time         `json:"assistant_message_created_at"`
-	LastPromptTokens           int               `json:"last_prompt_tokens"`
-	CumulativeTotalTokens      int               `json:"cumulative_total_tokens"`
-	CumulativeCostUsd          *float64          `json:"cumulative_cost_usd,omitempty"`
-	ContextTokenLimit          int               `json:"context_token_limit"`
+	Reply                     string            `json:"reply"`
+	Estimate                  *EstimateResponse `json:"estimate"`
+	Title                     string            `json:"title"`
+	Usage                     *TokenUsage       `json:"usage"`
+	UserMessageCreatedAt      time.Time         `json:"user_message_created_at"`
+	AssistantMessageCreatedAt time.Time         `json:"assistant_message_created_at"`
+	LastContextTokens         int               `json:"last_context_tokens"`
+	CumulativeTotalTokens     int               `json:"cumulative_total_tokens"`
+	CumulativeCostUsd         *float64          `json:"cumulative_cost_usd,omitempty"`
+	ContextTokenLimit         int               `json:"context_token_limit"`
 }
 
 // PostMessage appends the user's message to chatID's history, asks the LLM
@@ -268,35 +274,40 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	// this is safe.
 	history := append([]AgentMessage(nil), chat.Messages...)
 	currentEstimate := chat.Estimate
-	lastPromptTokens := chat.LastPromptTokens
+	lastContextTokens := chat.LastContextTokens
 	a.mu.Unlock()
 
 	log.Printf("agent: chat %s: turn %d, message length %d", chatID, len(history)/2+1, len(userMessage))
 
 	userSentAt := time.Now()
 
-	// Pre-call overflow guard: the previous turn's prompt_tokens is the
-	// model's own count of the entire conversation as of that call, and this
-	// turn's history is at most a couple of messages larger — close enough to
-	// treat as this turn's starting budget. Rather than let the model write
-	// an unbounded reply and only check the total afterward (which is how
-	// the total can end up past the limit instead of at it), we cap the real
-	// call's max_tokens to whatever room is left — the same way a real
-	// model's context window bounds a single turn's completion — so the
-	// upstream API itself truncates (finish_reason "length") if the answer
-	// would need more room than remains. Below minCompletionBudget there
-	// isn't enough room left for a coherent reply (the model couldn't even
-	// open the JSON envelope), so that case still skips the call entirely,
-	// exactly like a real API's upfront context_length_exceeded rejection.
+	// Pre-call overflow guard: the previous turn's prompt_tokens PLUS its own
+	// completion_tokens is what's actually sitting in history right now — the
+	// reply the model just wrote is appended to the conversation and will
+	// itself be sent back as part of the prompt on the next call, so it
+	// already occupies context space even though it was never sent as a
+	// prompt yet. Using prompt_tokens alone would under-count by exactly the
+	// size of the last reply. This turn's history is at most a couple of
+	// messages larger than that — close enough to treat as this turn's
+	// starting budget. Rather than let the model write an unbounded reply and
+	// only check the total afterward (which is how the total can end up past
+	// the limit instead of at it), we cap the real call's max_tokens to
+	// whatever room is left — the same way a real model's context window
+	// bounds a single turn's completion — so the upstream API itself
+	// truncates (finish_reason "length") if the answer would need more room
+	// than remains. Below minCompletionBudget there isn't enough room left
+	// for a coherent reply (the model couldn't even open the JSON envelope),
+	// so that case still skips the call entirely, exactly like a real API's
+	// upfront context_length_exceeded rejection.
 	const minCompletionBudget = 64
 	remainingBudget := 0
 	if a.contextTokenLimit > 0 {
-		remainingBudget = a.contextTokenLimit - lastPromptTokens
+		remainingBudget = a.contextTokenLimit - lastContextTokens
 	}
 	if a.contextTokenLimit > 0 && remainingBudget < minCompletionBudget {
 		log.Printf("agent: chat %s: context limit reached (%d/%d tokens, %d left), skipping LLM call",
-			chatID, lastPromptTokens, a.contextTokenLimit, remainingBudget)
-		reply := contextFullReplyText(lastPromptTokens, a.contextTokenLimit)
+			chatID, lastContextTokens, a.contextTokenLimit, remainingBudget)
+		reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
 		return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
 	}
 
@@ -331,7 +342,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		// surfacing as a 502 to the user.
 		if errors.Is(err, ErrContextOverflow) {
 			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
-			reply := contextFullReplyText(lastPromptTokens, a.contextTokenLimit)
+			reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
 			return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
 		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
@@ -356,7 +367,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			log.Printf("agent: chat %s: truncated response was unusable (finish_reason=length, %d-token budget): %v", chatID, maxTokens, err)
 			// The call genuinely happened and cost real tokens — usage is
 			// still populated even though the content came out unusable, so
-			// the chat's running totals must reflect it (chat.LastPromptTokens
+			// the chat's running totals must reflect it (chat.LastContextTokens
 			// included) instead of staying frozen at the stale pre-call value.
 			usage := tokenUsageFrom(completion.Usage)
 			reply := truncatedReplyText(maxTokens)
@@ -389,7 +400,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.LastPromptTokens = usage.PromptTokens
+		chat.LastContextTokens = usage.TotalTokens
 		chat.CumulativeTotalTokens += usage.TotalTokens
 		if usage.CostUsd != nil {
 			if chat.CumulativeCostUsd == nil {
@@ -412,7 +423,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		Usage:                     usage,
 		UserMessageCreatedAt:      userSentAt,
 		AssistantMessageCreatedAt: assistantSentAt,
-		LastPromptTokens:          chat.LastPromptTokens,
+		LastContextTokens:         chat.LastContextTokens,
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
@@ -471,7 +482,7 @@ func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSe
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.LastPromptTokens = usage.PromptTokens
+		chat.LastContextTokens = usage.TotalTokens
 		chat.CumulativeTotalTokens += usage.TotalTokens
 		if usage.CostUsd != nil {
 			if chat.CumulativeCostUsd == nil {
@@ -493,7 +504,7 @@ func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSe
 		Usage:                     usage,
 		UserMessageCreatedAt:      userSentAt,
 		AssistantMessageCreatedAt: assistantSentAt,
-		LastPromptTokens:          chat.LastPromptTokens,
+		LastContextTokens:         chat.LastContextTokens,
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
@@ -595,7 +606,7 @@ type ChatDetail struct {
 	CreatedAt             time.Time         `json:"created_at"`
 	Messages              []AgentMessage    `json:"messages"`
 	Estimate              *EstimateResponse `json:"estimate"`
-	LastPromptTokens      int               `json:"last_prompt_tokens"`
+	LastContextTokens     int               `json:"last_context_tokens"`
 	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
 	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
 	ContextTokenLimit     int               `json:"context_token_limit"`
@@ -608,7 +619,7 @@ func chatDetail(c *Chat, contextTokenLimit int) ChatDetail {
 		CreatedAt:             c.CreatedAt,
 		Messages:              c.Messages,
 		Estimate:              c.Estimate,
-		LastPromptTokens:      c.LastPromptTokens,
+		LastContextTokens:     c.LastContextTokens,
 		CumulativeTotalTokens: c.CumulativeTotalTokens,
 		CumulativeCostUsd:     c.CumulativeCostUsd,
 		ContextTokenLimit:     contextTokenLimit,

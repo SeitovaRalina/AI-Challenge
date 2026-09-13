@@ -241,7 +241,7 @@ export interface ChatDetail {
   created_at: string
   messages: AgentMessage[]
   estimate: Estimate | null
-  last_prompt_tokens: number
+  last_context_tokens: number
   cumulative_total_tokens: number
   cumulative_cost_usd?: number
   context_token_limit: number
@@ -254,7 +254,7 @@ export interface AgentReply {
   usage: TokenUsage | null
   user_message_created_at: string
   assistant_message_created_at: string
-  last_prompt_tokens: number
+  last_context_tokens: number
   cumulative_total_tokens: number
   cumulative_cost_usd?: number
   context_token_limit: number

@@ -32,7 +32,7 @@ interface ChatPanelProps {
   isSending: boolean
   error: string | null
   onSend: (message: string) => void
-  lastPromptTokens: number
+  lastContextTokens: number
   cumulativeTotalTokens: number
   cumulativeCostUsd?: number
   contextTokenLimit: number
@@ -44,7 +44,7 @@ export function ChatPanel({
   isSending,
   error,
   onSend,
-  lastPromptTokens,
+  lastContextTokens,
   cumulativeTotalTokens,
   cumulativeCostUsd,
   contextTokenLimit,
@@ -190,7 +190,7 @@ export function ChatPanel({
           {tokensPopupOpen && (
             <TokensPopup
               lastUsage={lastUsage}
-              lastPromptTokens={lastPromptTokens}
+              lastContextTokens={lastContextTokens}
               contextTokenLimit={contextTokenLimit}
               cumulativeTotalTokens={cumulativeTotalTokens}
               cumulativeCostUsd={cumulativeCostUsd}
@@ -253,7 +253,7 @@ export function ChatPanel({
           {contextTokenLimit > 0 && (
             <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
               <span>
-                Контекст: {lastPromptTokens.toLocaleString('ru-RU')} /{' '}
+                Контекст: {lastContextTokens.toLocaleString('ru-RU')} /{' '}
                 {contextTokenLimit.toLocaleString('ru-RU')}
               </span>
               {cumulativeCostUsd != null && (
@@ -319,14 +319,14 @@ function MessageBubble({ message }: { message: AgentMessage }) {
 // to appear; everywhere else token info stays plain text.
 function TokensPopup({
   lastUsage,
-  lastPromptTokens,
+  lastContextTokens,
   contextTokenLimit,
   cumulativeTotalTokens,
   cumulativeCostUsd,
   onClose,
 }: {
   lastUsage?: TokenUsage
-  lastPromptTokens: number
+  lastContextTokens: number
   contextTokenLimit: number
   cumulativeTotalTokens: number
   cumulativeCostUsd?: number
@@ -334,7 +334,7 @@ function TokensPopup({
 }) {
   const percent =
     contextTokenLimit > 0
-      ? Math.min(100, Math.round((lastPromptTokens / contextTokenLimit) * 100))
+      ? Math.min(100, Math.round((lastContextTokens / contextTokenLimit) * 100))
       : 0
   const barColor =
     percent >= 90 ? 'bg-destructive' : percent >= 70 ? 'bg-warning' : 'bg-primary'
@@ -359,7 +359,7 @@ function TokensPopup({
             <span className="text-muted-foreground">Контекст диалога</span>
             {contextTokenLimit > 0 ? (
               <span className="font-mono tabular-nums text-foreground">
-                {lastPromptTokens.toLocaleString('ru-RU')} /{' '}
+                {lastContextTokens.toLocaleString('ru-RU')} /{' '}
                 {contextTokenLimit.toLocaleString('ru-RU')}
               </span>
             ) : (

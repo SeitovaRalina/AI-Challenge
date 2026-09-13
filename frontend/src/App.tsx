@@ -140,7 +140,7 @@ function App() {
             ...created,
             messages: [],
             estimate: null,
-            last_prompt_tokens: 0,
+            last_context_tokens: 0,
             cumulative_total_tokens: 0,
             context_token_limit: 0,
           })
@@ -170,7 +170,7 @@ function App() {
         ...created,
         messages: [],
         estimate: null,
-        last_prompt_tokens: 0,
+        last_context_tokens: 0,
         cumulative_total_tokens: 0,
         context_token_limit: 0,
       })
@@ -277,7 +277,7 @@ function App() {
           messages,
           estimate: reply.estimate,
           title: reply.title,
-          last_prompt_tokens: reply.last_prompt_tokens,
+          last_context_tokens: reply.last_context_tokens,
           cumulative_total_tokens: reply.cumulative_total_tokens,
           cumulative_cost_usd: reply.cumulative_cost_usd,
           context_token_limit: reply.context_token_limit,
@@ -425,7 +425,7 @@ function App() {
               isSending={chatSending}
               error={chatError}
               onSend={handleSendMessage}
-              lastPromptTokens={activeChat?.last_prompt_tokens ?? 0}
+              lastContextTokens={activeChat?.last_context_tokens ?? 0}
               cumulativeTotalTokens={activeChat?.cumulative_total_tokens ?? 0}
               cumulativeCostUsd={activeChat?.cumulative_cost_usd}
               contextTokenLimit={activeChat?.context_token_limit ?? 0}
