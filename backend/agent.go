@@ -41,7 +41,9 @@ breaking the task into its logical pieces. Only break a task down when it is
 actually large enough to benefit from that (roughly, when your own total
 estimate is beyond a day or two of work, or the task clearly bundles several
 distinct pieces of work) — for a small, atomic task, "subtasks" must be an
-empty array rather than artificially split into filler pieces. Every "reply"
+empty array rather than artificially split into filler pieces. The top-level
+"estimated_hours_min"/"estimated_hours_max" MUST equal the sum of all
+subtasks' own min/max hours — never a separately guessed number. Every "reply"
 you write afterward, including when "estimate" is null, MUST stay consistent
 with the current subtasks: if the user asks how long a specific subtask will
 take, answer from its exact estimated_hours_min/estimated_hours_max instead
@@ -110,6 +112,7 @@ func NewAgent(client *LiteLLMClient, store *ChatStore) *Agent {
 		agent.chats[chat.ID] = chat
 		agent.order = append(agent.order, chat.ID)
 	}
+	log.Printf("agent: restored %d chat(s) from %s", len(chats), store.dir)
 	return agent
 }
 
@@ -136,6 +139,7 @@ func (a *Agent) CreateChat() ChatSummary {
 	if err := a.store.Save(chat); err != nil {
 		log.Printf("agent: failed to persist new chat %s: %v", chat.ID, err)
 	}
+	log.Printf("agent: created chat %s", chat.ID)
 
 	return chatSummary(chat)
 }
@@ -169,6 +173,7 @@ func (a *Agent) DeleteChat(chatID string) error {
 			break
 		}
 	}
+	log.Printf("agent: deleted chat %s", chatID)
 	return a.store.Delete(chatID)
 }
 
@@ -231,6 +236,8 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	currentEstimate := chat.Estimate
 	a.mu.Unlock()
 
+	log.Printf("agent: chat %s: turn %d, message length %d", chatID, len(history)/2+1, len(userMessage))
+
 	messages := make([]chatMessage, 0, len(history)+3)
 	messages = append(messages, chatMessage{Role: "system", Content: agentSystemPrompt})
 	// Re-stating the exact current estimate (subtasks included) as its own
@@ -249,13 +256,17 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
+	callStart := time.Now()
 	content, err := a.client.chatComplete(ctx, messages, 0.2, 0, nil)
 	if err != nil {
+		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
 	}
+	log.Printf("agent: chat %s: LLM call took %s", chatID, time.Since(callStart).Round(time.Millisecond))
 
 	turn, err := parseAgentTurn(content)
 	if err != nil {
+		log.Printf("agent: chat %s: failed to parse LLM turn: %v", chatID, err)
 		return nil, err
 	}
 
@@ -268,6 +279,8 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	)
 	if turn.Estimate != nil {
 		chat.Estimate = turn.Estimate
+		log.Printf("agent: chat %s: estimate updated, %.1f-%.1fh, %d subtask(s)",
+			chatID, turn.Estimate.EstimatedHoursMin, turn.Estimate.EstimatedHoursMax, len(turn.Estimate.Subtasks))
 	}
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
@@ -300,6 +313,10 @@ func parseAgentTurn(raw string) (*agentTurn, error) {
 	if turn.Estimate != nil {
 		if err := turn.Estimate.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
+		}
+		if adjusted := turn.Estimate.ReconcileWithSubtasks(); adjusted {
+			log.Printf("agent: model's total estimate did not match the sum of its subtasks, corrected to %.1f-%.1fh",
+				turn.Estimate.EstimatedHoursMin, turn.Estimate.EstimatedHoursMax)
 		}
 	}
 

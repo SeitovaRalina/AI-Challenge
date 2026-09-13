@@ -481,3 +481,33 @@ func (e EstimateResponse) Validate() error {
 	}
 	return nil
 }
+
+// ReconcileWithSubtasks forces the top-level hour range to exactly equal the
+// sum of the subtasks' own ranges whenever subtasks are present, since the
+// model's arithmetic is not trustworthy on its own. It reports whether the
+// top-level numbers actually changed, so the caller can log when the model's
+// total disagreed with its own breakdown.
+func (e *EstimateResponse) ReconcileWithSubtasks() bool {
+	if len(e.Subtasks) == 0 {
+		return false
+	}
+
+	var sumMin, sumMax float64
+	for _, s := range e.Subtasks {
+		sumMin += s.EstimatedHoursMin
+		sumMax += s.EstimatedHoursMax
+	}
+
+	const epsilon = 0.05
+	changed := absDiff(e.EstimatedHoursMin, sumMin) > epsilon || absDiff(e.EstimatedHoursMax, sumMax) > epsilon
+	e.EstimatedHoursMin = sumMin
+	e.EstimatedHoursMax = sumMax
+	return changed
+}
+
+func absDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
