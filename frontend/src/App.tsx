@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { PanelLeftOpen } from 'lucide-react'
 
+import { ChatPanel } from '@/components/chat-panel'
 import { CompareOptionsForm } from '@/components/compare-options'
 import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
@@ -10,6 +12,7 @@ import {
   type ReasoningReaction,
 } from '@/components/reasoning-comparison'
 import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
+import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
@@ -19,7 +22,15 @@ import {
   compareModels,
   compareReasoning,
   compareTemperatures,
+  createChat,
+  deleteChat,
   estimateTask,
+  getChat,
+  listChats,
+  postAgentMessage,
+  renameChat,
+  type ChatDetail,
+  type ChatSummary,
   type Comparison,
   type CompareOptions,
   type Estimate,
@@ -28,10 +39,9 @@ import {
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
 } from '@/lib/api'
-import { cn } from 'cn'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'estimate' | 'compare' | 'reasoning' | 'temperature' | 'models'
+type Mode = 'chat' | DemoMode
 
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
   maxTokens: 1000,
@@ -41,35 +51,47 @@ const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
 }
 
 const MODE_COPY: Record<Mode, { title: string; description: string }> = {
-  estimate: {
-    title: 'Оценка задачи разработки',
+  chat: {
+    title: 'Ассистент по оценке задач',
     description:
-      'Получите предварительную AI-оценку задачи разработки. Это общая оценка — она пока ничего не знает о вашей личной истории работы.',
+      'Опишите задачу разработки в чате — ассистент даст предварительную AI-оценку и будет уточнять её по мере разговора. Это общая оценка — она пока ничего не знает о вашей личной истории работы.',
+  },
+  estimate: {
+    title: 'День 1 — Оценка задачи разработки (демо)',
+    description:
+      'Первая, одноразовая версия оценки: один запрос — один ответ, без диалога. Текущий рабочий вариант — чат слева.',
   },
   compare: {
-    title: 'Сравнение форматов ответа',
+    title: 'День 2 — Сравнение форматов ответа (демо)',
     description:
       'Один и тот же запрос уходит в LLM дважды: без ограничений формата и с явным форматом, лимитом длины и условием завершения.',
   },
   reasoning: {
-    title: 'Способы рассуждения',
+    title: 'День 3 — Способы рассуждения (демо)',
     description:
       'Одна и та же задача решается через LLM четырьмя способами: прямой ответ, пошаговое рассуждение, мета-промпт (модель сама составляет промпт) и группа экспертов.',
   },
   temperature: {
-    title: 'Температура',
+    title: 'День 4 — Температура (демо)',
     description:
       'Один и тот же запрос уходит в LLM трижды — с temperature 0, 0.7 и 1.2, — чтобы сравнить точность, креативность и разнообразие ответов и понять, для каких задач подходит каждая настройка.',
   },
   models: {
-    title: 'Версии моделей',
+    title: 'День 5 — Версии моделей (демо)',
     description:
       'Один и тот же запрос решают три модели возрастающей мощности — от слабой до сильной, — чтобы сравнить качество, скорость и стоимость ответа и понять, когда доплата за более мощную модель оправдана.',
   },
 }
 
 function App() {
-  const [mode, setMode] = useState<Mode>('estimate')
+  const [mode, setMode] = useState<Mode>('chat')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  const [chats, setChats] = useState<ChatSummary[]>([])
+  const [activeChatId, setActiveChatId] = useState<string | null>(null)
+  const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
+  const [chatSending, setChatSending] = useState(false)
+  const [chatError, setChatError] = useState<string | null>(null)
 
   const [estimateStatus, setEstimateStatus] = useState<Status>('idle')
   const [estimate, setEstimate] = useState<Estimate | null>(null)
@@ -103,6 +125,132 @@ function App() {
   const [modelsComparison, setModelsComparison] =
     useState<ModelComparisonData | null>(null)
   const [modelsError, setModelsError] = useState<string | null>(null)
+
+  // On first load, resume the most recently created chat, or start a fresh
+  // one if none exist yet.
+  useEffect(() => {
+    async function init() {
+      try {
+        const existing = await listChats()
+        if (existing.length === 0) {
+          const created = await createChat()
+          setChats([created])
+          setActiveChatId(created.id)
+          setActiveChat({ ...created, messages: [], estimate: null })
+          return
+        }
+        setChats(existing)
+        const mostRecent = existing[existing.length - 1]
+        const detail = await getChat(mostRecent.id)
+        setActiveChatId(detail.id)
+        setActiveChat(detail)
+      } catch (err) {
+        setChatError(
+          err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+        )
+      }
+    }
+    init()
+  }, [])
+
+  async function handleNewChat() {
+    setMode('chat')
+    try {
+      const created = await createChat()
+      setChats((prev) => [...prev, created])
+      setActiveChatId(created.id)
+      setActiveChat({ ...created, messages: [], estimate: null })
+      setChatError(null)
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+    }
+  }
+
+  async function handleSelectChat(id: string) {
+    setMode('chat')
+    if (id === activeChatId) return
+    try {
+      const detail = await getChat(id)
+      setActiveChatId(id)
+      setActiveChat(detail)
+      setChatError(null)
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+    }
+  }
+
+  async function handleRenameChat(id: string, title: string) {
+    try {
+      const updated = await renameChat(id, title)
+      setChats((prev) => prev.map((chat) => (chat.id === id ? updated : chat)))
+      setActiveChat((prev) => (prev && prev.id === id ? { ...prev, title: updated.title } : prev))
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+    }
+  }
+
+  async function handleDeleteChat(id: string) {
+    try {
+      await deleteChat(id)
+      const remaining = chats.filter((chat) => chat.id !== id)
+      setChats(remaining)
+
+      if (id !== activeChatId) return
+
+      if (remaining.length === 0) {
+        await handleNewChat()
+        return
+      }
+      const next = remaining[remaining.length - 1]
+      const detail = await getChat(next.id)
+      setActiveChatId(next.id)
+      setActiveChat(detail)
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+    }
+  }
+
+  async function handleSendMessage(message: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+
+    setActiveChat((prev) =>
+      prev ? { ...prev, messages: [...prev.messages, { role: 'user', content: message }] } : prev,
+    )
+    setChatSending(true)
+    setChatError(null)
+
+    try {
+      const reply = await postAgentMessage(chatId, message)
+      setActiveChat((prev) =>
+        prev
+          ? {
+              ...prev,
+              messages: [...prev.messages, { role: 'assistant', content: reply.reply }],
+              estimate: reply.estimate,
+              title: reply.title,
+            }
+          : prev,
+      )
+      setChats((prev) =>
+        prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
+      )
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
+      )
+    } finally {
+      setChatSending(false)
+    }
+  }
 
   async function handleEstimateSubmit(task: string) {
     setEstimateStatus('loading')
@@ -188,207 +336,175 @@ function App() {
     }
   }
 
+  const activeDemo = mode === 'chat' ? null : mode
+
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b border-border">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
-              W
-            </span>
-            <span className="text-sm font-medium text-foreground">
-              Work Intelligence
-            </span>
-          </div>
-          <nav className="flex items-center gap-4 text-sm text-muted-foreground">
-            <span className="text-foreground">Оценка</span>
-            <span className="cursor-not-allowed opacity-50">Таймшит</span>
-            <span className="cursor-not-allowed opacity-50">Аналитика</span>
-          </nav>
-        </div>
+    <div className="flex h-screen flex-col bg-background">
+      <header className="flex flex-shrink-0 items-center gap-2 border-b border-border px-6 py-4">
+        {sidebarCollapsed && (
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(false)}
+            title="Показать панель"
+            className="-ml-1 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        )}
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
+          W
+        </span>
+        <span className="text-sm font-medium text-foreground">
+          Work Intelligence
+        </span>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-10">
-        <div className="mb-6 max-w-2xl">
-          <h1 className="text-2xl font-medium text-foreground">
-            {MODE_COPY[mode].title}
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {MODE_COPY[mode].description}
-          </p>
-        </div>
-
-        <div className="mb-8 inline-flex rounded-lg border border-border p-1 text-sm">
-          <button
-            type="button"
-            onClick={() => setMode('estimate')}
-            className={cn(
-              'rounded-md px-3 py-1.5 font-medium transition-colors',
-              mode === 'estimate'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            Оценка
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('compare')}
-            className={cn(
-              'rounded-md px-3 py-1.5 font-medium transition-colors',
-              mode === 'compare'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            Сравнение форматов
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('reasoning')}
-            className={cn(
-              'rounded-md px-3 py-1.5 font-medium transition-colors',
-              mode === 'reasoning'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            Способы рассуждения
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('temperature')}
-            className={cn(
-              'rounded-md px-3 py-1.5 font-medium transition-colors',
-              mode === 'temperature'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            Температура
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('models')}
-            className={cn(
-              'rounded-md px-3 py-1.5 font-medium transition-colors',
-              mode === 'models'
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            Версии моделей
-          </button>
-        </div>
-
-        {mode === 'estimate' && (
-          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-            <TaskForm
-              onSubmit={handleEstimateSubmit}
-              isSubmitting={estimateStatus === 'loading'}
-            />
-            <EstimateResult
-              status={estimateStatus}
-              estimate={estimate}
-              error={estimateError}
-            />
-          </div>
+      <div className="flex flex-1 overflow-hidden">
+        {!sidebarCollapsed && (
+          <Sidebar
+            chats={chats}
+            activeChatId={mode === 'chat' ? activeChatId : null}
+            activeDemo={activeDemo}
+            onNewChat={handleNewChat}
+            onSelectChat={handleSelectChat}
+            onSelectDemo={(demo) => setMode(demo)}
+            onCollapse={() => setSidebarCollapsed(true)}
+            onRenameChat={handleRenameChat}
+            onDeleteChat={handleDeleteChat}
+          />
         )}
 
-        {mode === 'compare' && (
-          <div className="flex flex-col gap-8">
-            <div className="grid grid-cols-1 gap-8 lg:grid-cols-[2fr_1fr]">
-              <TaskForm
-                onSubmit={handleCompareSubmit}
-                isSubmitting={compareStatus === 'loading'}
-                submitLabel="Сравнить"
-                submittingLabel="Сравниваем…"
-                noteBeforeSubmit={
-                  <p className="font-mono text-xs text-primary">
-                    Запрос «с ограничениями» отправится с параметрами:
-                    max_tokens={compareOptions.maxTokens}, max_items=
-                    {compareOptions.maxItems}, temperature=
-                    {compareOptions.temperature}, stop_instruction=
-                    {compareOptions.useStopInstruction ? 'да' : 'нет'}
-                  </p>
-                }
-              />
-              <CompareOptionsForm
-                value={compareOptions}
-                onChange={setCompareOptions}
-              />
+        {mode === 'chat' ? (
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ChatPanel
+              messages={activeChat?.messages ?? []}
+              estimate={activeChat?.estimate ?? null}
+              isSending={chatSending}
+              error={chatError}
+              onSend={handleSendMessage}
+            />
+          </main>
+        ) : (
+          <main className="flex-1 overflow-y-auto px-6 py-8">
+            <div className="mb-6 max-w-2xl">
+              <h1 className="text-2xl font-medium text-foreground">
+                {MODE_COPY[mode].title}
+              </h1>
+              <p className="mt-1.5 text-sm text-muted-foreground">
+                {MODE_COPY[mode].description}
+              </p>
             </div>
-            <FormatComparison
-              status={compareStatus}
-              comparison={comparison}
-              error={compareError}
-              uncontrolledReused={uncontrolledReused}
-            />
-          </div>
-        )}
 
-        {mode === 'reasoning' && (
-          <div className="flex flex-col gap-8">
+          {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
               <TaskForm
-                onSubmit={handleReasoningSubmit}
-                isSubmitting={reasoningStatus === 'loading'}
-                submitLabel="Решить"
-                submittingLabel="Решаем…"
+                onSubmit={handleEstimateSubmit}
+                isSubmitting={estimateStatus === 'loading'}
               />
-              <ReasoningStatusPanel
+              <EstimateResult
+                status={estimateStatus}
+                estimate={estimate}
+                error={estimateError}
+              />
+            </div>
+          )}
+
+          {mode === 'compare' && (
+            <div className="flex flex-col gap-8">
+              <div className="grid grid-cols-1 gap-8 lg:grid-cols-[2fr_1fr]">
+                <TaskForm
+                  onSubmit={handleCompareSubmit}
+                  isSubmitting={compareStatus === 'loading'}
+                  submitLabel="Сравнить"
+                  submittingLabel="Сравниваем…"
+                  noteBeforeSubmit={
+                    <p className="font-mono text-xs text-primary">
+                      Запрос «с ограничениями» отправится с параметрами:
+                      max_tokens={compareOptions.maxTokens}, max_items=
+                      {compareOptions.maxItems}, temperature=
+                      {compareOptions.temperature}, stop_instruction=
+                      {compareOptions.useStopInstruction ? 'да' : 'нет'}
+                    </p>
+                  }
+                />
+                <CompareOptionsForm
+                  value={compareOptions}
+                  onChange={setCompareOptions}
+                />
+              </div>
+              <FormatComparison
+                status={compareStatus}
+                comparison={comparison}
+                error={compareError}
+                uncontrolledReused={uncontrolledReused}
+              />
+            </div>
+          )}
+
+          {mode === 'reasoning' && (
+            <div className="flex flex-col gap-8">
+              <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+                <TaskForm
+                  onSubmit={handleReasoningSubmit}
+                  isSubmitting={reasoningStatus === 'loading'}
+                  submitLabel="Решить"
+                  submittingLabel="Решаем…"
+                />
+                <ReasoningStatusPanel
+                  status={reasoningStatus}
+                  comparison={reasoningComparison}
+                  reaction={reasoningReaction}
+                />
+              </div>
+              <ReasoningComparison
                 status={reasoningStatus}
                 comparison={reasoningComparison}
+                error={reasoningError}
                 reaction={reasoningReaction}
+                onReactionChange={setReasoningReaction}
               />
             </div>
-            <ReasoningComparison
-              status={reasoningStatus}
-              comparison={reasoningComparison}
-              error={reasoningError}
-              reaction={reasoningReaction}
-              onReactionChange={setReasoningReaction}
-            />
-          </div>
-        )}
+          )}
 
-        {mode === 'temperature' && (
-          <div className="flex flex-col gap-8">
-            <div className="max-w-2xl">
-              <TaskForm
-                onSubmit={handleTemperatureSubmit}
-                isSubmitting={temperatureStatus === 'loading'}
-                submitLabel="Сравнить"
-                submittingLabel="Сравниваем…"
+          {mode === 'temperature' && (
+            <div className="flex flex-col gap-8">
+              <div className="max-w-2xl">
+                <TaskForm
+                  onSubmit={handleTemperatureSubmit}
+                  isSubmitting={temperatureStatus === 'loading'}
+                  submitLabel="Сравнить"
+                  submittingLabel="Сравниваем…"
+                />
+              </div>
+              <TemperatureComparison
+                status={temperatureStatus}
+                comparison={temperatureComparison}
+                error={temperatureError}
               />
             </div>
-            <TemperatureComparison
-              status={temperatureStatus}
-              comparison={temperatureComparison}
-              error={temperatureError}
-            />
-          </div>
-        )}
+          )}
 
-        {mode === 'models' && (
-          <div className="flex flex-col gap-8">
-            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-              <TaskForm
-                onSubmit={handleModelsSubmit}
-                isSubmitting={modelsStatus === 'loading'}
-                submitLabel="Сравнить"
-                submittingLabel="Сравниваем…"
+          {mode === 'models' && (
+            <div className="flex flex-col gap-8">
+              <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+                <TaskForm
+                  onSubmit={handleModelsSubmit}
+                  isSubmitting={modelsStatus === 'loading'}
+                  submitLabel="Сравнить"
+                  submittingLabel="Сравниваем…"
+                />
+                <ModelLineup />
+              </div>
+              <ModelComparison
+                status={modelsStatus}
+                comparison={modelsComparison}
+                error={modelsError}
               />
-              <ModelLineup />
             </div>
-            <ModelComparison
-              status={modelsStatus}
-              comparison={modelsComparison}
-              error={modelsError}
-            />
-          </div>
+          )}
+          </main>
         )}
-      </main>
+      </div>
     </div>
   )
 }

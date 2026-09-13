@@ -25,6 +25,7 @@ func main() {
 	}
 
 	client := NewLiteLLMClient(baseURL, apiKey, model)
+	agent := NewAgent(client)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -33,6 +34,12 @@ func main() {
 	mux.HandleFunc("/api/reasoning", reasoningHandler(client))
 	mux.HandleFunc("/api/temperature", temperatureHandler(client))
 	mux.HandleFunc("/api/models", modelsHandler(client))
+	mux.HandleFunc("GET /api/agent/chats", listChatsHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats", createChatHandler(agent))
+	mux.HandleFunc("GET /api/agent/chats/{id}", getChatHandler(agent))
+	mux.HandleFunc("DELETE /api/agent/chats/{id}", deleteChatHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}", renameChatHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -52,7 +59,7 @@ func withCORS(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

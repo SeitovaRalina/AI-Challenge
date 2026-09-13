@@ -243,6 +243,127 @@ func reasoningHandler(client *LiteLLMClient) http.HandlerFunc {
 	}
 }
 
+// agentMessageRequest is the payload accepted by POST /api/agent/chats/{id}/messages.
+type agentMessageRequest struct {
+	Message string `json:"message"`
+}
+
+// createChatHandler starts a new, empty chat and returns its summary.
+func createChatHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, agent.CreateChat())
+	}
+}
+
+// listChatsHandler returns every chat's summary, so the sidebar chat list can
+// be populated and a chat resumed by selecting it.
+func listChatsHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, agent.ListChats())
+	}
+}
+
+// getChatHandler returns one chat's full history and current estimate.
+func getChatHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+		chat, err := agent.GetChat(chatID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "чат не найден")
+			return
+		}
+		writeJSON(w, http.StatusOK, chatDetail(chat))
+	}
+}
+
+// deleteChatHandler permanently removes a chat and its history.
+func deleteChatHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+		if err := agent.DeleteChat(chatID); err != nil {
+			writeError(w, http.StatusNotFound, "чат не найден")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// renameChatRequest is the payload accepted by PATCH /api/agent/chats/{id}.
+type renameChatRequest struct {
+	Title string `json:"title"`
+}
+
+// renameChatHandler sets a chat's display title to a user-chosen value.
+func renameChatHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req renameChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		title := strings.TrimSpace(req.Title)
+		if title == "" {
+			writeError(w, http.StatusBadRequest, "название не может быть пустым")
+			return
+		}
+
+		summary, err := agent.RenameChat(chatID, title)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "чат не найден")
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+	}
+}
+
+// postAgentMessageHandler sends one chat message through the Agent: it
+// appends to that chat's own history, calls the LLM with the full
+// conversation so far, and returns the assistant's reply plus the chat's
+// current estimate.
+func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req agentMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		message := strings.TrimSpace(req.Message)
+		if message == "" {
+			writeError(w, http.StatusBadRequest, "сообщение не может быть пустым")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		reply, err := agent.PostMessage(ctx, chatID, message)
+		if err != nil {
+			log.Printf("agent message failed: %v", err)
+			switch {
+			case errors.Is(err, ErrChatNotFound):
+				writeError(w, http.StatusNotFound, "чат не найден")
+			case errors.Is(err, ErrUpstreamAuth):
+				writeError(w, http.StatusBadGateway, "ошибка авторизации LLM")
+			case errors.Is(err, ErrUpstreamUnavailable):
+				writeError(w, http.StatusBadGateway, "сервис LLM сейчас недоступен")
+			case errors.Is(err, ErrInvalidOutput):
+				writeError(w, http.StatusBadGateway, "LLM вернул некорректный ответ")
+			default:
+				writeError(w, http.StatusInternalServerError, "внутренняя ошибка")
+			}
+			return
+		}
+
+		writeJSON(w, http.StatusOK, reply)
+	}
+}
+
 // modelsHandler runs the day-5 model-version comparison: the same task
 // solved by three models of increasing capability tier (weak, medium,
 // strong), so measured performance and judged answer quality can be
