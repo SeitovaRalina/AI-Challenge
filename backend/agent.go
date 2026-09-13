@@ -28,6 +28,11 @@ outside it:
   "estimate": <the EstimateResponse object described above> or null
 }
 
+This applies even to a plain conversational answer that changes nothing (a
+clarifying question, summing existing subtask hours, small talk) — NEVER
+respond with bare prose outside this envelope, even then; put that prose in
+"reply" and set "estimate" to null.
+
 Set "estimate" to a full, updated EstimateResponse object only when this
 message is the task description itself, or when the user's message changes
 the estimate (new details, constraints, or an explicit request to redo it).
@@ -266,7 +271,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 
 	turn, err := parseAgentTurn(content)
 	if err != nil {
-		log.Printf("agent: chat %s: failed to parse LLM turn: %v", chatID, err)
+		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(content))
 		return nil, err
 	}
 
@@ -305,7 +310,17 @@ func parseAgentTurn(raw string) (*agentTurn, error) {
 
 	var turn agentTurn
 	if err := json.Unmarshal([]byte(cleaned), &turn); err != nil {
-		return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
+		// For a plain conversational follow-up (e.g. "sum these subtask
+		// hours for me") the model sometimes drops the JSON envelope
+		// entirely and just answers in prose. Treat that prose as the
+		// reply instead of failing the whole turn — it's still a useful
+		// answer, and no estimate update was implied anyway.
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: model did not return valid JSON: %v", ErrInvalidOutput, err)
+		}
+		log.Printf("agent: model dropped the JSON envelope, falling back to its raw text as the reply")
+		return &agentTurn{Reply: trimmed}, nil
 	}
 	if strings.TrimSpace(turn.Reply) == "" {
 		return nil, fmt.Errorf("%w: reply must not be empty", ErrInvalidOutput)
@@ -333,6 +348,16 @@ func chatTitleFrom(firstMessage string) string {
 		return title
 	}
 	return string(runes[:maxRunes]) + "…"
+}
+
+// truncateForLog caps a string for safe inclusion in a log line, since a raw
+// LLM response can be several KB long.
+func truncateForLog(s string) string {
+	const maxLen = 500
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 func chatSummary(c *Chat) ChatSummary {

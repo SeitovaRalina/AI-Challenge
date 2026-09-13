@@ -296,21 +296,30 @@ func (c *LiteLLMClient) CompareFormats(ctx context.Context, task string, opts Co
 }
 
 // stripCodeFences defensively removes ```json ... ``` wrapping some models add
-// despite being instructed to return raw JSON.
+// despite being instructed to return raw JSON, and strips any prose a model
+// prepended or appended around the JSON object itself (e.g. "Конечно, вот
+// оценка: {...}") by slicing from the first '{' to the matching last '}'.
 func stripCodeFences(s string) string {
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "```") {
-		return s
+	if strings.HasPrefix(s, "```") {
+		s = strings.TrimPrefix(s, "```")
+		if nl := strings.IndexByte(s, '\n'); nl != -1 {
+			firstLine := strings.TrimSpace(s[:nl])
+			if firstLine == "json" || firstLine == "" {
+				s = s[nl+1:]
+			}
+		}
+		s = strings.TrimSuffix(strings.TrimSpace(s), "```")
+		s = strings.TrimSpace(s)
 	}
-	s = strings.TrimPrefix(s, "```")
-	if nl := strings.IndexByte(s, '\n'); nl != -1 {
-		firstLine := strings.TrimSpace(s[:nl])
-		if firstLine == "json" || firstLine == "" {
-			s = s[nl+1:]
+	if !strings.HasPrefix(s, "{") {
+		if start := strings.IndexByte(s, '{'); start != -1 {
+			if end := strings.LastIndexByte(s, '}'); end > start {
+				s = s[start : end+1]
+			}
 		}
 	}
-	s = strings.TrimSuffix(strings.TrimSpace(s), "```")
-	return strings.TrimSpace(s)
+	return s
 }
 
 func truncate(s string, n int) string {
