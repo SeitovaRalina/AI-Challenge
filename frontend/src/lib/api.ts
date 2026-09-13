@@ -221,9 +221,18 @@ export interface ChatSummary {
   created_at: string
 }
 
+export interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd?: number
+}
+
 export interface AgentMessage {
   role: 'user' | 'assistant'
   content: string
+  created_at: string
+  usage?: TokenUsage
 }
 
 export interface ChatDetail {
@@ -232,12 +241,23 @@ export interface ChatDetail {
   created_at: string
   messages: AgentMessage[]
   estimate: Estimate | null
+  last_context_tokens: number
+  cumulative_total_tokens: number
+  cumulative_cost_usd?: number
+  context_token_limit: number
 }
 
 export interface AgentReply {
   reply: string
   estimate: Estimate | null
   title: string
+  usage: TokenUsage | null
+  user_message_created_at: string
+  assistant_message_created_at: string
+  last_context_tokens: number
+  cumulative_total_tokens: number
+  cumulative_cost_usd?: number
+  context_token_limit: number
 }
 
 export function listChats(): Promise<ChatSummary[]> {

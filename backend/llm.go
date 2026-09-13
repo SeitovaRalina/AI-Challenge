@@ -17,6 +17,7 @@ var (
 	ErrUpstreamAuth        = errors.New("litellm: authentication failed")
 	ErrUpstreamUnavailable = errors.New("litellm: service unavailable")
 	ErrInvalidOutput       = errors.New("litellm: invalid estimate output")
+	ErrContextOverflow     = errors.New("litellm: context length exceeded")
 )
 
 const systemPrompt = `You are a preliminary software task estimation assistant.
@@ -114,7 +115,8 @@ type chatCompletionUsage struct {
 
 type chatCompletionResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *chatCompletionUsage `json:"usage"`
 }
@@ -158,6 +160,8 @@ func (c *LiteLLMClient) doChatCompletion(ctx context.Context, model string, mess
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return nil, fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
+	case resp.StatusCode != http.StatusOK && isContextOverflow(string(body)):
+		return nil, fmt.Errorf("%w: status %d: %s", ErrContextOverflow, resp.StatusCode, truncate(string(body), 300))
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
 	}
@@ -320,6 +324,17 @@ func stripCodeFences(s string) string {
 		}
 	}
 	return s
+}
+
+// isContextOverflow recognizes the handful of phrasings LiteLLM/upstream
+// providers use to report that a request's prompt exceeded the model's
+// context window, so that case can be surfaced distinctly from a generic
+// upstream failure.
+func isContextOverflow(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "maximum context length") ||
+		strings.Contains(lower, "context window")
 }
 
 func truncate(s string, n int) string {
