@@ -4,10 +4,19 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
 )
+
+// defaultContextTokenLimit is a realistic context-window size to measure the
+// frontend's context-usage bar against when CHAT_CONTEXT_TOKEN_LIMIT isn't
+// set. It's deliberately much smaller than this gateway's actual model
+// limits so the bar means something day-to-day; for a day-8 overflow demo,
+// set CHAT_CONTEXT_TOKEN_LIMIT to something a short conversation can
+// actually reach (e.g. 2000).
+const defaultContextTokenLimit = 128000
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -30,8 +39,18 @@ func main() {
 		dataDir = "data/sessions"
 	}
 
+	contextTokenLimit := defaultContextTokenLimit
+	if v := os.Getenv("CHAT_CONTEXT_TOKEN_LIMIT"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			contextTokenLimit = parsed
+		} else {
+			log.Printf("invalid CHAT_CONTEXT_TOKEN_LIMIT %q, using default %d", v, contextTokenLimit)
+		}
+	}
+	log.Printf("chat context token limit: %d", contextTokenLimit)
+
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	agent := NewAgent(client, NewChatStore(dataDir))
+	agent := NewAgent(client, NewChatStore(dataDir), contextTokenLimit)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))

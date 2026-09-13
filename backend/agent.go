@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -61,21 +62,35 @@ type agentTurn struct {
 }
 
 // AgentMessage is one chat message as returned to the frontend. Role is
-// "user" or "assistant"; the system prompt is never exposed.
+// "user" or "assistant"; the system prompt is never exposed. Usage holds the
+// token accounting of the LLM call this message's turn produced — the same
+// object on both the user and assistant message of one turn, since both were
+// billed by that single call. It is nil for messages restored from before
+// this field existed, and for the synthetic reply a context-overflow turn
+// returns without ever calling the LLM.
 type AgentMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string      `json:"role"`
+	Content   string      `json:"content"`
+	CreatedAt time.Time   `json:"created_at"`
+	Usage     *TokenUsage `json:"usage,omitempty"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
 // message history and the latest estimate produced within it, isolated from
-// every other chat.
+// every other chat. LastPromptTokens is the prompt_tokens of the most recent
+// LLM call — the full conversation-so-far as the model actually counted it —
+// and is what PostMessage compares against the agent's context token limit
+// before spending another call; CumulativeTotalTokens/CumulativeCostUsd are a
+// running sum across every turn, for display only.
 type Chat struct {
-	ID        string            `json:"id"`
-	Title     string            `json:"title"`
-	CreatedAt time.Time         `json:"created_at"`
-	Messages  []AgentMessage    `json:"messages"`
-	Estimate  *EstimateResponse `json:"estimate"`
+	ID                    string            `json:"id"`
+	Title                 string            `json:"title"`
+	CreatedAt             time.Time         `json:"created_at"`
+	Messages              []AgentMessage    `json:"messages"`
+	Estimate              *EstimateResponse `json:"estimate"`
+	LastPromptTokens      int               `json:"last_prompt_tokens"`
+	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
+	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
 }
 
 // ChatSummary is a chat's identity without its message history, for listing.
@@ -90,8 +105,9 @@ type ChatSummary struct {
 // only translate HTTP to and from Agent's methods; they never call the LLM
 // client directly.
 type Agent struct {
-	client *LiteLLMClient
-	store  *ChatStore
+	client            *LiteLLMClient
+	store             *ChatStore
+	contextTokenLimit int // 0 disables the pre-call overflow guard entirely
 
 	mu    sync.Mutex
 	chats map[string]*Chat
@@ -100,12 +116,16 @@ type Agent struct {
 
 // NewAgent restores every chat store persisted so a restart continues each
 // conversation exactly where it left off; a store read failure is logged and
-// treated as an empty history rather than aborting startup.
-func NewAgent(client *LiteLLMClient, store *ChatStore) *Agent {
+// treated as an empty history rather than aborting startup. contextTokenLimit
+// is the token budget PostMessage guards against before every LLM call (see
+// its doc comment) and the denominator the frontend's context-usage bar uses;
+// pass 0 to disable the guard and always call through to the LLM.
+func NewAgent(client *LiteLLMClient, store *ChatStore, contextTokenLimit int) *Agent {
 	agent := &Agent{
-		client: client,
-		store:  store,
-		chats:  make(map[string]*Chat),
+		client:            client,
+		store:             store,
+		contextTokenLimit: contextTokenLimit,
+		chats:             make(map[string]*Chat),
 	}
 
 	chats, err := store.LoadAll()
@@ -217,11 +237,20 @@ func (a *Agent) GetChat(chatID string) (*Chat, error) {
 
 // AgentReply is what one chat turn returns to the caller: the assistant's
 // visible reply plus the chat's current estimate (nil until the first turn
-// produces one).
+// produces one), the token accounting of this turn's LLM call (nil if the
+// context-overflow guard skipped it), and the chat's running token/cost
+// totals so the frontend never has to re-derive them from message history.
 type AgentReply struct {
-	Reply    string            `json:"reply"`
-	Estimate *EstimateResponse `json:"estimate"`
-	Title    string            `json:"title"`
+	Reply                      string            `json:"reply"`
+	Estimate                   *EstimateResponse `json:"estimate"`
+	Title                      string            `json:"title"`
+	Usage                      *TokenUsage       `json:"usage"`
+	UserMessageCreatedAt       time.Time         `json:"user_message_created_at"`
+	AssistantMessageCreatedAt  time.Time         `json:"assistant_message_created_at"`
+	LastPromptTokens           int               `json:"last_prompt_tokens"`
+	CumulativeTotalTokens      int               `json:"cumulative_total_tokens"`
+	CumulativeCostUsd          *float64          `json:"cumulative_cost_usd,omitempty"`
+	ContextTokenLimit          int               `json:"context_token_limit"`
 }
 
 // PostMessage appends the user's message to chatID's history, asks the LLM
@@ -239,9 +268,25 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	// this is safe.
 	history := append([]AgentMessage(nil), chat.Messages...)
 	currentEstimate := chat.Estimate
+	lastPromptTokens := chat.LastPromptTokens
 	a.mu.Unlock()
 
 	log.Printf("agent: chat %s: turn %d, message length %d", chatID, len(history)/2+1, len(userMessage))
+
+	userSentAt := time.Now()
+
+	// Pre-call overflow guard: the previous turn's prompt_tokens is the
+	// model's own count of the entire conversation as of that call, and this
+	// turn's history is at most a couple of messages larger — close enough to
+	// refuse a call that would certainly overflow without spending it. This
+	// is also what makes the artificially low demo limit (CHAT_CONTEXT_TOKEN_LIMIT)
+	// break the dialog deterministically instead of depending on ever
+	// actually hitting the real model's context window.
+	if a.contextTokenLimit > 0 && lastPromptTokens >= a.contextTokenLimit {
+		log.Printf("agent: chat %s: context limit reached (%d/%d tokens), skipping LLM call",
+			chatID, lastPromptTokens, a.contextTokenLimit)
+		return a.finishOverflowTurn(chat, userMessage, userSentAt, lastPromptTokens)
+	}
 
 	messages := make([]chatMessage, 0, len(history)+3)
 	messages = append(messages, chatMessage{Role: "system", Content: agentSystemPrompt})
@@ -262,25 +307,39 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
 	callStart := time.Now()
-	content, err := a.client.chatComplete(ctx, messages, 0.2, 0, nil)
+	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, 0, nil)
 	if err != nil {
+		// A real upstream context-length rejection is handled the same
+		// gracefully-in-chat way as the pre-call guard above, instead of
+		// surfacing as a 502 to the user.
+		if errors.Is(err, ErrContextOverflow) {
+			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
+			return a.finishOverflowTurn(chat, userMessage, userSentAt, lastPromptTokens)
+		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
 	}
 	log.Printf("agent: chat %s: LLM call took %s", chatID, time.Since(callStart).Round(time.Millisecond))
 
-	turn, err := parseAgentTurn(content)
+	turn, err := parseAgentTurn(completion.Choices[0].Message.Content)
 	if err != nil {
-		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(content))
+		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(completion.Choices[0].Message.Content))
 		return nil, err
+	}
+	assistantSentAt := time.Now()
+
+	usage := tokenUsageFrom(completion.Usage)
+	if usage != nil {
+		log.Printf("agent: chat %s: usage prompt=%d completion=%d total=%d",
+			chatID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	chat.Messages = append(chat.Messages,
-		AgentMessage{Role: "user", Content: userMessage},
-		AgentMessage{Role: "assistant", Content: turn.Reply},
+		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
+		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
 	if turn.Estimate != nil {
 		chat.Estimate = turn.Estimate
@@ -290,16 +349,96 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
 	}
+	if usage != nil {
+		chat.LastPromptTokens = usage.PromptTokens
+		chat.CumulativeTotalTokens += usage.TotalTokens
+		if usage.CostUsd != nil {
+			if chat.CumulativeCostUsd == nil {
+				cost := *usage.CostUsd
+				chat.CumulativeCostUsd = &cost
+			} else {
+				*chat.CumulativeCostUsd += *usage.CostUsd
+			}
+		}
+	}
 
 	if err := a.store.Save(chat); err != nil {
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
 	}
 
 	return &AgentReply{
-		Reply:    turn.Reply,
-		Estimate: chat.Estimate,
-		Title:    chat.Title,
+		Reply:                     turn.Reply,
+		Estimate:                  chat.Estimate,
+		Title:                     chat.Title,
+		Usage:                     usage,
+		UserMessageCreatedAt:      userSentAt,
+		AssistantMessageCreatedAt: assistantSentAt,
+		LastPromptTokens:          chat.LastPromptTokens,
+		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
+		CumulativeCostUsd:         chat.CumulativeCostUsd,
+		ContextTokenLimit:         a.contextTokenLimit,
 	}, nil
+}
+
+// overflowReplyText is shown in the chat itself (not as an HTTP error) when
+// the context token limit blocks a turn, so overflow reads as a handled
+// product state instead of a crash.
+func overflowReplyText(tokens, limit int) string {
+	return fmt.Sprintf(
+		"⚠️ Достигнут лимит контекста диалога: %d / %d токенов. "+
+			"Продолжить этот диалог нельзя — начните новый чат.",
+		tokens, limit,
+	)
+}
+
+// finishOverflowTurn appends the user's message and a synthetic overflow
+// reply to chat without ever calling the LLM, persists it, and returns the
+// same AgentReply shape a normal turn would — so the frontend needs no
+// special-casing for this path.
+func (a *Agent) finishOverflowTurn(chat *Chat, userMessage string, userSentAt time.Time, lastPromptTokens int) (*AgentReply, error) {
+	assistantSentAt := time.Now()
+	reply := overflowReplyText(lastPromptTokens, a.contextTokenLimit)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	chat.Messages = append(chat.Messages,
+		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt},
+		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt},
+	)
+	if chat.Title == "Новый чат" {
+		chat.Title = chatTitleFrom(userMessage)
+	}
+	if err := a.store.Save(chat); err != nil {
+		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
+	}
+
+	return &AgentReply{
+		Reply:                     reply,
+		Estimate:                  chat.Estimate,
+		Title:                     chat.Title,
+		Usage:                     nil,
+		UserMessageCreatedAt:      userSentAt,
+		AssistantMessageCreatedAt: assistantSentAt,
+		LastPromptTokens:          chat.LastPromptTokens,
+		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
+		CumulativeCostUsd:         chat.CumulativeCostUsd,
+		ContextTokenLimit:         a.contextTokenLimit,
+	}, nil
+}
+
+// tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
+// own TokenUsage type, or nil if the upstream provider didn't report one.
+func tokenUsageFrom(u *chatCompletionUsage) *TokenUsage {
+	if u == nil {
+		return nil
+	}
+	return &TokenUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		CostUsd:          u.Cost,
+	}
 }
 
 // parseAgentTurn strips optional code fences and unmarshals the model's
@@ -364,21 +503,32 @@ func chatSummary(c *Chat) ChatSummary {
 	return ChatSummary{ID: c.ID, Title: c.Title, CreatedAt: c.CreatedAt}
 }
 
-// ChatDetail is one chat's full state as returned to the frontend.
+// ChatDetail is one chat's full state as returned to the frontend, including
+// its running token/cost totals and the context limit they're measured
+// against, so a page reload restores the token panel exactly as a new
+// message would have left it.
 type ChatDetail struct {
-	ID        string            `json:"id"`
-	Title     string            `json:"title"`
-	CreatedAt time.Time         `json:"created_at"`
-	Messages  []AgentMessage    `json:"messages"`
-	Estimate  *EstimateResponse `json:"estimate"`
+	ID                    string            `json:"id"`
+	Title                 string            `json:"title"`
+	CreatedAt             time.Time         `json:"created_at"`
+	Messages              []AgentMessage    `json:"messages"`
+	Estimate              *EstimateResponse `json:"estimate"`
+	LastPromptTokens      int               `json:"last_prompt_tokens"`
+	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
+	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
+	ContextTokenLimit     int               `json:"context_token_limit"`
 }
 
-func chatDetail(c *Chat) ChatDetail {
+func chatDetail(c *Chat, contextTokenLimit int) ChatDetail {
 	return ChatDetail{
-		ID:        c.ID,
-		Title:     c.Title,
-		CreatedAt: c.CreatedAt,
-		Messages:  c.Messages,
-		Estimate:  c.Estimate,
+		ID:                    c.ID,
+		Title:                 c.Title,
+		CreatedAt:             c.CreatedAt,
+		Messages:              c.Messages,
+		Estimate:              c.Estimate,
+		LastPromptTokens:      c.LastPromptTokens,
+		CumulativeTotalTokens: c.CumulativeTotalTokens,
+		CumulativeCostUsd:     c.CumulativeCostUsd,
+		ContextTokenLimit:     contextTokenLimit,
 	}
 }

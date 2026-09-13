@@ -11,6 +11,15 @@ type EstimateRequest struct {
 	Task string `json:"task"`
 }
 
+// TokenUsage is one LLM call's token accounting, read directly from the
+// LiteLLM gateway's response — never estimated with a local tokenizer.
+type TokenUsage struct {
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	TotalTokens      int      `json:"total_tokens"`
+	CostUsd          *float64 `json:"cost_usd,omitempty"`
+}
+
 // Subtask is one logical piece of a larger task, with its own hour range.
 // Only the agent chat prompt (see agentSystemPrompt in llm.go) asks the model
 // to break a task down this way — the base estimate prompt used by the day

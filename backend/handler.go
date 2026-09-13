@@ -272,7 +272,7 @@ func getChatHandler(agent *Agent) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "чат не найден")
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat))
+		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit))
 	}
 }
 
