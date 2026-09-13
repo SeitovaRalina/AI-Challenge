@@ -136,7 +136,14 @@ function App() {
           const created = await createChat()
           setChats([created])
           setActiveChatId(created.id)
-          setActiveChat({ ...created, messages: [], estimate: null })
+          setActiveChat({
+            ...created,
+            messages: [],
+            estimate: null,
+            last_prompt_tokens: 0,
+            cumulative_total_tokens: 0,
+            context_token_limit: 0,
+          })
           return
         }
         setChats(existing)
@@ -159,7 +166,14 @@ function App() {
       const created = await createChat()
       setChats((prev) => [...prev, created])
       setActiveChatId(created.id)
-      setActiveChat({ ...created, messages: [], estimate: null })
+      setActiveChat({
+        ...created,
+        messages: [],
+        estimate: null,
+        last_prompt_tokens: 0,
+        cumulative_total_tokens: 0,
+        context_token_limit: 0,
+      })
       setChatError(null)
     } catch (err) {
       setChatError(
@@ -221,25 +235,54 @@ function App() {
   async function handleSendMessage(message: string) {
     if (!activeChatId) return
     const chatId = activeChatId
+    const optimisticSentAt = new Date().toISOString()
 
     setActiveChat((prev) =>
-      prev ? { ...prev, messages: [...prev.messages, { role: 'user', content: message }] } : prev,
+      prev
+        ? {
+            ...prev,
+            messages: [
+              ...prev.messages,
+              { role: 'user', content: message, created_at: optimisticSentAt },
+            ],
+          }
+        : prev,
     )
     setChatSending(true)
     setChatError(null)
 
     try {
       const reply = await postAgentMessage(chatId, message)
-      setActiveChat((prev) =>
-        prev
-          ? {
-              ...prev,
-              messages: [...prev.messages, { role: 'assistant', content: reply.reply }],
-              estimate: reply.estimate,
-              title: reply.title,
-            }
-          : prev,
-      )
+      setActiveChat((prev) => {
+        if (!prev) return prev
+        // Replace the optimistic user message with the authoritative
+        // timestamp/usage the backend actually recorded for it.
+        const messages = [
+          ...prev.messages.slice(0, -1),
+          {
+            role: 'user' as const,
+            content: message,
+            created_at: reply.user_message_created_at,
+            usage: reply.usage ?? undefined,
+          },
+          {
+            role: 'assistant' as const,
+            content: reply.reply,
+            created_at: reply.assistant_message_created_at,
+            usage: reply.usage ?? undefined,
+          },
+        ]
+        return {
+          ...prev,
+          messages,
+          estimate: reply.estimate,
+          title: reply.title,
+          last_prompt_tokens: reply.last_prompt_tokens,
+          cumulative_total_tokens: reply.cumulative_total_tokens,
+          cumulative_cost_usd: reply.cumulative_cost_usd,
+          context_token_limit: reply.context_token_limit,
+        }
+      })
       setChats((prev) =>
         prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
       )
@@ -382,6 +425,10 @@ function App() {
               isSending={chatSending}
               error={chatError}
               onSend={handleSendMessage}
+              lastPromptTokens={activeChat?.last_prompt_tokens ?? 0}
+              cumulativeTotalTokens={activeChat?.cumulative_total_tokens ?? 0}
+              cumulativeCostUsd={activeChat?.cumulative_cost_usd}
+              contextTokenLimit={activeChat?.context_token_limit ?? 0}
             />
           </main>
         ) : (
