@@ -33,6 +33,13 @@ Every chat is persisted to disk as it's used (one JSON file per chat under
 on startup, so restarting the backend does not lose any conversation — see
 [`days/w02-d07-context-persistence.md`](days/w02-d07-context-persistence.md).
 
+Token/cost usage is read directly from the LiteLLM gateway's `usage` field
+(no local tokenizer), and an artificial `CHAT_CONTEXT_TOKEN_LIMIT` bounds
+each chat's simulated context window with a real, model-enforced `max_tokens`
+cap — see [`days/w02-d08-tokens.md`](days/w02-d08-tokens.md) and, for the
+implementation detail and known approximation tradeoffs,
+[`docs/token-accounting.md`](docs/token-accounting.md).
+
 This is a **preliminary, generic AI estimate**. There is no user history yet, so
 nothing here is personalized. See [`docs/concept.md`](docs/concept.md) for the
 overall product vision, and [`days/`](days/) for each day's exact assignment
