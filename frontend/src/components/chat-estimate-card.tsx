@@ -30,6 +30,29 @@ export function ChatEstimateCard({ estimate }: ChatEstimateCardProps) {
 
       <CardContent className="flex-1 overflow-y-auto pt-4">
         <div className="flex flex-col gap-5">
+          {estimate.subtasks && estimate.subtasks.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-medium tracking-wide text-muted-foreground">
+                Подзадачи
+              </p>
+              <ul className="flex flex-col gap-2.5">
+                {estimate.subtasks.map((subtask) => (
+                  <li key={subtask.name} className="rounded-md border border-border p-2.5">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="text-sm font-medium text-foreground">{subtask.name}</p>
+                      <p className="flex-shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                        {subtask.estimated_hours_min}–{subtask.estimated_hours_max} ч
+                      </p>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {subtask.description}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {estimate.risks.length > 0 && (
             <div>
               <p className="mb-1.5 text-xs font-medium tracking-wide text-muted-foreground">
