@@ -1,15 +1,14 @@
 import { HelpCircle } from 'lucide-react'
 
 import type { ContextStrategy } from '@/lib/api'
+import { STRATEGY_META } from '@/lib/strategy'
 
-const STRATEGY_LABELS: Record<ContextStrategy, string> = {
-  sliding_window: 'Sliding window',
-  sticky_facts: 'Sticky facts',
-  branching: 'Branching',
-  rolling_summary: 'Rolling summary',
-}
+// value here is always one of the 4 real strategies — this component only
+// renders for a chat that has one (never the lab coordinator, which has no
+// strategy of its own).
+type RealStrategy = Exclude<ContextStrategy, 'coordinator'>
 
-const STRATEGY_HINTS: Record<ContextStrategy, (n: number) => string> = {
+const STRATEGY_HINTS: Record<RealStrategy, (n: number) => string> = {
   sliding_window: (n) =>
     `В модель уходят только последние ${n} сообщений — всё, что раньше, хранится в истории чата, но больше не отправляется.`,
   sticky_facts: (n) =>
@@ -21,7 +20,7 @@ const STRATEGY_HINTS: Record<ContextStrategy, (n: number) => string> = {
 }
 
 interface ContextStrategySelectProps {
-  value: ContextStrategy
+  value: RealStrategy
   historyKeepLastN: number
   disabled?: boolean
   onChange: (strategy: ContextStrategy) => void
@@ -41,7 +40,7 @@ export function ContextStrategySelect({
     <div className="flex items-center gap-1.5">
       {disabled ? (
         <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
-          {STRATEGY_LABELS[value]}
+          {STRATEGY_META[value].label}
         </span>
       ) : (
         <select
@@ -49,9 +48,9 @@ export function ContextStrategySelect({
           onChange={(event) => onChange(event.target.value as ContextStrategy)}
           className="rounded-md border border-border bg-transparent px-2 py-1 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
-          {(Object.keys(STRATEGY_LABELS) as ContextStrategy[]).map((strategy) => (
+          {(Object.keys(STRATEGY_META) as RealStrategy[]).map((strategy) => (
             <option key={strategy} value={strategy}>
-              {STRATEGY_LABELS[strategy]}
+              {STRATEGY_META[strategy].label}
             </option>
           ))}
         </select>

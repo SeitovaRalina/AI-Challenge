@@ -26,6 +26,7 @@ const STRATEGY_TITLES: Record<ContextStrategy, string> = {
   sticky_facts: 'Sticky facts',
   branching: 'Branching',
   rolling_summary: 'Rolling summary',
+  coordinator: 'Координатор',
 }
 
 // ContextPopup is the /context command's output: unlike /tokens (a small

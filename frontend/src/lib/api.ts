@@ -220,6 +220,8 @@ export interface ChatSummary {
   title: string
   created_at: string
   lab_id?: string
+  context_strategy: ContextStrategy
+  is_lab_coordinator?: boolean
 }
 
 export interface TokenUsage {
@@ -255,6 +257,7 @@ export type ContextStrategy =
   | 'sticky_facts'
   | 'branching'
   | 'rolling_summary'
+  | 'coordinator'
 
 export interface Checkpoint {
   index: number
@@ -407,4 +410,8 @@ export function createLab(label: string): Promise<CreateLabResult> {
 
 export function analyzeLab(labId: string): Promise<AgentReply> {
   return postJson<AgentReply>(`/api/labs/${labId}/analyze`, {})
+}
+
+export function deleteLab(labId: string): Promise<void> {
+  return request<void>(`/api/labs/${labId}`, { method: 'DELETE' })
 }

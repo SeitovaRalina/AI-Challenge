@@ -28,6 +28,7 @@ import {
   createCheckpoint,
   createLab,
   deleteChat,
+  deleteLab,
   estimateTask,
   forceCompress,
   getChat,
@@ -394,7 +395,7 @@ function App() {
     try {
       const { chats: created } = await createLab(label)
       setChats((prev) => [...prev, ...created])
-      const coordinator = created[0]
+      const coordinator = created.find((chat) => chat.is_lab_coordinator) ?? created[0]
       const detail = await getChat(coordinator.id)
       setActiveChatId(coordinator.id)
       setActiveChat(detail)
@@ -402,6 +403,36 @@ function App() {
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
+  }
+
+  async function handleDeleteLab(labId: string) {
+    try {
+      await deleteLab(labId)
+      const remaining = chats.filter((chat) => chat.lab_id !== labId)
+      setChats(remaining)
+
+      if (activeChat?.lab_id !== labId) return
+
+      if (remaining.length === 0) {
+        await handleNewChat()
+        return
+      }
+      const next = remaining[remaining.length - 1]
+      const detail = await getChat(next.id)
+      setActiveChatId(next.id)
+      setActiveChat(detail)
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleJumpToCoordinator() {
+    if (!activeChat?.lab_id) return
+    const coordinator = chats.find(
+      (chat) => chat.lab_id === activeChat.lab_id && chat.is_lab_coordinator,
+    )
+    if (!coordinator) return
+    await handleSelectChat(coordinator.id)
   }
 
   async function handleAnalyzeLab() {
@@ -558,6 +589,7 @@ function App() {
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
+            onDeleteLab={handleDeleteLab}
           />
         )}
 
@@ -590,6 +622,14 @@ function App() {
               isLabChat={Boolean(activeChat?.lab_id)}
               isLabCoordinator={Boolean(activeChat?.is_lab_coordinator)}
               onAnalyzeLab={handleAnalyzeLab}
+              coordinatorTitle={
+                activeChat?.lab_id
+                  ? chats.find(
+                      (chat) => chat.lab_id === activeChat.lab_id && chat.is_lab_coordinator,
+                    )?.title
+                  : undefined
+              }
+              onJumpToCoordinator={handleJumpToCoordinator}
             />
           </main>
         ) : (

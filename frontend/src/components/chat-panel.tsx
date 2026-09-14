@@ -19,6 +19,7 @@ import type {
   Estimate,
   TokenUsage,
 } from '@/lib/api'
+import { isRealStrategy } from '@/lib/strategy'
 
 const EXAMPLE_TASK =
   'Обновить устаревшее Flutter-приложение до новой версии Flutter, обновить зависимости, исправить проблемы сборки под iOS и Android и подготовить новые билды.'
@@ -61,6 +62,8 @@ interface ChatPanelProps {
   isLabChat: boolean
   isLabCoordinator: boolean
   onAnalyzeLab: () => void
+  coordinatorTitle?: string
+  onJumpToCoordinator?: () => void
 }
 
 export function ChatPanel({
@@ -90,6 +93,8 @@ export function ChatPanel({
   isLabChat,
   isLabCoordinator,
   onAnalyzeLab,
+  coordinatorTitle,
+  onJumpToCoordinator,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
@@ -99,19 +104,21 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // /compress only means anything on rolling_summary; /analyze only exists
-  // on a lab's coordinator chat — both are hidden from autocomplete (and
-  // simply don't intercept in handleSubmit) otherwise.
-  const slashCommands: SlashCommand[] = [
-    { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
-    { name: CONTEXT_COMMAND, description: 'что сейчас в контексте' },
-    ...(contextStrategy === 'rolling_summary'
-      ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
-      : []),
-    ...(isLabCoordinator
-      ? [{ name: ANALYZE_COMMAND, description: 'сравнить стратегии лаборатории' }]
-      : []),
-  ]
+  // Only the lab coordinator accepts direct input — its strategy chats exist
+  // purely to show each strategy's own result, so the comparison always
+  // reflects the same fanned-out input. The coordinator itself has no
+  // strategy of its own (nothing to window/summarize), so its only command
+  // is /analyze; a strategy chat gets /tokens + /context but never /analyze.
+  const canSendMessages = !isLabChat || isLabCoordinator
+  const slashCommands: SlashCommand[] = isLabCoordinator
+    ? [{ name: ANALYZE_COMMAND, description: 'сравнить стратегии лаборатории' }]
+    : [
+        { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
+        { name: CONTEXT_COMMAND, description: 'что сейчас в контексте' },
+        ...(contextStrategy === 'rolling_summary'
+          ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
+          : []),
+      ]
 
   // Only offer suggestions while the draft is still just the command token
   // itself (no space yet — none of today's commands take arguments).
@@ -172,7 +179,9 @@ export function ChatPanel({
     // /tokens is a local, offline command — it never reaches the LLM and
     // never touches chat state, so it must work even while a message is
     // in flight (isSending) — it's just inspecting whatever is already
-    // known, not competing with the in-flight request for anything.
+    // known, not competing with the in-flight request for anything. Always
+    // intercepted locally (even where it's not advertised, e.g. the
+    // coordinator) so it's never accidentally sent as a real message.
     if (trimmed === TOKENS_COMMAND) {
       setTokensPopupOpen(true)
       setDraft('')
@@ -205,6 +214,7 @@ export function ChatPanel({
       return
     }
 
+    if (!canSendMessages) return
     onSend(trimmed)
     setDraft('')
   }
@@ -339,6 +349,24 @@ export function ChatPanel({
             />
           )}
 
+          {!canSendMessages && (
+            <div className="mx-6 mb-2 flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+              <span>
+                Эта стратегия — часть лаборатории
+                {coordinatorTitle ? <> «{coordinatorTitle}»</> : null}. Пишите в координаторском чате.
+              </span>
+              {onJumpToCoordinator && (
+                <button
+                  type="button"
+                  onClick={onJumpToCoordinator}
+                  className="flex-shrink-0 rounded-md border border-border px-2 py-1 font-medium text-foreground transition-colors hover:bg-accent"
+                >
+                  Перейти →
+                </button>
+              )}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="flex px-6 pt-2">
             <div className="relative flex-1">
               {suggestions.length > 0 && (
@@ -376,7 +404,13 @@ export function ChatPanel({
                 onKeyDown={handleKeyDown}
                 onFocus={() => setTextareaFocused(true)}
                 onBlur={() => setTextareaFocused(false)}
-                placeholder="Опишите задачу, уточните детали или введите команду через /…"
+                placeholder={
+                  isLabCoordinator
+                    ? 'Сообщение уйдёт во все стратегии лаборатории, или введите /analyze…'
+                    : canSendMessages
+                      ? 'Опишите задачу, уточните детали или введите команду через /…'
+                      : 'Только команды (/tokens, /context) — обычные сообщения пишите в координаторском чате'
+                }
                 rows={1}
                 className="block max-h-[200px] min-h-11 w-full resize-none overflow-hidden rounded-lg border border-input bg-transparent py-2.5 pr-24 pl-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
               />
@@ -385,7 +419,8 @@ export function ChatPanel({
                 size="sm"
                 disabled={
                   !draft.trim() ||
-                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND)
+                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND) ||
+                  (!canSendMessages && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND)
                 }
                 className="absolute right-1.5 bottom-1.5"
               >
@@ -395,13 +430,21 @@ export function ChatPanel({
           </form>
 
           <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
-            <ContextStrategySelect
-              value={contextStrategy}
-              historyKeepLastN={historyKeepLastN}
-              disabled={isLabChat}
-              onChange={onSetContextStrategy}
-            />
-            {contextTokenLimit > 0 && (
+            {isLabCoordinator ? (
+              <span className="rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-primary">
+                Координатор
+              </span>
+            ) : (
+              isRealStrategy(contextStrategy) && (
+                <ContextStrategySelect
+                  value={contextStrategy}
+                  historyKeepLastN={historyKeepLastN}
+                  disabled={isLabChat}
+                  onChange={onSetContextStrategy}
+                />
+              )
+            )}
+            {contextTokenLimit > 0 && !isLabCoordinator && (
               <>
                 <span aria-hidden>·</span>
                 <span>
