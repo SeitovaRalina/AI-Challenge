@@ -28,6 +28,8 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "ветка не найдена")
 	case errors.Is(err, ErrWrongStrategy):
 		writeError(w, http.StatusBadRequest, "недоступно для текущей стратегии контекста")
+	case errors.Is(err, ErrFanOutInProgress):
+		writeError(w, http.StatusConflict, "предыдущий фан-аут ещё выполняется, подождите")
 	default:
 		writeLLMError(w, err)
 	}
@@ -39,6 +41,9 @@ func writeAgentError(w http.ResponseWriter, err error) {
 func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
 	detail := chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN)
 	detail.IsLabCoordinator = agent.IsLabCoordinator(chat.LabID, chat.ID)
+	if detail.IsLabCoordinator {
+		detail.FanOut = agent.FanOutStatus(chat.LabID)
+	}
 	return detail
 }
 

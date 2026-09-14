@@ -66,7 +66,86 @@ func strategyLabel(s ContextStrategy) string {
 	}
 }
 
-var ErrLabNotFound = fmt.Errorf("agent: lab not found")
+var (
+	ErrLabNotFound      = fmt.Errorf("agent: lab not found")
+	ErrFanOutInProgress = fmt.Errorf("agent: previous fan-out to this lab is still running")
+)
+
+// FanOutStatus is one strategy chat's progress through the coordinator's most
+// recent fan-out: "pending" while its PostMessage call is in flight, "done"
+// once it has a reply, "failed" (with Error set) if the call errored. The
+// coordinator chat's own ChatDetail/AgentReply carries the current list for
+// whichever lab it belongs to, so the frontend can render live progress
+// without polling a separate endpoint.
+type FanOutStatus struct {
+	ChatID    string          `json:"chat_id"`
+	Strategy  ContextStrategy `json:"strategy"`
+	Status    string          `json:"status"` // "pending" | "done" | "failed"
+	Error     string          `json:"error,omitempty"`
+	StartedAt time.Time       `json:"started_at"`
+}
+
+// fanOutInProgressLocked reports whether labID has a fan-out with any chat
+// still pending. Callers must hold a.mu.
+func (a *Agent) fanOutInProgressLocked(labID string) bool {
+	for _, s := range a.fanOut[labID] {
+		if s.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+
+// startFanOutLocked records a fresh "pending" entry for every chat in
+// lab.ChatIDs, replacing whatever fan-out state labID had before. Callers
+// must hold a.mu.
+func (a *Agent) startFanOutLocked(lab *Lab) {
+	entries := make([]FanOutStatus, 0, len(lab.ChatIDs))
+	now := time.Now()
+	for i, id := range lab.ChatIDs {
+		strategy := ContextStrategy("")
+		if i < len(labStrategies) {
+			strategy = labStrategies[i]
+		}
+		entries = append(entries, FanOutStatus{ChatID: id, Strategy: strategy, Status: "pending", StartedAt: now})
+	}
+	a.fanOut[lab.ID] = entries
+}
+
+// fanOutLocked returns labID's current fan-out status list, or nil if it has
+// none (never posted to yet, or not a lab chat). Callers must hold a.mu.
+func (a *Agent) fanOutLocked(labID string) []FanOutStatus {
+	return a.fanOut[labID]
+}
+
+// FanOutStatus is fanOutLocked's self-locking counterpart, for callers (like
+// chatDetailWithLab) that don't already hold a.mu.
+func (a *Agent) FanOutStatus(labID string) []FanOutStatus {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fanOutLocked(labID)
+}
+
+// setFanOutResult updates one chat's fan-out entry once its background
+// PostMessage call settles. Self-locking — called from the fan-out goroutine,
+// outside a.mu.
+func (a *Agent) setFanOutResult(labID, chatID string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	entries := a.fanOut[labID]
+	for i := range entries {
+		if entries[i].ChatID != chatID {
+			continue
+		}
+		if err != nil {
+			entries[i].Status = "failed"
+			entries[i].Error = err.Error()
+		} else {
+			entries[i].Status = "done"
+		}
+		return
+	}
+}
 
 // IsLabCoordinator reports whether chatID is labID's coordinator chat. Safe
 // to call with an empty labID (returns false).
@@ -186,6 +265,15 @@ func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage 
 		return nil, ErrWrongStrategy
 	}
 	lab, labOK := a.labs[chat.LabID]
+	if labOK && a.fanOutInProgressLocked(lab.ID) {
+		// The 3 strategy chats' history is snapshotted at the start of each
+		// PostMessage call — a second fan-out starting before the first one
+		// finishes would race two goroutines against the same chat's history,
+		// possibly interleaving or losing a turn. Rejecting keeps every
+		// strategy chat driven by exactly one fan-out at a time.
+		a.mu.Unlock()
+		return nil, ErrFanOutInProgress
+	}
 
 	userSentAt := time.Now()
 	ack := coordinatorAckText(labOK, lab)
@@ -197,6 +285,9 @@ func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage 
 	if err := a.store.Save(chat); err != nil {
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
 	}
+	if labOK {
+		a.startFanOutLocked(lab)
+	}
 	agentReply := a.buildAgentReplyLocked(chat, ack, nil, userSentAt, assistantSentAt)
 	a.mu.Unlock()
 
@@ -207,12 +298,14 @@ func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage 
 		// contention even at a generous per-call budget. One background
 		// goroutine calling each strategy chat in turn keeps the coordinator
 		// reply instant while giving every strategy its own full budget.
+		labID := lab.ID
 		chatIDs := append([]string(nil), lab.ChatIDs...)
 		go func() {
 			for _, id := range chatIDs {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 				_, err := a.PostMessage(bgCtx, id, userMessage)
 				cancel()
+				a.setFanOutResult(labID, id, err)
 				if err != nil {
 					log.Printf("agent: lab fan-out to chat %s failed: %v", id, err)
 				}

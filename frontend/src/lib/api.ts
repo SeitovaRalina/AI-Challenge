@@ -275,6 +275,16 @@ export interface BranchSummary {
   created_at: string
 }
 
+// One strategy chat's progress through the coordinator's most recent
+// fan-out — only ever present on the coordinator's own ChatDetail/AgentReply.
+export interface FanOutStatus {
+  chat_id: string
+  strategy: Exclude<ContextStrategy, 'coordinator'>
+  status: 'pending' | 'done' | 'failed'
+  error?: string
+  started_at: string
+}
+
 // Fields shared by ChatDetail and AgentReply: every strategy's own current
 // state, always populated from live chat state regardless of which strategy
 // is actually active (empty/zero for the ones that don't apply).
@@ -288,6 +298,7 @@ interface StrategyState {
   active_branch_id?: string
   lab_id?: string
   is_lab_coordinator?: boolean
+  fan_out?: FanOutStatus[]
 }
 
 export interface ChatDetail extends StrategyState {

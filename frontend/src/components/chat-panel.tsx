@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Minimize2, Sparkles, X } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Loader2, Minimize2, Sparkles, X, XCircle } from 'lucide-react'
 
 import emptyStateGif from '@/assets/empty_state.gif'
 import { BranchToolbar } from '@/components/branch-toolbar'
@@ -17,9 +17,10 @@ import type {
   CompressionEvent,
   ContextStrategy,
   Estimate,
+  FanOutStatus,
   TokenUsage,
 } from '@/lib/api'
-import { isRealStrategy } from '@/lib/strategy'
+import { isRealStrategy, STRATEGY_META } from '@/lib/strategy'
 
 const EXAMPLE_TASK =
   'Обновить устаревшее Flutter-приложение до новой версии Flutter, обновить зависимости, исправить проблемы сборки под iOS и Android и подготовить новые билды.'
@@ -64,6 +65,8 @@ interface ChatPanelProps {
   onAnalyzeLab: () => void
   coordinatorTitle?: string
   onJumpToCoordinator?: () => void
+  fanOut?: FanOutStatus[]
+  onJumpToChat?: (chatId: string) => void
 }
 
 export function ChatPanel({
@@ -95,6 +98,8 @@ export function ChatPanel({
   onAnalyzeLab,
   coordinatorTitle,
   onJumpToCoordinator,
+  fanOut,
+  onJumpToChat,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
@@ -104,12 +109,19 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // A fan-out still running means the 3 strategy chats' history isn't
+  // settled yet — sending another message now would race a second fan-out
+  // against the first on the same chats (see PostCoordinatorMessage's own
+  // ErrFanOutInProgress guard), so the coordinator blocks input until every
+  // strategy has either replied or failed.
+  const fanOutPending = fanOut?.some((f) => f.status === 'pending') ?? false
+
   // Only the lab coordinator accepts direct input — its strategy chats exist
   // purely to show each strategy's own result, so the comparison always
   // reflects the same fanned-out input. The coordinator itself has no
   // strategy of its own (nothing to window/summarize), so its only command
   // is /analyze; a strategy chat gets /tokens + /context but never /analyze.
-  const canSendMessages = !isLabChat || isLabCoordinator
+  const canSendMessages = !isLabChat || (isLabCoordinator && !fanOutPending)
   const slashCommands: SlashCommand[] = isLabCoordinator
     ? [{ name: ANALYZE_COMMAND, description: 'сравнить стратегии лаборатории' }]
     : [
@@ -138,7 +150,7 @@ export function ChatPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages, isSending])
+  }, [messages, isSending, fanOut])
 
   // Grows the composer with the draft up to COMPOSER_MAX_HEIGHT, so a long
   // message stays visible while typing instead of scrolling inside a
@@ -196,7 +208,7 @@ export function ChatPanel({
       return
     }
 
-    if (isSending) return
+    if (isSending || fanOutPending) return
 
     // /compress is a real backend action (its own LLM call), not a chat
     // message — never appended to history, handled the same way /tokens
@@ -308,6 +320,9 @@ export function ChatPanel({
               {eventsBeforeIndex.get(messages.length)?.map((event, i) => (
                 <CompressionNotice key={`compression-end-${i}`} event={event} />
               ))}
+              {isLabCoordinator && fanOut && fanOut.length > 0 && (
+                <FanOutPanel fanOut={fanOut} onJumpToChat={onJumpToChat} />
+              )}
               {isSending && <TypingIndicator />}
             </div>
           )}
@@ -349,7 +364,7 @@ export function ChatPanel({
             />
           )}
 
-          {!canSendMessages && (
+          {isLabChat && !isLabCoordinator && (
             <div className="mx-6 mb-2 flex items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
               <span>
                 Эта стратегия — часть лаборатории
@@ -406,7 +421,9 @@ export function ChatPanel({
                 onBlur={() => setTextareaFocused(false)}
                 placeholder={
                   isLabCoordinator
-                    ? 'Сообщение уйдёт во все стратегии лаборатории, или введите /analyze…'
+                    ? fanOutPending
+                      ? 'Ждём ответы стратегий на предыдущее сообщение…'
+                      : 'Сообщение уйдёт во все стратегии лаборатории, или введите /analyze…'
                     : canSendMessages
                       ? 'Опишите задачу, уточните детали или введите команду через /…'
                       : 'Только команды (/tokens, /context) — обычные сообщения пишите в координаторском чате'
@@ -637,6 +654,68 @@ function LabAnalysisNotice({ message }: { message: AgentMessage }) {
       <div className="mt-2 text-sm">
         <Markdown>{message.content}</Markdown>
       </div>
+    </div>
+  )
+}
+
+// FanOutPanel tracks the coordinator's most recent fan-out live: one row per
+// strategy chat, in progress / replied (jump straight to it) / failed (with
+// the error). Attaches right under the coordinator's own last message rather
+// than a separate popup, since it's about what's happening in this chat.
+function FanOutPanel({
+  fanOut,
+  onJumpToChat,
+}: {
+  fanOut: FanOutStatus[]
+  onJumpToChat?: (chatId: string) => void
+}) {
+  return (
+    <div className="flex w-fit min-w-64 flex-col gap-1.5 self-start rounded-xl border border-border bg-card px-4 py-3">
+      <span className="text-xs font-medium text-muted-foreground">Прогресс по стратегиям</span>
+      {fanOut.map((entry) => {
+        const meta = STRATEGY_META[entry.strategy]
+        const clickable = entry.status === 'done' && onJumpToChat
+        return (
+          <div key={entry.chat_id} className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              disabled={!clickable}
+              onClick={() => clickable && onJumpToChat(entry.chat_id)}
+              className={cn(
+                'flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs',
+                clickable ? 'cursor-pointer hover:bg-accent' : 'cursor-default',
+              )}
+            >
+              <span
+                className="inline-flex w-fit shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+                style={{ background: `${meta.color}1a`, color: meta.color }}
+              >
+                <span className="size-1.5 shrink-0 rounded-full" style={{ background: meta.color }} />
+                {meta.label}
+              </span>
+              {entry.status === 'pending' && (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> в процессе…
+                </span>
+              )}
+              {entry.status === 'done' && (
+                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" /> ответ получен
+                  {onJumpToChat && <ArrowRight className="h-3 w-3" />}
+                </span>
+              )}
+              {entry.status === 'failed' && (
+                <span className="flex items-center gap-1 text-destructive">
+                  <XCircle className="h-3 w-3" /> ошибка
+                </span>
+              )}
+            </button>
+            {entry.status === 'failed' && entry.error && (
+              <span className="px-1.5 text-[11px] text-muted-foreground">{entry.error}</span>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -248,9 +248,13 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 // finishGracefulTurn so both return the exact same shape.
 func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsage, userSentAt, assistantSentAt time.Time) *AgentReply {
 	isCoordinator := false
+	var fanOut []FanOutStatus
 	if chat.LabID != "" {
 		if lab, ok := a.labs[chat.LabID]; ok {
 			isCoordinator = lab.CoordinatorChatID == chat.ID
+		}
+		if isCoordinator {
+			fanOut = a.fanOutLocked(chat.LabID)
 		}
 	}
 	return &AgentReply{
@@ -273,6 +277,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsag
 		ActiveBranchID:            chat.ActiveBranchID,
 		LabID:                     chat.LabID,
 		IsLabCoordinator:          isCoordinator,
+		FanOut:                    fanOut,
 	}
 }
 

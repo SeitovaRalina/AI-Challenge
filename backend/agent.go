@@ -147,10 +147,11 @@ type Agent struct {
 	historyKeepLastN       int             // 0 disables windowing/compression entirely
 	contextStrategyDefault ContextStrategy // initial Chat.ContextStrategy for new chats
 
-	mu    sync.Mutex
-	chats map[string]*Chat
-	order []string // chat IDs, oldest first, for stable listing order
-	labs  map[string]*Lab
+	mu     sync.Mutex
+	chats  map[string]*Chat
+	order  []string // chat IDs, oldest first, for stable listing order
+	labs   map[string]*Lab
+	fanOut map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each
@@ -173,6 +174,7 @@ func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, conte
 		contextStrategyDefault: contextStrategyDefault,
 		chats:                  make(map[string]*Chat),
 		labs:                   make(map[string]*Lab),
+		fanOut:                 make(map[string][]FanOutStatus),
 	}
 
 	chats, err := store.LoadAll()
@@ -352,6 +354,7 @@ type AgentReply struct {
 	ActiveBranchID            string            `json:"active_branch_id,omitempty"`
 	LabID                     string            `json:"lab_id,omitempty"`
 	IsLabCoordinator          bool              `json:"is_lab_coordinator,omitempty"`
+	FanOut                    []FanOutStatus    `json:"fan_out,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -436,6 +439,7 @@ type ChatDetail struct {
 	ActiveBranchID         string             `json:"active_branch_id,omitempty"`
 	LabID                  string             `json:"lab_id,omitempty"`
 	IsLabCoordinator       bool               `json:"is_lab_coordinator,omitempty"`
+	FanOut                 []FanOutStatus     `json:"fan_out,omitempty"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {

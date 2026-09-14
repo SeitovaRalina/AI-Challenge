@@ -174,6 +174,28 @@ function App() {
     init()
   }, [])
 
+  // While the coordinator's most recent fan-out still has a strategy chat
+  // pending, poll its detail so FanOutPanel updates live (in progress →
+  // replied/failed) without the user having to reload or re-select the chat.
+  // Self-terminating: once the fetched fan_out has nothing left pending, this
+  // effect's dependency flips to false and no new interval is scheduled.
+  useEffect(() => {
+    if (!activeChatId || !activeChat?.is_lab_coordinator) return
+    const pending = activeChat.fan_out?.some((entry) => entry.status === 'pending')
+    if (!pending) return
+
+    const chatId = activeChatId
+    const interval = window.setInterval(async () => {
+      try {
+        const detail = await getChat(chatId)
+        setActiveChat((prev) => (prev && prev.id === chatId ? detail : prev))
+      } catch {
+        // Transient poll failure — the next tick will retry.
+      }
+    }, 1500)
+    return () => window.clearInterval(interval)
+  }, [activeChatId, activeChat?.is_lab_coordinator, activeChat?.fan_out])
+
   async function handleNewChat() {
     setMode('chat')
     try {
@@ -309,6 +331,7 @@ function App() {
           active_branch_id: reply.active_branch_id,
           lab_id: reply.lab_id,
           is_lab_coordinator: reply.is_lab_coordinator,
+          fan_out: reply.fan_out,
           compression_events: reply.new_compression_event
             ? [...prev.compression_events, reply.new_compression_event]
             : prev.compression_events,
@@ -630,6 +653,8 @@ function App() {
                   : undefined
               }
               onJumpToCoordinator={handleJumpToCoordinator}
+              fanOut={activeChat?.fan_out}
+              onJumpToChat={handleSelectChat}
             />
           </main>
         ) : (
