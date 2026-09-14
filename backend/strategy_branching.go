@@ -31,6 +31,14 @@ type Branch struct {
 	ForkIndex int            `json:"fork_index"`
 	Messages  []AgentMessage `json:"messages"`
 	CreatedAt time.Time      `json:"created_at"`
+
+	// Estimate/LastContextTokens are this branch's own copy of what Chat
+	// holds for every other strategy — two branches forked from the same
+	// checkpoint diverge afterward, so the estimate card and context-used
+	// figure shown for one must never leak into the other (see
+	// Chat.activeEstimate/activeLastContextTokens).
+	Estimate          *EstimateResponse `json:"estimate,omitempty"`
+	LastContextTokens int               `json:"last_context_tokens"`
 }
 
 // BranchSummary is a branch's identity and size, without its own message
@@ -74,11 +82,16 @@ func ensureBranchState(chat *Chat) {
 		chat.Branches = map[string]*Branch{}
 	}
 	if _, ok := chat.Branches["main"]; !ok {
+		// Seeded from whatever the chat had accumulated before branching
+		// became its strategy, so switching to "main" for the first time
+		// shows the same estimate/context-used a non-branching chat would.
 		chat.Branches["main"] = &Branch{
-			ID:        "main",
-			Label:     "Основная",
-			Messages:  append([]AgentMessage(nil), chat.Messages...),
-			CreatedAt: chat.CreatedAt,
+			ID:                "main",
+			Label:             "Основная",
+			Messages:          append([]AgentMessage(nil), chat.Messages...),
+			CreatedAt:         chat.CreatedAt,
+			Estimate:          chat.Estimate,
+			LastContextTokens: chat.LastContextTokens,
 		}
 	}
 	if chat.ActiveBranchID == "" {
@@ -148,6 +161,12 @@ func (a *Agent) CreateBranch(chatID string, checkpointIndex int, fromBranchID, l
 		ForkIndex: checkpointIndex,
 		Messages:  append([]AgentMessage(nil), source.Messages[:checkpointIndex]...),
 		CreatedAt: time.Now(),
+		// Best available snapshot of "the estimate/token count as of the
+		// checkpoint" — source's own values aren't kept per-message-index,
+		// so this inherits its current ones; the new branch's own first
+		// turn overwrites this as soon as it has one.
+		Estimate:          source.Estimate,
+		LastContextTokens: source.LastContextTokens,
 	}
 	chat.Branches[branch.ID] = branch
 	if err := a.store.Save(chat); err != nil {

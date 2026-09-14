@@ -74,8 +74,8 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	// for a lab's fan-out, one background goroutine per sibling chat), so
 	// this is safe.
 	history := append([]AgentMessage(nil), chat.activeMessages()...)
-	currentEstimate := chat.Estimate
-	lastContextTokens := chat.LastContextTokens
+	currentEstimate := chat.activeEstimate()
+	lastContextTokens := chat.activeLastContextTokens()
 	strategy := chat.ContextStrategy
 	facts := chat.Facts
 	summary := chat.Summary
@@ -192,7 +192,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
 	if turn.Estimate != nil {
-		chat.Estimate = turn.Estimate
+		chat.setActiveEstimate(turn.Estimate)
 		log.Printf("agent: chat %s: estimate updated, %.1f-%.1fh, %d subtask(s)",
 			chatID, turn.Estimate.EstimatedHoursMin, turn.Estimate.EstimatedHoursMax, len(turn.Estimate.Subtasks))
 	}
@@ -200,7 +200,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.LastContextTokens = usage.TotalTokens
+		chat.setActiveLastContextTokens(usage.TotalTokens)
 		chat.addUsage(usage)
 	}
 
@@ -259,12 +259,12 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsag
 	}
 	return &AgentReply{
 		Reply:                     reply,
-		Estimate:                  chat.Estimate,
+		Estimate:                  chat.activeEstimate(),
 		Title:                     chat.Title,
 		Usage:                     usage,
 		UserMessageCreatedAt:      userSentAt,
 		AssistantMessageCreatedAt: assistantSentAt,
-		LastContextTokens:         chat.LastContextTokens,
+		LastContextTokens:         chat.activeLastContextTokens(),
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
@@ -327,7 +327,7 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, userMessage,
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.LastContextTokens = usage.TotalTokens
+		chat.setActiveLastContextTokens(usage.TotalTokens)
 		chat.addUsage(usage)
 	}
 	if err := a.store.Save(chat); err != nil {

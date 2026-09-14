@@ -102,6 +102,53 @@ func (c *Chat) appendActiveMessages(msgs ...AgentMessage) {
 	c.Messages = append(c.Messages, msgs...)
 }
 
+// activeEstimate/setActiveEstimate and activeLastContextTokens/
+// setActiveLastContextTokens mirror activeMessages/appendActiveMessages for
+// the two other pieces of per-turn state a branch needs its own copy of: two
+// branches forked from the same checkpoint diverge afterward (different
+// messages, different estimate, different token count), so the card shown
+// alongside a branch — and the budget PostMessage guards against — must
+// follow whichever branch is active, not one value shared by the whole chat.
+func (c *Chat) activeEstimate() *EstimateResponse {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[c.ActiveBranchID]; b != nil {
+			return b.Estimate
+		}
+		return nil
+	}
+	return c.Estimate
+}
+
+func (c *Chat) setActiveEstimate(e *EstimateResponse) {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[c.ActiveBranchID]; b != nil {
+			b.Estimate = e
+			return
+		}
+	}
+	c.Estimate = e
+}
+
+func (c *Chat) activeLastContextTokens() int {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[c.ActiveBranchID]; b != nil {
+			return b.LastContextTokens
+		}
+		return 0
+	}
+	return c.LastContextTokens
+}
+
+func (c *Chat) setActiveLastContextTokens(n int) {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[c.ActiveBranchID]; b != nil {
+			b.LastContextTokens = n
+			return
+		}
+	}
+	c.LastContextTokens = n
+}
+
 // addUsage folds one LLM call's usage into the chat's running totals — every
 // strategy side-call (summarization, facts extraction, lab analysis) bills
 // the same chat its turn belongs to, exactly like the main turn call does.
@@ -452,8 +499,8 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 		Title:                  c.Title,
 		CreatedAt:              c.CreatedAt,
 		Messages:               c.activeMessages(),
-		Estimate:               c.Estimate,
-		LastContextTokens:      c.LastContextTokens,
+		Estimate:               c.activeEstimate(),
+		LastContextTokens:      c.activeLastContextTokens(),
 		CumulativeTotalTokens:  c.CumulativeTotalTokens,
 		CumulativeCostUsd:      c.CumulativeCostUsd,
 		ContextTokenLimit:      contextTokenLimit,
