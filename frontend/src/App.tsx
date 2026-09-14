@@ -111,6 +111,17 @@ function App() {
   // chat) with nothing in flight never shows another branch's spinner, and
   // switching away from one that's still sending doesn't lose it either.
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
+  // The optimistic user bubble for a still-in-flight send, per chat/branch
+  // key — a plain local append to activeChat.messages doesn't survive
+  // navigating away and back, since switching replaces activeChat wholesale
+  // with a fresh server fetch, and the server doesn't have this message yet
+  // (PostMessage only saves user+assistant together, once the reply is in).
+  // Re-applied by withPendingMessage whenever a fetched ChatDetail is about
+  // to become activeChat, so switching back to a branch that's still
+  // sending shows the message again instead of a loader over nothing.
+  const [pendingSends, setPendingSends] = useState<Map<string, { content: string; sentAt: string }>>(
+    new Map(),
+  )
   const [chatError, setChatError] = useState<string | null>(null)
 
   function beginPending(key: string) {
@@ -123,6 +134,15 @@ function App() {
       next.delete(key)
       return next
     })
+  }
+
+  function withPendingMessage(detail: ChatDetail): ChatDetail {
+    const pending = pendingSends.get(chatKey(detail.id, detail.active_branch_id))
+    if (!pending) return detail
+    return {
+      ...detail,
+      messages: [...detail.messages, { role: 'user', content: pending.content, created_at: pending.sentAt }],
+    }
   }
 
   const [estimateStatus, setEstimateStatus] = useState<Status>('idle')
@@ -252,7 +272,7 @@ function App() {
     try {
       const detail = await getChat(id)
       setActiveChatId(id)
-      setActiveChat(detail)
+      setActiveChat(withPendingMessage(detail))
       setChatError(null)
     } catch (err) {
       setChatError(
@@ -288,7 +308,7 @@ function App() {
       const next = remaining[remaining.length - 1]
       const detail = await getChat(next.id)
       setActiveChatId(next.id)
-      setActiveChat(detail)
+      setActiveChat(withPendingMessage(detail))
     } catch (err) {
       setChatError(
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
@@ -319,6 +339,7 @@ function App() {
         : prev,
     )
     beginPending(key)
+    setPendingSends((prev) => new Map(prev).set(key, { content: message, sentAt: optimisticSentAt }))
     setChatError(null)
 
     try {
@@ -382,6 +403,12 @@ function App() {
       )
     } finally {
       endPending(key)
+      setPendingSends((prev) => {
+        if (!prev.has(key)) return prev
+        const next = new Map(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
@@ -444,7 +471,7 @@ function App() {
     const chatId = activeChatId
     try {
       const updated = await setActiveBranch(chatId, branchId)
-      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+      setActiveChat((prev) => (prev && prev.id === chatId ? withPendingMessage(updated) : prev))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
@@ -480,7 +507,7 @@ function App() {
       const next = remaining[remaining.length - 1]
       const detail = await getChat(next.id)
       setActiveChatId(next.id)
-      setActiveChat(detail)
+      setActiveChat(withPendingMessage(detail))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
