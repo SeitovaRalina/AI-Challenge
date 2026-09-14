@@ -52,6 +52,13 @@ import {
 type Status = 'idle' | 'loading' | 'error' | 'success'
 type Mode = 'chat' | DemoMode
 
+// Identifies one send-like operation's target for the pendingKeys set below:
+// a chat by itself, or (for a branching chat) one specific branch within it —
+// branches share a chat id, so the id alone can't tell two of them apart.
+function chatKey(chatId: string, branchId?: string): string {
+  return `${chatId}:${branchId ?? ''}`
+}
+
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
   maxTokens: 1000,
   maxItems: 3,
@@ -99,8 +106,24 @@ function App() {
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
-  const [chatSending, setChatSending] = useState(false)
+  // Which chat/branch keys (see chatKey) currently have a send-like request
+  // in flight — a Set, not one shared boolean, so switching to a branch (or
+  // chat) with nothing in flight never shows another branch's spinner, and
+  // switching away from one that's still sending doesn't lose it either.
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [chatError, setChatError] = useState<string | null>(null)
+
+  function beginPending(key: string) {
+    setPendingKeys((prev) => new Set(prev).add(key))
+  }
+  function endPending(key: string) {
+    setPendingKeys((prev) => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+  }
 
   const [estimateStatus, setEstimateStatus] = useState<Status>('idle')
   const [estimate, setEstimate] = useState<Estimate | null>(null)
@@ -276,6 +299,12 @@ function App() {
   async function handleSendMessage(message: string) {
     if (!activeChatId) return
     const chatId = activeChatId
+    // Branches share one chat id, so switching tabs alone doesn't change
+    // chatId — capturing the branch too is what lets the merge below tell
+    // "still looking at the branch this was sent from" apart from "looking
+    // at a sibling branch of the same chat" once the reply comes back.
+    const branchId = activeChat?.active_branch_id
+    const key = chatKey(chatId, branchId)
     const optimisticSentAt = new Date().toISOString()
 
     setActiveChat((prev) =>
@@ -289,13 +318,20 @@ function App() {
           }
         : prev,
     )
-    setChatSending(true)
+    beginPending(key)
     setChatError(null)
 
     try {
       const reply = await postAgentMessage(chatId, message)
       setActiveChat((prev) => {
-        if (!prev) return prev
+        // The user may have switched chats or branches while this was in
+        // flight — prev is now a different conversation's state, fetched
+        // fresh from the server when they switched. Splicing this reply
+        // into it would corrupt whatever's currently on screen (dropping
+        // its real last message via slice(0, -1) and appending this one's
+        // instead) — the backend already saved the reply to the right
+        // place regardless; switching back re-fetches it correctly.
+        if (!prev || prev.id !== chatId || prev.active_branch_id !== branchId) return prev
         // Replace the optimistic user message with the authoritative
         // timestamp/usage the backend actually recorded for it.
         const messages = [
@@ -345,14 +381,15 @@ function App() {
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
       )
     } finally {
-      setChatSending(false)
+      endPending(key)
     }
   }
 
   async function handleForceCompress(): Promise<boolean> {
     if (!activeChatId) return false
     const chatId = activeChatId
-    setChatSending(true)
+    const key = chatKey(chatId)
+    beginPending(key)
     setChatError(null)
     try {
       const result = await forceCompress(chatId)
@@ -365,7 +402,7 @@ function App() {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
       return false
     } finally {
-      setChatSending(false)
+      endPending(key)
     }
   }
 
@@ -462,7 +499,8 @@ function App() {
     if (!activeChat?.lab_id) return
     const chatId = activeChat.id
     const labId = activeChat.lab_id
-    setChatSending(true)
+    const key = chatKey(chatId)
+    beginPending(key)
     setChatError(null)
     try {
       const reply = await analyzeLab(labId)
@@ -488,7 +526,7 @@ function App() {
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     } finally {
-      setChatSending(false)
+      endPending(key)
     }
   }
 
@@ -621,7 +659,7 @@ function App() {
             <ChatPanel
               messages={activeChat?.messages ?? []}
               estimate={activeChat?.estimate ?? null}
-              isSending={chatSending}
+              isSending={pendingKeys.has(chatKey(activeChatId ?? '', activeChat?.active_branch_id))}
               error={chatError}
               onSend={handleSendMessage}
               onForceCompress={handleForceCompress}
