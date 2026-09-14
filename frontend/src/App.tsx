@@ -16,25 +16,32 @@ import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
+  analyzeLab,
   ApiError,
   compareControlled,
   compareFormats,
   compareModels,
   compareReasoning,
   compareTemperatures,
+  createBranch,
   createChat,
+  createCheckpoint,
+  createLab,
   deleteChat,
+  deleteLab,
   estimateTask,
   forceCompress,
   getChat,
   listChats,
   postAgentMessage,
   renameChat,
-  setCompressionEnabled,
+  setActiveBranch,
+  setContextStrategy,
   type ChatDetail,
   type ChatSummary,
   type Comparison,
   type CompareOptions,
+  type ContextStrategy,
   type Estimate,
   type ModelComparison as ModelComparisonData,
   type RawResult,
@@ -44,6 +51,13 @@ import {
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
 type Mode = 'chat' | DemoMode
+
+// Identifies one send-like operation's target for the pendingKeys set below:
+// a chat by itself, or (for a branching chat) one specific branch within it —
+// branches share a chat id, so the id alone can't tell two of them apart.
+function chatKey(chatId: string, branchId?: string): string {
+  return `${chatId}:${branchId ?? ''}`
+}
 
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
   maxTokens: 1000,
@@ -92,8 +106,44 @@ function App() {
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
-  const [chatSending, setChatSending] = useState(false)
+  // Which chat/branch keys (see chatKey) currently have a send-like request
+  // in flight — a Set, not one shared boolean, so switching to a branch (or
+  // chat) with nothing in flight never shows another branch's spinner, and
+  // switching away from one that's still sending doesn't lose it either.
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
+  // The optimistic user bubble for a still-in-flight send, per chat/branch
+  // key — a plain local append to activeChat.messages doesn't survive
+  // navigating away and back, since switching replaces activeChat wholesale
+  // with a fresh server fetch, and the server doesn't have this message yet
+  // (PostMessage only saves user+assistant together, once the reply is in).
+  // Re-applied by withPendingMessage whenever a fetched ChatDetail is about
+  // to become activeChat, so switching back to a branch that's still
+  // sending shows the message again instead of a loader over nothing.
+  const [pendingSends, setPendingSends] = useState<Map<string, { content: string; sentAt: string }>>(
+    new Map(),
+  )
   const [chatError, setChatError] = useState<string | null>(null)
+
+  function beginPending(key: string) {
+    setPendingKeys((prev) => new Set(prev).add(key))
+  }
+  function endPending(key: string) {
+    setPendingKeys((prev) => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+  }
+
+  function withPendingMessage(detail: ChatDetail): ChatDetail {
+    const pending = pendingSends.get(chatKey(detail.id, detail.active_branch_id))
+    if (!pending) return detail
+    return {
+      ...detail,
+      messages: [...detail.messages, { role: 'user', content: pending.content, created_at: pending.sentAt }],
+    }
+  }
 
   const [estimateStatus, setEstimateStatus] = useState<Status>('idle')
   const [estimate, setEstimate] = useState<Estimate | null>(null)
@@ -145,7 +195,7 @@ function App() {
             last_context_tokens: 0,
             cumulative_total_tokens: 0,
             context_token_limit: 0,
-            compression_enabled: true,
+            context_strategy: 'sliding_window',
             history_keep_last_n: 10,
             summarized_message_count: 0,
             raw_message_count: 0,
@@ -167,6 +217,28 @@ function App() {
     init()
   }, [])
 
+  // While the coordinator's most recent fan-out still has a strategy chat
+  // pending, poll its detail so FanOutPanel updates live (in progress →
+  // replied/failed) without the user having to reload or re-select the chat.
+  // Self-terminating: once the fetched fan_out has nothing left pending, this
+  // effect's dependency flips to false and no new interval is scheduled.
+  useEffect(() => {
+    if (!activeChatId || !activeChat?.is_lab_coordinator) return
+    const pending = activeChat.fan_out?.some((entry) => entry.status === 'pending')
+    if (!pending) return
+
+    const chatId = activeChatId
+    const interval = window.setInterval(async () => {
+      try {
+        const detail = await getChat(chatId)
+        setActiveChat((prev) => (prev && prev.id === chatId ? detail : prev))
+      } catch {
+        // Transient poll failure — the next tick will retry.
+      }
+    }, 1500)
+    return () => window.clearInterval(interval)
+  }, [activeChatId, activeChat?.is_lab_coordinator, activeChat?.fan_out])
+
   async function handleNewChat() {
     setMode('chat')
     try {
@@ -180,7 +252,7 @@ function App() {
         last_context_tokens: 0,
         cumulative_total_tokens: 0,
         context_token_limit: 0,
-        compression_enabled: true,
+        context_strategy: 'sliding_window',
         history_keep_last_n: 10,
         summarized_message_count: 0,
         raw_message_count: 0,
@@ -200,7 +272,7 @@ function App() {
     try {
       const detail = await getChat(id)
       setActiveChatId(id)
-      setActiveChat(detail)
+      setActiveChat(withPendingMessage(detail))
       setChatError(null)
     } catch (err) {
       setChatError(
@@ -236,7 +308,7 @@ function App() {
       const next = remaining[remaining.length - 1]
       const detail = await getChat(next.id)
       setActiveChatId(next.id)
-      setActiveChat(detail)
+      setActiveChat(withPendingMessage(detail))
     } catch (err) {
       setChatError(
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
@@ -247,6 +319,12 @@ function App() {
   async function handleSendMessage(message: string) {
     if (!activeChatId) return
     const chatId = activeChatId
+    // Branches share one chat id, so switching tabs alone doesn't change
+    // chatId — capturing the branch too is what lets the merge below tell
+    // "still looking at the branch this was sent from" apart from "looking
+    // at a sibling branch of the same chat" once the reply comes back.
+    const branchId = activeChat?.active_branch_id
+    const key = chatKey(chatId, branchId)
     const optimisticSentAt = new Date().toISOString()
 
     setActiveChat((prev) =>
@@ -260,13 +338,21 @@ function App() {
           }
         : prev,
     )
-    setChatSending(true)
+    beginPending(key)
+    setPendingSends((prev) => new Map(prev).set(key, { content: message, sentAt: optimisticSentAt }))
     setChatError(null)
 
     try {
       const reply = await postAgentMessage(chatId, message)
       setActiveChat((prev) => {
-        if (!prev) return prev
+        // The user may have switched chats or branches while this was in
+        // flight — prev is now a different conversation's state, fetched
+        // fresh from the server when they switched. Splicing this reply
+        // into it would corrupt whatever's currently on screen (dropping
+        // its real last message via slice(0, -1) and appending this one's
+        // instead) — the backend already saved the reply to the right
+        // place regardless; switching back re-fetches it correctly.
+        if (!prev || prev.id !== chatId || prev.active_branch_id !== branchId) return prev
         // Replace the optimistic user message with the authoritative
         // timestamp/usage the backend actually recorded for it.
         const messages = [
@@ -293,10 +379,16 @@ function App() {
           cumulative_total_tokens: reply.cumulative_total_tokens,
           cumulative_cost_usd: reply.cumulative_cost_usd,
           context_token_limit: reply.context_token_limit,
-          compression_enabled: reply.compression_enabled,
+          context_strategy: reply.context_strategy,
           history_keep_last_n: reply.history_keep_last_n,
           summarized_message_count: reply.summarized_message_count,
           raw_message_count: reply.raw_message_count,
+          facts: reply.facts,
+          branches: reply.branches,
+          active_branch_id: reply.active_branch_id,
+          lab_id: reply.lab_id,
+          is_lab_coordinator: reply.is_lab_coordinator,
+          fan_out: reply.fan_out,
           compression_events: reply.new_compression_event
             ? [...prev.compression_events, reply.new_compression_event]
             : prev.compression_events,
@@ -310,14 +402,21 @@ function App() {
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
       )
     } finally {
-      setChatSending(false)
+      endPending(key)
+      setPendingSends((prev) => {
+        if (!prev.has(key)) return prev
+        const next = new Map(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
   async function handleForceCompress(): Promise<boolean> {
     if (!activeChatId) return false
     const chatId = activeChatId
-    setChatSending(true)
+    const key = chatKey(chatId)
+    beginPending(key)
     setChatError(null)
     try {
       const result = await forceCompress(chatId)
@@ -330,18 +429,131 @@ function App() {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
       return false
     } finally {
-      setChatSending(false)
+      endPending(key)
     }
   }
 
-  async function handleSetCompressionEnabled(enabled: boolean) {
+  async function handleSetContextStrategy(strategy: ContextStrategy) {
     if (!activeChatId) return
     const chatId = activeChatId
     try {
-      const updated = await setCompressionEnabled(chatId, enabled)
+      const updated = await setContextStrategy(chatId, strategy)
       setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleCreateCheckpoint(label: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await createCheckpoint(chatId, label)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleCreateBranch(checkpointIndex: number, fromBranchId: string, label: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await createBranch(chatId, checkpointIndex, fromBranchId, label)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleSelectBranch(branchId: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await setActiveBranch(chatId, branchId)
+      setActiveChat((prev) => (prev && prev.id === chatId ? withPendingMessage(updated) : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleNewLab(label: string) {
+    setMode('chat')
+    try {
+      const { chats: created } = await createLab(label)
+      setChats((prev) => [...prev, ...created])
+      const coordinator = created.find((chat) => chat.is_lab_coordinator) ?? created[0]
+      const detail = await getChat(coordinator.id)
+      setActiveChatId(coordinator.id)
+      setActiveChat(detail)
+      setChatError(null)
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleDeleteLab(labId: string) {
+    try {
+      await deleteLab(labId)
+      const remaining = chats.filter((chat) => chat.lab_id !== labId)
+      setChats(remaining)
+
+      if (activeChat?.lab_id !== labId) return
+
+      if (remaining.length === 0) {
+        await handleNewChat()
+        return
+      }
+      const next = remaining[remaining.length - 1]
+      const detail = await getChat(next.id)
+      setActiveChatId(next.id)
+      setActiveChat(withPendingMessage(detail))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleJumpToCoordinator() {
+    if (!activeChat?.lab_id) return
+    const coordinator = chats.find(
+      (chat) => chat.lab_id === activeChat.lab_id && chat.is_lab_coordinator,
+    )
+    if (!coordinator) return
+    await handleSelectChat(coordinator.id)
+  }
+
+  async function handleAnalyzeLab() {
+    if (!activeChat?.lab_id) return
+    const chatId = activeChat.id
+    const labId = activeChat.lab_id
+    const key = chatKey(chatId)
+    beginPending(key)
+    setChatError(null)
+    try {
+      const reply = await analyzeLab(labId)
+      setActiveChat((prev) =>
+        prev && prev.id === chatId
+          ? {
+              ...prev,
+              messages: [
+                ...prev.messages,
+                {
+                  role: 'assistant' as const,
+                  content: reply.reply,
+                  created_at: reply.assistant_message_created_at,
+                  usage: reply.usage ?? undefined,
+                  is_lab_analysis: true,
+                },
+              ],
+              cumulative_total_tokens: reply.cumulative_total_tokens,
+              cumulative_cost_usd: reply.cumulative_cost_usd,
+            }
+          : prev,
+      )
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    } finally {
+      endPending(key)
     }
   }
 
@@ -459,11 +671,13 @@ function App() {
             activeChatId={mode === 'chat' ? activeChatId : null}
             activeDemo={activeDemo}
             onNewChat={handleNewChat}
+            onNewLab={handleNewLab}
             onSelectChat={handleSelectChat}
             onSelectDemo={(demo) => setMode(demo)}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
+            onDeleteLab={handleDeleteLab}
           />
         )}
 
@@ -472,20 +686,40 @@ function App() {
             <ChatPanel
               messages={activeChat?.messages ?? []}
               estimate={activeChat?.estimate ?? null}
-              isSending={chatSending}
+              isSending={pendingKeys.has(chatKey(activeChatId ?? '', activeChat?.active_branch_id))}
               error={chatError}
               onSend={handleSendMessage}
               onForceCompress={handleForceCompress}
-              onSetCompressionEnabled={handleSetCompressionEnabled}
+              contextStrategy={activeChat?.context_strategy ?? 'sliding_window'}
+              onSetContextStrategy={handleSetContextStrategy}
               lastContextTokens={activeChat?.last_context_tokens ?? 0}
               cumulativeTotalTokens={activeChat?.cumulative_total_tokens ?? 0}
               cumulativeCostUsd={activeChat?.cumulative_cost_usd}
               contextTokenLimit={activeChat?.context_token_limit ?? 0}
-              compressionEnabled={activeChat?.compression_enabled ?? true}
               historyKeepLastN={activeChat?.history_keep_last_n ?? 10}
               summarizedMessageCount={activeChat?.summarized_message_count ?? 0}
               rawMessageCount={activeChat?.raw_message_count ?? 0}
               compressionEvents={activeChat?.compression_events ?? []}
+              facts={activeChat?.facts}
+              branches={activeChat?.branches ?? []}
+              checkpoints={activeChat?.checkpoints ?? []}
+              activeBranchId={activeChat?.active_branch_id}
+              onCreateCheckpoint={handleCreateCheckpoint}
+              onCreateBranch={handleCreateBranch}
+              onSelectBranch={handleSelectBranch}
+              isLabChat={Boolean(activeChat?.lab_id)}
+              isLabCoordinator={Boolean(activeChat?.is_lab_coordinator)}
+              onAnalyzeLab={handleAnalyzeLab}
+              coordinatorTitle={
+                activeChat?.lab_id
+                  ? chats.find(
+                      (chat) => chat.lab_id === activeChat.lab_id && chat.is_lab_coordinator,
+                    )?.title
+                  : undefined
+              }
+              onJumpToCoordinator={handleJumpToCoordinator}
+              fanOut={activeChat?.fan_out}
+              onJumpToChat={handleSelectChat}
             />
           </main>
         ) : (
