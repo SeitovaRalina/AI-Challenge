@@ -109,6 +109,7 @@ func main() {
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/active-branch", setActiveBranchHandler(agent))
 	mux.HandleFunc("POST /api/labs", createLabHandler(agent))
 	mux.HandleFunc("POST /api/labs/{id}/analyze", analyzeLabHandler(agent))
+	mux.HandleFunc("DELETE /api/labs/{id}", deleteLabHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -17,11 +17,19 @@ const (
 	StrategyStickyFacts    ContextStrategy = "sticky_facts"
 	StrategyBranching      ContextStrategy = "branching"
 	StrategyRollingSummary ContextStrategy = "rolling_summary"
+
+	// StrategyCoordinator is not a real context-management strategy — it
+	// marks a lab's dispatcher chat (see lab.go), which never calls the LLM
+	// for its own turn (PostChatMessage routes it to PostCoordinatorMessage
+	// instead of PostMessage/buildContextMessages) and is deliberately
+	// excluded from IsValid: nothing should ever PATCH a chat onto it by
+	// hand, only CreateLab sets it.
+	StrategyCoordinator ContextStrategy = "coordinator"
 )
 
-// IsValid reports whether s is one of the four known strategies — used to
+// IsValid reports whether s is one of the four real strategies — used to
 // reject an unrecognized value from PATCH .../strategy instead of silently
-// storing garbage.
+// storing garbage. StrategyCoordinator is intentionally not valid here.
 func (s ContextStrategy) IsValid() bool {
 	switch s {
 	case StrategySlidingWindow, StrategyStickyFacts, StrategyBranching, StrategyRollingSummary:
@@ -96,6 +104,12 @@ func (a *Agent) SetContextStrategy(chatID string, strategy ContextStrategy) (*Ch
 	chat, ok := a.chats[chatID]
 	if !ok {
 		return nil, ErrChatNotFound
+	}
+	if chat.LabID != "" {
+		// A lab's chats have their strategy fixed by CreateLab — the whole
+		// comparison depends on each one staying on the strategy it was
+		// created with.
+		return nil, ErrWrongStrategy
 	}
 	chat.ContextStrategy = strategy
 	if strategy == StrategyBranching {

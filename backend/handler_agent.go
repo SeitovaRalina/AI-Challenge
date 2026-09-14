@@ -143,7 +143,7 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		reply, err := agent.PostMessageWithFanOut(ctx, chatID, message)
+		reply, err := agent.PostChatMessage(ctx, chatID, message)
 		if err != nil {
 			log.Printf("agent message failed: %v", err)
 			writeAgentError(w, err)
@@ -379,5 +379,17 @@ func analyzeLabHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)
+	}
+}
+
+// deleteLabHandler removes a lab and every chat it owns.
+func deleteLabHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		labID := r.PathValue("id")
+		if err := agent.DeleteLab(labID); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

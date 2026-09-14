@@ -122,11 +122,16 @@ func (c *Chat) addUsage(usage *TokenUsage) {
 }
 
 // ChatSummary is a chat's identity without its message history, for listing.
+// ContextStrategy/IsLabCoordinator let the sidebar render a lab's strategy
+// badges and highlight its coordinator without fetching every chat's full
+// detail.
 type ChatSummary struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"created_at"`
-	LabID     string    `json:"lab_id,omitempty"`
+	ID               string          `json:"id"`
+	Title            string          `json:"title"`
+	CreatedAt        time.Time       `json:"created_at"`
+	LabID            string          `json:"lab_id,omitempty"`
+	ContextStrategy  ContextStrategy `json:"context_strategy"`
+	IsLabCoordinator bool            `json:"is_lab_coordinator,omitempty"`
 }
 
 // Agent is the entity that owns every chat and lab, encapsulating
@@ -239,7 +244,7 @@ func (a *Agent) CreateChat() ChatSummary {
 	defer a.mu.Unlock()
 
 	chat := a.newChatLocked("Новый чат", a.contextStrategyDefault, "")
-	return chatSummary(chat)
+	return chatSummary(chat, a.labs)
 }
 
 // ListChats returns every chat's summary, oldest first.
@@ -249,7 +254,7 @@ func (a *Agent) ListChats() []ChatSummary {
 
 	summaries := make([]ChatSummary, 0, len(a.order))
 	for _, id := range a.order {
-		summaries = append(summaries, chatSummary(a.chats[id]))
+		summaries = append(summaries, chatSummary(a.chats[id], a.labs))
 	}
 	return summaries
 }
@@ -293,7 +298,7 @@ func (a *Agent) RenameChat(chatID, title string) (ChatSummary, error) {
 	if err := a.store.Save(chat); err != nil {
 		log.Printf("agent: failed to persist renamed chat %s: %v", chat.ID, err)
 	}
-	return chatSummary(chat), nil
+	return chatSummary(chat, a.labs), nil
 }
 
 // copyChat returns a copy of chat safe to hand to a caller outside the lock:
@@ -385,8 +390,23 @@ func truncateForLog(s string) string {
 	return s[:maxLen] + "…"
 }
 
-func chatSummary(c *Chat) ChatSummary {
-	return ChatSummary{ID: c.ID, Title: c.Title, CreatedAt: c.CreatedAt, LabID: c.LabID}
+// chatSummary takes the Agent's live labs map (never re-locks — every caller
+// already holds a.mu) so it can tell whether c is its lab's coordinator.
+func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
+	isCoordinator := false
+	if c.LabID != "" {
+		if lab, ok := labs[c.LabID]; ok {
+			isCoordinator = lab.CoordinatorChatID == c.ID
+		}
+	}
+	return ChatSummary{
+		ID:               c.ID,
+		Title:            c.Title,
+		CreatedAt:        c.CreatedAt,
+		LabID:            c.LabID,
+		ContextStrategy:  c.ContextStrategy,
+		IsLabCoordinator: isCoordinator,
+	}
 }
 
 // ChatDetail is one chat's full state as returned to the frontend, including

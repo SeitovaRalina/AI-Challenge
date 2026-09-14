@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,23 +12,44 @@ import (
 	"time"
 )
 
-// Lab groups the chats created by "+ Лаборатория": one chat per strategy in
-// labStrategies, all fed the same messages, so the day-10 assignment's own
-// testing method ("run the same scenario under each strategy, compare") is
-// one click instead of manually retyping every message into several chats.
+// Lab groups the chats created by "+ Лаборатория": a dispatcher chat
+// (CoordinatorChatID) with no strategy of its own, and one real chat per
+// strategy in labStrategies (ChatIDs), all fed the same messages — so the
+// day-10 assignment's own testing method ("run the same scenario under each
+// strategy, compare") is one click instead of manually retyping every
+// message into several chats. Only the coordinator accepts direct input
+// (see PostChatMessage): the strategy chats exist purely to show each
+// strategy's own result, so the comparison always reflects the same input.
 type Lab struct {
 	ID                string    `json:"id"`
 	Label             string    `json:"label"`
-	ChatIDs           []string  `json:"chat_ids"`
 	CoordinatorChatID string    `json:"coordinator_chat_id"`
+	ChatIDs           []string  `json:"chat_ids"`
 	CreatedAt         time.Time `json:"created_at"`
 }
 
 // labStrategies is fixed on purpose: exactly the 3 strategies day 10 asks
-// for, in this order — index 0 becomes the lab's coordinator chat, the one
-// the user actually types into. rolling_summary (day 9) is deliberately left
-// out of labs; it's still available as a normal chat's own strategy.
+// for. rolling_summary (day 9) is deliberately left out of labs; it's still
+// available as a normal chat's own strategy.
 var labStrategies = []ContextStrategy{StrategySlidingWindow, StrategyStickyFacts, StrategyBranching}
+
+// strategyTitle is the strategy chats' own (fixed, never renamed) title —
+// capitalized for display, unlike strategyLabel's lowercase form used in the
+// analysis prompt's transcript headers.
+func strategyTitle(s ContextStrategy) string {
+	switch s {
+	case StrategySlidingWindow:
+		return "Sliding Window"
+	case StrategyStickyFacts:
+		return "Sticky Facts"
+	case StrategyBranching:
+		return "Branching"
+	case StrategyRollingSummary:
+		return "Rolling Summary"
+	default:
+		return string(s)
+	}
+}
 
 func strategyLabel(s ContextStrategy) string {
 	switch s {
@@ -46,9 +68,8 @@ func strategyLabel(s ContextStrategy) string {
 
 var ErrLabNotFound = fmt.Errorf("agent: lab not found")
 
-// IsLabCoordinator reports whether chatID is labID's coordinator chat — the
-// one the user actually types into, and the only one PostMessageWithFanOut
-// fans a message out from. Safe to call with an empty labID (returns false).
+// IsLabCoordinator reports whether chatID is labID's coordinator chat. Safe
+// to call with an empty labID (returns false).
 func (a *Agent) IsLabCoordinator(labID, chatID string) bool {
 	if labID == "" {
 		return false
@@ -59,8 +80,9 @@ func (a *Agent) IsLabCoordinator(labID, chatID string) bool {
 	return ok && lab.CoordinatorChatID == chatID
 }
 
-// CreateLab creates one chat per strategy in labStrategies, all tagged with
-// label in their title, groups them under a new Lab, and returns both.
+// CreateLab creates the coordinator chat plus one chat per strategy in
+// labStrategies, all grouped under a new Lab, and returns the lab and every
+// chat's summary (coordinator first).
 func (a *Agent) CreateLab(label string) (*Lab, []ChatSummary, error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -70,65 +92,142 @@ func (a *Agent) CreateLab(label string) (*Lab, []ChatSummary, error) {
 	lab := &Lab{ID: newChatID(), Label: label, CreatedAt: time.Now()}
 
 	a.mu.Lock()
-	summaries := make([]ChatSummary, 0, len(labStrategies))
-	for i, strategy := range labStrategies {
-		title := fmt.Sprintf("%s [%s]", label, strategyLabel(strategy))
-		chat := a.newChatLocked(title, strategy, lab.ID)
-		lab.ChatIDs = append(lab.ChatIDs, chat.ID)
-		if i == 0 {
-			lab.CoordinatorChatID = chat.ID
-		}
-		summaries = append(summaries, chatSummary(chat))
-	}
+	// Inserted before any chat exists so chatSummary (called below, via the
+	// same a.labs map) can already resolve IsLabCoordinator correctly — Lab
+	// is a pointer, so filling in CoordinatorChatID/ChatIDs afterward is
+	// still visible through this same map entry.
 	a.labs[lab.ID] = lab
+
+	coordinator := a.newChatLocked(label, StrategyCoordinator, lab.ID)
+	lab.CoordinatorChatID = coordinator.ID
+
+	summaries := make([]ChatSummary, 0, len(labStrategies)+1)
+	for _, strategy := range labStrategies {
+		chat := a.newChatLocked(strategyTitle(strategy), strategy, lab.ID)
+		lab.ChatIDs = append(lab.ChatIDs, chat.ID)
+		summaries = append(summaries, chatSummary(chat, a.labs))
+	}
+	summaries = append([]ChatSummary{chatSummary(coordinator, a.labs)}, summaries...)
 	a.mu.Unlock()
 
 	if err := a.labStore.Save(lab); err != nil {
 		log.Printf("agent: failed to persist lab %s: %v", lab.ID, err)
 	}
-	log.Printf("agent: created lab %s %q with %d chat(s), coordinator %s", lab.ID, label, len(lab.ChatIDs), lab.CoordinatorChatID)
+	log.Printf("agent: created lab %s %q, coordinator %s, %d strategy chat(s)", lab.ID, label, lab.CoordinatorChatID, len(lab.ChatIDs))
 
 	return lab, summaries, nil
 }
 
-// PostMessageWithFanOut sends message through chatID's own PostMessage as
-// usual, then — only if chatID is a lab's coordinator chat — fires the same
-// message into every other chat of that lab in the background, each under
-// its own strategy. The caller's response only ever waits on the
-// coordinator's own reply; siblings run with a fresh background context
-// (the request's own ctx is cancelled the moment the HTTP handler returns)
-// and a failure in one is logged, never surfaced — a stalled sibling must
-// never block or fail the chat the user is actually looking at.
-func (a *Agent) PostMessageWithFanOut(ctx context.Context, chatID, userMessage string) (*AgentReply, error) {
-	reply, err := a.PostMessage(ctx, chatID, userMessage)
-	if err != nil {
-		return nil, err
-	}
-
+// DeleteLab removes a lab and every chat it owns (coordinator and strategy
+// chats alike) — a lab's member chats can't be deleted individually (see
+// PostChatMessage/SetContextStrategy's ErrWrongStrategy guards), so this is
+// the only way to clean one up.
+func (a *Agent) DeleteLab(labID string) error {
 	a.mu.Lock()
-	var siblings []string
-	if chat, ok := a.chats[chatID]; ok && chat.LabID != "" {
-		if lab, ok := a.labs[chat.LabID]; ok && lab.CoordinatorChatID == chatID {
-			for _, id := range lab.ChatIDs {
-				if id != chatID {
-					siblings = append(siblings, id)
-				}
-			}
-		}
+	lab, ok := a.labs[labID]
+	if !ok {
+		a.mu.Unlock()
+		return ErrLabNotFound
 	}
+	chatIDs := append([]string{lab.CoordinatorChatID}, lab.ChatIDs...)
+	delete(a.labs, labID)
 	a.mu.Unlock()
 
-	for _, siblingID := range siblings {
-		go func(id string) {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			if _, err := a.PostMessage(bgCtx, id, userMessage); err != nil {
-				log.Printf("agent: lab fan-out to chat %s failed: %v", id, err)
+	for _, id := range chatIDs {
+		if err := a.DeleteChat(id); err != nil && !errors.Is(err, ErrChatNotFound) {
+			log.Printf("agent: failed to delete lab %s chat %s: %v", labID, id, err)
+		}
+	}
+	log.Printf("agent: deleted lab %s", labID)
+	return a.labStore.Delete(labID)
+}
+
+// PostChatMessage routes a chat message to the right handling: a lab's
+// coordinator dispatches and fans out (PostCoordinatorMessage); one of a
+// lab's own strategy chats never accepts direct input — only the
+// coordinator's fan-out writes to it, so the comparison always reflects the
+// same input across every strategy; every other chat is a normal turn.
+func (a *Agent) PostChatMessage(ctx context.Context, chatID, userMessage string) (*AgentReply, error) {
+	a.mu.Lock()
+	chat, ok := a.chats[chatID]
+	if !ok {
+		a.mu.Unlock()
+		return nil, ErrChatNotFound
+	}
+	strategy := chat.ContextStrategy
+	labID := chat.LabID
+	a.mu.Unlock()
+
+	if strategy == StrategyCoordinator {
+		return a.PostCoordinatorMessage(ctx, chatID, userMessage)
+	}
+	if labID != "" {
+		return nil, ErrWrongStrategy
+	}
+	return a.PostMessage(ctx, chatID, userMessage)
+}
+
+// PostCoordinatorMessage logs userMessage into the coordinator chat itself
+// with a synthetic acknowledgement — the coordinator has no context strategy
+// of its own to answer with, so it never calls the LLM for its own turn —
+// and fans the same message out in the background to every one of the lab's
+// real strategy chats, each through its own PostMessage. Mirrors
+// PostMessage's own snapshot/unlock/slow-work/relock shape, even though the
+// "slow work" here is just spawning goroutines rather than an LLM call.
+func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage string) (*AgentReply, error) {
+	a.mu.Lock()
+	chat, ok := a.chats[chatID]
+	if !ok {
+		a.mu.Unlock()
+		return nil, ErrChatNotFound
+	}
+	if chat.ContextStrategy != StrategyCoordinator {
+		a.mu.Unlock()
+		return nil, ErrWrongStrategy
+	}
+	lab, labOK := a.labs[chat.LabID]
+
+	userSentAt := time.Now()
+	ack := coordinatorAckText(labOK, lab)
+	assistantSentAt := time.Now()
+	chat.Messages = append(chat.Messages,
+		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt},
+		AgentMessage{Role: "assistant", Content: ack, CreatedAt: assistantSentAt},
+	)
+	if err := a.store.Save(chat); err != nil {
+		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
+	}
+	agentReply := a.buildAgentReplyLocked(chat, ack, nil, userSentAt, assistantSentAt)
+	a.mu.Unlock()
+
+	if labOK {
+		// Sequential, not fan-out-in-parallel: three concurrent completions
+		// against the same shared LiteLLM key queue behind each other on the
+		// proxy side anyway, and were observed timing out under that
+		// contention even at a generous per-call budget. One background
+		// goroutine calling each strategy chat in turn keeps the coordinator
+		// reply instant while giving every strategy its own full budget.
+		chatIDs := append([]string(nil), lab.ChatIDs...)
+		go func() {
+			for _, id := range chatIDs {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+				_, err := a.PostMessage(bgCtx, id, userMessage)
+				cancel()
+				if err != nil {
+					log.Printf("agent: lab fan-out to chat %s failed: %v", id, err)
+				}
 			}
-		}(siblingID)
+		}()
 	}
 
-	return reply, nil
+	return agentReply, nil
+}
+
+func coordinatorAckText(labOK bool, lab *Lab) string {
+	if !labOK {
+		return "Сообщение получено."
+	}
+	return fmt.Sprintf("Отправлено в %d стратегии лаборатории «%s».", len(lab.ChatIDs), lab.Label)
 }
 
 // labAnalysisSystemPrompt asks the model to compare each strategy's
@@ -145,12 +244,13 @@ You will see one full transcript per strategy (and, where relevant, its current 
 
 Be concrete — reference actual differences you see in the transcripts and the numbers given, not generic statements that could apply to any comparison. Output plain text only: no JSON, no markdown formatting, no headers beyond the four numbered points themselves.`
 
-// AnalyzeLab gathers every chat in labID's full transcript and current
-// strategy state, asks the LLM for one comparison along the assignment's own
-// 4 axes, and appends that analysis as a real assistant message (flagged
-// IsLabAnalysis so the frontend can style it distinctly) into the lab's
-// coordinator chat — so the comparison lives in the conversation itself,
-// not only in a PR description.
+// AnalyzeLab gathers every one of labID's strategy chats' full transcript
+// and current strategy state (the coordinator itself is never included — it
+// has no content of its own to compare), asks the LLM for one comparison
+// along the assignment's own 4 axes, and appends that analysis as a real
+// assistant message (flagged IsLabAnalysis so the frontend can style it
+// distinctly) into the coordinator chat — so the comparison lives in the
+// conversation itself, not only in a PR description.
 func (a *Agent) AnalyzeLab(ctx context.Context, labID string) (*AgentReply, error) {
 	a.mu.Lock()
 	lab, ok := a.labs[labID]
@@ -186,7 +286,7 @@ func (a *Agent) AnalyzeLab(ctx context.Context, labID string) (*AgentReply, erro
 	if !ok {
 		return nil, ErrChatNotFound
 	}
-	chat.appendActiveMessages(AgentMessage{
+	chat.Messages = append(chat.Messages, AgentMessage{
 		Role:          "assistant",
 		Content:       analysis,
 		CreatedAt:     sentAt,
@@ -202,8 +302,8 @@ func (a *Agent) AnalyzeLab(ctx context.Context, labID string) (*AgentReply, erro
 	return a.buildAgentReplyLocked(chat, analysis, usage, sentAt, sentAt), nil
 }
 
-// buildLabAnalysisPrompt renders every lab chat's transcript (and, for
-// sticky_facts, its current facts) as plain text for the analysis call.
+// buildLabAnalysisPrompt renders every lab strategy chat's transcript (and,
+// for sticky_facts, its current facts) as plain text for the analysis call.
 func buildLabAnalysisPrompt(chats []*Chat) string {
 	var sb strings.Builder
 	for _, c := range chats {
@@ -254,7 +354,26 @@ func (s *LabStore) Save(lab *Lab) error {
 	if !replaced {
 		labs = append(labs, lab)
 	}
+	return s.saveAll(labs)
+}
 
+// Delete removes labID from the index file. Deleting a lab that was never
+// persisted is not an error.
+func (s *LabStore) Delete(labID string) error {
+	labs, err := s.LoadAll()
+	if err != nil {
+		return err
+	}
+	kept := labs[:0]
+	for _, lab := range labs {
+		if lab.ID != labID {
+			kept = append(kept, lab)
+		}
+	}
+	return s.saveAll(kept)
+}
+
+func (s *LabStore) saveAll(labs []*Lab) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
