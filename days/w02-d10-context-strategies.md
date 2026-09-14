@@ -42,12 +42,3 @@
 ## Формат
 
 Видео + Код
-
-## Комментарии к реализации
-
-- sliding_window: просто last N, без summary (день 9 минус сжатие).
-- sticky_facts: KV facts map[string]string, обновляется LLM-вызовом после каждого user-сообщения, в промпт — facts + last N. Facts живут на уровне сессии, не переносятся в постоянный профиль пользователя между сессиями/оценками — иначе нарушает правило concept.md "no personalization until real historical data+RAG".
-- branching: checkpoint = снапшот индекса истории; branch = копия хвоста от checkpoint под новым branchId; переключение — клиент выбирает активный branchId.
-- UI: дропдаун стратегии на сессию, для branching — кнопки checkpoint/new branch + таб-переключатель веток.
-- Нужно наглядно показать текущий контекст агента под каждую стратегию: sliding window — последние N сообщений, sticky facts — сами факты, branching — дерево/список веток и активная ветка.
-- Рефакторинг: разбить agent.go/handler.go по файлам, следуя стилю samber/cc-skills-golang (golang-code-style, golang-project-layout).
