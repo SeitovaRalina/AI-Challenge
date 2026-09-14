@@ -288,7 +288,9 @@ func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage 
 	if labOK {
 		a.startFanOutLocked(lab)
 	}
-	agentReply := a.buildAgentReplyLocked(chat, ack, nil, userSentAt, assistantSentAt)
+	// The coordinator is never a branching chat — chat.ActiveBranchID (empty)
+	// is a fine branchID here, same as it always was.
+	agentReply := a.buildAgentReplyLocked(chat, chat.ActiveBranchID, ack, nil, userSentAt, assistantSentAt)
 	a.mu.Unlock()
 
 	if labOK {
@@ -392,7 +394,7 @@ func (a *Agent) AnalyzeLab(ctx context.Context, labID string) (*AgentReply, erro
 	}
 	log.Printf("agent: lab %s: analysis posted to coordinator chat %s", labID, coordinatorID)
 
-	return a.buildAgentReplyLocked(chat, analysis, usage, sentAt, sentAt), nil
+	return a.buildAgentReplyLocked(chat, chat.ActiveBranchID, analysis, usage, sentAt, sentAt), nil
 }
 
 // buildLabAnalysisPrompt renders every lab strategy chat's transcript (and,

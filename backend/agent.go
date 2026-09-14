@@ -76,14 +76,21 @@ type Chat struct {
 	LabID string `json:"lab_id,omitempty"`
 }
 
-// activeMessages returns the message slice PostMessage/chatDetail should
-// read: the active Branch's messages under the branching strategy, or
-// Messages for every other strategy. Centralizing this here means only this
-// one method (and its write-side counterpart, appendActiveMessages) needs to
-// know branching is special — everything else just calls it.
-func (c *Chat) activeMessages() []AgentMessage {
+// branchMessages/appendToBranch, branchEstimate/setBranchEstimate, and
+// branchLastContextTokens/setBranchLastContextTokens are the branch-scoped
+// primitives every per-turn read/write goes through, all keyed by an
+// explicit branchID rather than the chat's current ActiveBranchID — a turn
+// in progress (mid-LLM-call, lock released) must keep writing to the branch
+// it started on even if SetActiveBranch changes which branch is "active"
+// while it's still running; reading c.ActiveBranchID again at write time
+// would silently redirect that turn's result onto whatever branch the user
+// has since switched to. activeMessages/activeEstimate/activeLastContextTokens
+// below are thin convenience wrappers for callers that genuinely want
+// "whichever branch is active right now" (chatDetail, GetChat) rather than
+// "the branch a specific turn belongs to" (PostMessage).
+func (c *Chat) branchMessages(branchID string) []AgentMessage {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			return b.Messages
 		}
 		return nil
@@ -91,10 +98,9 @@ func (c *Chat) activeMessages() []AgentMessage {
 	return c.Messages
 }
 
-// appendActiveMessages is activeMessages' write-side counterpart.
-func (c *Chat) appendActiveMessages(msgs ...AgentMessage) {
+func (c *Chat) appendToBranch(branchID string, msgs ...AgentMessage) {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			b.Messages = append(b.Messages, msgs...)
 			return
 		}
@@ -102,16 +108,9 @@ func (c *Chat) appendActiveMessages(msgs ...AgentMessage) {
 	c.Messages = append(c.Messages, msgs...)
 }
 
-// activeEstimate/setActiveEstimate and activeLastContextTokens/
-// setActiveLastContextTokens mirror activeMessages/appendActiveMessages for
-// the two other pieces of per-turn state a branch needs its own copy of: two
-// branches forked from the same checkpoint diverge afterward (different
-// messages, different estimate, different token count), so the card shown
-// alongside a branch — and the budget PostMessage guards against — must
-// follow whichever branch is active, not one value shared by the whole chat.
-func (c *Chat) activeEstimate() *EstimateResponse {
+func (c *Chat) branchEstimate(branchID string) *EstimateResponse {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			return b.Estimate
 		}
 		return nil
@@ -119,9 +118,9 @@ func (c *Chat) activeEstimate() *EstimateResponse {
 	return c.Estimate
 }
 
-func (c *Chat) setActiveEstimate(e *EstimateResponse) {
+func (c *Chat) setBranchEstimate(branchID string, e *EstimateResponse) {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			b.Estimate = e
 			return
 		}
@@ -129,9 +128,9 @@ func (c *Chat) setActiveEstimate(e *EstimateResponse) {
 	c.Estimate = e
 }
 
-func (c *Chat) activeLastContextTokens() int {
+func (c *Chat) branchLastContextTokens(branchID string) int {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			return b.LastContextTokens
 		}
 		return 0
@@ -139,15 +138,19 @@ func (c *Chat) activeLastContextTokens() int {
 	return c.LastContextTokens
 }
 
-func (c *Chat) setActiveLastContextTokens(n int) {
+func (c *Chat) setBranchLastContextTokens(branchID string, n int) {
 	if c.ContextStrategy == StrategyBranching {
-		if b := c.Branches[c.ActiveBranchID]; b != nil {
+		if b := c.Branches[branchID]; b != nil {
 			b.LastContextTokens = n
 			return
 		}
 	}
 	c.LastContextTokens = n
 }
+
+func (c *Chat) activeMessages() []AgentMessage    { return c.branchMessages(c.ActiveBranchID) }
+func (c *Chat) activeEstimate() *EstimateResponse { return c.branchEstimate(c.ActiveBranchID) }
+func (c *Chat) activeLastContextTokens() int      { return c.branchLastContextTokens(c.ActiveBranchID) }
 
 // addUsage folds one LLM call's usage into the chat's running totals — every
 // strategy side-call (summarization, facts extraction, lab analysis) bills

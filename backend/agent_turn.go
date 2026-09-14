@@ -80,6 +80,12 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	facts := chat.Facts
 	summary := chat.Summary
 	summarizedThrough := chat.SummarizedThrough
+	// Captured once, up front — this turn's result must land on the branch
+	// it was actually asked about even if SetActiveBranch runs while the
+	// (slow) LLM call below is in flight; re-reading chat.ActiveBranchID
+	// after the call would silently redirect the reply onto whatever branch
+	// the user has switched to in the meantime.
+	branchID := chat.ActiveBranchID
 	a.mu.Unlock()
 
 	log.Printf("agent: chat %s: turn %d, strategy %s, message length %d", chatID, len(history)/2+1, strategy, len(userMessage))
@@ -108,7 +114,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		log.Printf("agent: chat %s: context limit reached (%d/%d tokens, %d left), skipping LLM call",
 			chatID, lastContextTokens, a.contextTokenLimit, remainingBudget)
 		reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
-		return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, nil)
+		return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 	}
 
 	messages := make([]chatMessage, 0, len(history)+3)
@@ -145,7 +151,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		if errors.Is(err, ErrContextOverflow) {
 			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
 			reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
-			return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, nil)
+			return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
@@ -172,7 +178,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			// the chat's running totals must reflect it.
 			usage := tokenUsageFrom(completion.Usage)
 			reply := truncatedReplyText(maxTokens)
-			return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, usage)
+			return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, usage)
 		}
 		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(completion.Choices[0].Message.Content))
 		return nil, err
@@ -187,12 +193,12 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 
 	a.mu.Lock()
 
-	chat.appendActiveMessages(
+	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
 		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
 	if turn.Estimate != nil {
-		chat.setActiveEstimate(turn.Estimate)
+		chat.setBranchEstimate(branchID, turn.Estimate)
 		log.Printf("agent: chat %s: estimate updated, %.1f-%.1fh, %d subtask(s)",
 			chatID, turn.Estimate.EstimatedHoursMin, turn.Estimate.EstimatedHoursMax, len(turn.Estimate.Subtasks))
 	}
@@ -200,7 +206,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.setActiveLastContextTokens(usage.TotalTokens)
+		chat.setBranchLastContextTokens(branchID, usage.TotalTokens)
 		chat.addUsage(usage)
 	}
 
@@ -208,7 +214,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
 	}
 
-	agentReply := a.buildAgentReplyLocked(chat, turn.Reply, usage, userSentAt, assistantSentAt)
+	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
 	a.mu.Unlock()
 
 	// Runs its own (possibly slow) LLM calls outside the lock just released,
@@ -243,10 +249,13 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	return agentReply, nil
 }
 
-// buildAgentReplyLocked assembles an AgentReply from chat's current state.
-// Callers must hold a.mu. Shared by PostMessage's success path and
-// finishGracefulTurn so both return the exact same shape.
-func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsage, userSentAt, assistantSentAt time.Time) *AgentReply {
+// buildAgentReplyLocked assembles an AgentReply from chat's current state,
+// describing the branch this particular turn happened on (branchID) rather
+// than whichever branch happens to be active right now — those can differ
+// if SetActiveBranch ran while this turn's LLM call was in flight. Callers
+// must hold a.mu. Shared by PostMessage's success path and finishGracefulTurn
+// so both return the exact same shape.
+func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage *TokenUsage, userSentAt, assistantSentAt time.Time) *AgentReply {
 	isCoordinator := false
 	var fanOut []FanOutStatus
 	if chat.LabID != "" {
@@ -259,12 +268,12 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsag
 	}
 	return &AgentReply{
 		Reply:                     reply,
-		Estimate:                  chat.activeEstimate(),
+		Estimate:                  chat.branchEstimate(branchID),
 		Title:                     chat.Title,
 		Usage:                     usage,
 		UserMessageCreatedAt:      userSentAt,
 		AssistantMessageCreatedAt: assistantSentAt,
-		LastContextTokens:         chat.activeLastContextTokens(),
+		LastContextTokens:         chat.branchLastContextTokens(branchID),
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
@@ -274,7 +283,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsag
 		RawMessageCount:           len(chat.Messages) - chat.SummarizedThrough,
 		Facts:                     chat.Facts,
 		Branches:                  branchSummaries(chat),
-		ActiveBranchID:            chat.ActiveBranchID,
+		ActiveBranchID:            branchID,
 		LabID:                     chat.LabID,
 		IsLabCoordinator:          isCoordinator,
 		FanOut:                    fanOut,
@@ -313,13 +322,16 @@ func truncatedReplyText(budget int) string {
 // usage is nil when the LLM was never actually called (the pre-call guard,
 // or an outright upstream rejection). When a call DID happen but its content
 // came out unusable, pass its real usage: the request genuinely happened and
-// cost real tokens, so the chat's running totals must reflect it.
-func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, userMessage, reply string, userSentAt time.Time, usage *TokenUsage) (*AgentReply, error) {
+// cost real tokens, so the chat's running totals must reflect it. branchID is
+// the branch this turn was snapshotted from (see PostMessage) — the same
+// captured-not-re-read value buildAgentReplyLocked's own doc comment
+// explains.
+func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, branchID, userMessage, reply string, userSentAt time.Time, usage *TokenUsage) (*AgentReply, error) {
 	assistantSentAt := time.Now()
 
 	a.mu.Lock()
 
-	chat.appendActiveMessages(
+	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
 		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
@@ -327,7 +339,7 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, userMessage,
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.setActiveLastContextTokens(usage.TotalTokens)
+		chat.setBranchLastContextTokens(branchID, usage.TotalTokens)
 		chat.addUsage(usage)
 	}
 	if err := a.store.Save(chat); err != nil {
@@ -335,7 +347,7 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, userMessage,
 	}
 
 	chatID := chat.ID
-	agentReply := a.buildAgentReplyLocked(chat, reply, usage, userSentAt, assistantSentAt)
+	agentReply := a.buildAgentReplyLocked(chat, branchID, reply, usage, userSentAt, assistantSentAt)
 	a.mu.Unlock()
 
 	// A graceful turn (context full, or a truncated reply) never touches
