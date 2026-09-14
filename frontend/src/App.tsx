@@ -25,10 +25,12 @@ import {
   createChat,
   deleteChat,
   estimateTask,
+  forceCompress,
   getChat,
   listChats,
   postAgentMessage,
   renameChat,
+  setCompressionEnabled,
   type ChatDetail,
   type ChatSummary,
   type Comparison,
@@ -143,6 +145,11 @@ function App() {
             last_context_tokens: 0,
             cumulative_total_tokens: 0,
             context_token_limit: 0,
+            compression_enabled: true,
+            history_keep_last_n: 10,
+            summarized_message_count: 0,
+            raw_message_count: 0,
+            compression_events: [],
           })
           return
         }
@@ -173,6 +180,11 @@ function App() {
         last_context_tokens: 0,
         cumulative_total_tokens: 0,
         context_token_limit: 0,
+        compression_enabled: true,
+        history_keep_last_n: 10,
+        summarized_message_count: 0,
+        raw_message_count: 0,
+        compression_events: [],
       })
       setChatError(null)
     } catch (err) {
@@ -281,6 +293,13 @@ function App() {
           cumulative_total_tokens: reply.cumulative_total_tokens,
           cumulative_cost_usd: reply.cumulative_cost_usd,
           context_token_limit: reply.context_token_limit,
+          compression_enabled: reply.compression_enabled,
+          history_keep_last_n: reply.history_keep_last_n,
+          summarized_message_count: reply.summarized_message_count,
+          raw_message_count: reply.raw_message_count,
+          compression_events: reply.new_compression_event
+            ? [...prev.compression_events, reply.new_compression_event]
+            : prev.compression_events,
         }
       })
       setChats((prev) =>
@@ -292,6 +311,37 @@ function App() {
       )
     } finally {
       setChatSending(false)
+    }
+  }
+
+  async function handleForceCompress(): Promise<boolean> {
+    if (!activeChatId) return false
+    const chatId = activeChatId
+    setChatSending(true)
+    setChatError(null)
+    try {
+      const result = await forceCompress(chatId)
+      setActiveChat((prev) => (prev && prev.id === chatId ? result.chat : prev))
+      if (!result.compressed) {
+        setChatError('Сжимать нечего — сырых сообщений не больше, чем нужно оставить как есть.')
+      }
+      return result.compressed
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+      return false
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  async function handleSetCompressionEnabled(enabled: boolean) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await setCompressionEnabled(chatId, enabled)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
   }
 
@@ -425,10 +475,17 @@ function App() {
               isSending={chatSending}
               error={chatError}
               onSend={handleSendMessage}
+              onForceCompress={handleForceCompress}
+              onSetCompressionEnabled={handleSetCompressionEnabled}
               lastContextTokens={activeChat?.last_context_tokens ?? 0}
               cumulativeTotalTokens={activeChat?.cumulative_total_tokens ?? 0}
               cumulativeCostUsd={activeChat?.cumulative_cost_usd}
               contextTokenLimit={activeChat?.context_token_limit ?? 0}
+              compressionEnabled={activeChat?.compression_enabled ?? true}
+              historyKeepLastN={activeChat?.history_keep_last_n ?? 10}
+              summarizedMessageCount={activeChat?.summarized_message_count ?? 0}
+              rawMessageCount={activeChat?.raw_message_count ?? 0}
+              compressionEvents={activeChat?.compression_events ?? []}
             />
           </main>
         ) : (

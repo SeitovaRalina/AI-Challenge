@@ -88,6 +88,16 @@ type AgentMessage struct {
 // though it was never itself sent as part of a prompt yet.
 // CumulativeTotalTokens/CumulativeCostUsd are a running sum across every
 // turn, for display only.
+//
+// Summary/SummarizedThrough implement Day 9's history compression: Messages
+// is never trimmed or deleted (a chat's full raw history always survives a
+// restart, per Day 7), but once it grows large, PostMessage only resends the
+// last few messages verbatim — everything before index SummarizedThrough is
+// instead represented by the rolling Summary text, kept up to date by its
+// own periodic LLM call (see compressHistoryIfDue). CompressionEnabled is a
+// per-chat, live-toggleable switch (not a global setting) so the same
+// conversation can be compared with compression on and off without starting
+// a new chat.
 type Chat struct {
 	ID                    string            `json:"id"`
 	Title                 string            `json:"title"`
@@ -97,6 +107,27 @@ type Chat struct {
 	LastContextTokens     int               `json:"last_context_tokens"`
 	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
 	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
+	Summary               string            `json:"summary,omitempty"`
+	SummarizedThrough     int               `json:"summarized_through"`
+	CompressionEnabled    bool              `json:"compression_enabled"`
+	CompressionEvents     []CompressionEvent `json:"compression_events"`
+}
+
+// CompressionEvent records one history-compression fold, kept purely for
+// demo/audit visibility — so a reviewer scrolling the chat (or reading logs)
+// can see exactly when compression happened, how much it folded, and what
+// the resulting summary actually said, not just infer it from token counts.
+// FoldEnd is the Messages index the fold advanced SummarizedThrough to; the
+// frontend anchors this event's notice right before that index, so it always
+// renders at the exact point in history where the fold happened, even after
+// a reload (Messages itself is never reordered or trimmed).
+type CompressionEvent struct {
+	FoldEnd         int       `json:"fold_end"`
+	FoldedCount     int       `json:"folded_count"`
+	SummarizedTotal int       `json:"summarized_total"`
+	Summary         string    `json:"summary"`
+	CreatedAt       time.Time `json:"created_at"`
+	Manual          bool      `json:"manual"`
 }
 
 // ChatSummary is a chat's identity without its message history, for listing.
@@ -115,6 +146,9 @@ type Agent struct {
 	store             *ChatStore
 	contextTokenLimit int // 0 disables the pre-call overflow guard entirely
 
+	historyKeepLastN          int  // 0 disables history compression entirely
+	historyCompressionDefault bool // initial Chat.CompressionEnabled for new chats
+
 	mu    sync.Mutex
 	chats map[string]*Chat
 	order []string // chat IDs, oldest first, for stable listing order
@@ -126,12 +160,19 @@ type Agent struct {
 // is the token budget PostMessage guards against before every LLM call (see
 // its doc comment) and the denominator the frontend's context-usage bar uses;
 // pass 0 to disable the guard and always call through to the LLM.
-func NewAgent(client *LiteLLMClient, store *ChatStore, contextTokenLimit int) *Agent {
+// historyKeepLastN is how many of the most recent messages every chat keeps
+// "as is" once compression is due (see compressHistoryIfDue); pass 0 to
+// disable compression entirely, for every chat, regardless of their own
+// CompressionEnabled. historyCompressionDefault seeds new chats'
+// CompressionEnabled — existing chats keep whatever they were last set to.
+func NewAgent(client *LiteLLMClient, store *ChatStore, contextTokenLimit, historyKeepLastN int, historyCompressionDefault bool) *Agent {
 	agent := &Agent{
-		client:            client,
-		store:             store,
-		contextTokenLimit: contextTokenLimit,
-		chats:             make(map[string]*Chat),
+		client:                    client,
+		store:                     store,
+		contextTokenLimit:         contextTokenLimit,
+		historyKeepLastN:          historyKeepLastN,
+		historyCompressionDefault: historyCompressionDefault,
+		chats:                     make(map[string]*Chat),
 	}
 
 	chats, err := store.LoadAll()
@@ -159,10 +200,11 @@ func (a *Agent) CreateChat() ChatSummary {
 	defer a.mu.Unlock()
 
 	chat := &Chat{
-		ID:        newChatID(),
-		Title:     "Новый чат",
-		CreatedAt: time.Now(),
-		Messages:  []AgentMessage{},
+		ID:                 newChatID(),
+		Title:              "Новый чат",
+		CreatedAt:          time.Now(),
+		Messages:           []AgentMessage{},
+		CompressionEnabled: a.historyCompressionDefault,
 	}
 	a.chats[chat.ID] = chat
 	a.order = append(a.order, chat.ID)
@@ -257,6 +299,11 @@ type AgentReply struct {
 	CumulativeTotalTokens     int               `json:"cumulative_total_tokens"`
 	CumulativeCostUsd         *float64          `json:"cumulative_cost_usd,omitempty"`
 	ContextTokenLimit         int               `json:"context_token_limit"`
+	CompressionEnabled        bool              `json:"compression_enabled"`
+	HistoryKeepLastN          int               `json:"history_keep_last_n"`
+	SummarizedMessageCount    int               `json:"summarized_message_count"`
+	RawMessageCount           int               `json:"raw_message_count"`
+	NewCompressionEvent       *CompressionEvent `json:"new_compression_event,omitempty"`
 }
 
 // PostMessage appends the user's message to chatID's history, asks the LLM
@@ -275,6 +322,9 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	history := append([]AgentMessage(nil), chat.Messages...)
 	currentEstimate := chat.Estimate
 	lastContextTokens := chat.LastContextTokens
+	compressionEnabled := chat.CompressionEnabled
+	summary := chat.Summary
+	summarizedThrough := chat.SummarizedThrough
 	a.mu.Unlock()
 
 	log.Printf("agent: chat %s: turn %d, message length %d", chatID, len(history)/2+1, len(userMessage))
@@ -308,7 +358,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		log.Printf("agent: chat %s: context limit reached (%d/%d tokens, %d left), skipping LLM call",
 			chatID, lastContextTokens, a.contextTokenLimit, remainingBudget)
 		reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
-		return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
+		return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, nil)
 	}
 
 	messages := make([]chatMessage, 0, len(history)+3)
@@ -324,7 +374,27 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			})
 		}
 	}
-	for _, m := range history {
+	// Day 9 history compression: once compressHistoryIfDue has folded an
+	// older segment into Summary, only the raw tail after SummarizedThrough
+	// is resent verbatim — Summary stands in for everything before it. This
+	// is what keeps the prompt (and therefore LastContextTokens) from
+	// growing linearly forever; without it, every turn resends the entire
+	// history, as before Day 9.
+	raw := history
+	if compressionEnabled {
+		if summarizedThrough > len(history) {
+			summarizedThrough = 0
+		}
+		raw = history[summarizedThrough:]
+		if summary != "" {
+			messages = append(messages, chatMessage{
+				Role: "system",
+				Content: "Резюме более ранней части диалога (используй как контекст; " +
+					"для точных чисел оценки полагайся на «Текущая актуальная оценка» выше, а не на резюме): " + summary,
+			})
+		}
+	}
+	for _, m := range raw {
 		messages = append(messages, chatMessage{Role: m.Role, Content: m.Content})
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
@@ -343,7 +413,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		if errors.Is(err, ErrContextOverflow) {
 			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
 			reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
-			return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, nil)
+			return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, nil)
 		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
 		return nil, err
@@ -371,7 +441,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			// included) instead of staying frozen at the stale pre-call value.
 			usage := tokenUsageFrom(completion.Usage)
 			reply := truncatedReplyText(maxTokens)
-			return a.finishGracefulTurn(chat, userMessage, reply, userSentAt, usage)
+			return a.finishGracefulTurn(ctx, chat, userMessage, reply, userSentAt, usage)
 		}
 		log.Printf("agent: chat %s: failed to parse LLM turn: %v; raw response: %s", chatID, err, truncateForLog(completion.Choices[0].Message.Content))
 		return nil, err
@@ -385,7 +455,6 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	chat.Messages = append(chat.Messages,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
@@ -416,7 +485,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
 	}
 
-	return &AgentReply{
+	agentReply := &AgentReply{
 		Reply:                     turn.Reply,
 		Estimate:                  chat.Estimate,
 		Title:                     chat.Title,
@@ -427,7 +496,32 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
-	}, nil
+		CompressionEnabled:        chat.CompressionEnabled,
+		HistoryKeepLastN:          a.historyKeepLastN,
+		SummarizedMessageCount:    chat.SummarizedThrough,
+		RawMessageCount:           len(chat.Messages) - chat.SummarizedThrough,
+	}
+	a.mu.Unlock()
+
+	// Runs its own (possibly slow) LLM call outside the lock just released,
+	// so a compression call for this chat never blocks any other chat — see
+	// compressHistoryIfDue's doc comment for why this is safe to call here.
+	// agentReply's compression fields were captured BEFORE this call, so if
+	// it actually folds something, refresh them — otherwise this turn's own
+	// response would understate what just happened to its own chat.
+	if event := a.compressHistoryIfDue(ctx, chatID); event != nil {
+		agentReply.NewCompressionEvent = event
+		a.mu.Lock()
+		if chat, ok := a.chats[chatID]; ok {
+			agentReply.SummarizedMessageCount = chat.SummarizedThrough
+			agentReply.RawMessageCount = len(chat.Messages) - chat.SummarizedThrough
+			agentReply.CumulativeTotalTokens = chat.CumulativeTotalTokens
+			agentReply.CumulativeCostUsd = chat.CumulativeCostUsd
+		}
+		a.mu.Unlock()
+	}
+
+	return agentReply, nil
 }
 
 // contextFullReplyText is shown when the dialog's history genuinely leaves
@@ -468,11 +562,10 @@ func truncatedReplyText(budget int) string {
 // content came out unusable (a truncated response that couldn't be
 // parsed), pass its real usage: the request genuinely happened and cost
 // real tokens, so the chat's running totals must reflect it.
-func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSentAt time.Time, usage *TokenUsage) (*AgentReply, error) {
+func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, userMessage, reply string, userSentAt time.Time, usage *TokenUsage) (*AgentReply, error) {
 	assistantSentAt := time.Now()
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	chat.Messages = append(chat.Messages,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
@@ -497,7 +590,8 @@ func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSe
 		log.Printf("agent: failed to persist chat %s: %v", chat.ID, err)
 	}
 
-	return &AgentReply{
+	chatID := chat.ID
+	agentReply := &AgentReply{
 		Reply:                     reply,
 		Estimate:                  chat.Estimate,
 		Title:                     chat.Title,
@@ -508,7 +602,216 @@ func (a *Agent) finishGracefulTurn(chat *Chat, userMessage, reply string, userSe
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
 		ContextTokenLimit:         a.contextTokenLimit,
-	}, nil
+		CompressionEnabled:        chat.CompressionEnabled,
+		HistoryKeepLastN:          a.historyKeepLastN,
+		SummarizedMessageCount:    chat.SummarizedThrough,
+		RawMessageCount:           len(chat.Messages) - chat.SummarizedThrough,
+	}
+	a.mu.Unlock()
+
+	if event := a.compressHistoryIfDue(ctx, chatID); event != nil {
+		agentReply.NewCompressionEvent = event
+		a.mu.Lock()
+		if chat, ok := a.chats[chatID]; ok {
+			agentReply.SummarizedMessageCount = chat.SummarizedThrough
+			agentReply.RawMessageCount = len(chat.Messages) - chat.SummarizedThrough
+			agentReply.CumulativeTotalTokens = chat.CumulativeTotalTokens
+			agentReply.CumulativeCostUsd = chat.CumulativeCostUsd
+		}
+		a.mu.Unlock()
+	}
+
+	return agentReply, nil
+}
+
+// summarizationSystemPrompt asks for a plain-text, mergeable summary — not
+// the {"reply","estimate"} envelope agentSystemPrompt requires, since this
+// call's output is consumed as raw text (folded into Chat.Summary), never
+// parsed as JSON.
+const summarizationSystemPrompt = `You are compressing an older part of a conversation between a user and a software-task-estimation assistant, so that part can be dropped from future prompts without losing anything important.
+
+Produce a single, concise summary in Russian (a short paragraph, a few sentences), capturing: what was discussed, what was decided or asked, and any concrete numbers, constraints, or open questions mentioned. Precise current numeric estimates do not need to be preserved here — they are tracked separately and always sent in full.
+
+If an existing summary is provided, merge it with the new segment into one updated summary: consolidate, do not just append the new part after the old one, and do not restate it as "previously, the summary said...".
+
+Output plain text only: no JSON, no markdown formatting, no headers.`
+
+// summarizeHistory asks the LLM to fold priorSummary (if any) and segment
+// into one updated summary. It never mutates chat state itself — the caller
+// (runCompression) commits the result under the lock.
+func (a *Agent) summarizeHistory(ctx context.Context, priorSummary string, segment []AgentMessage) (string, *TokenUsage, error) {
+	messages := make([]chatMessage, 0, len(segment)+3)
+	messages = append(messages, chatMessage{Role: "system", Content: summarizationSystemPrompt})
+	if priorSummary != "" {
+		messages = append(messages, chatMessage{
+			Role:    "system",
+			Content: "Текущее резюме более ранней части диалога:\n" + priorSummary,
+		})
+	}
+	for _, m := range segment {
+		messages = append(messages, chatMessage{Role: m.Role, Content: m.Content})
+	}
+	messages = append(messages, chatMessage{
+		Role:    "user",
+		Content: "Сформируй одно обновлённое резюме, объединив текущее резюме (если оно было) с этим фрагментом диалога.",
+	})
+
+	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, 0, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	summary := strings.TrimSpace(completion.Choices[0].Message.Content)
+	if summary == "" {
+		return "", nil, fmt.Errorf("%w: summarization returned empty text", ErrInvalidOutput)
+	}
+	return summary, tokenUsageFrom(completion.Usage), nil
+}
+
+// runCompression does the actual LLM call and commit for both the automatic
+// trigger and the manual /compress command: summarize [priorSummary, segment)
+// into an updated Summary, and advance SummarizedThrough to foldEnd. Its own
+// (possibly slow) LLM call happens with no lock held; only the final commit
+// briefly re-acquires it — the same snapshot/unlock/slow-call/relock pattern
+// PostMessage's own main call uses, so this never blocks other chats.
+func (a *Agent) runCompression(ctx context.Context, chatID, priorSummary string, segment []AgentMessage, foldEnd int, manual bool) (*CompressionEvent, error) {
+	updated, usage, err := a.summarizeHistory(ctx, priorSummary, segment)
+	if err != nil {
+		return nil, err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	chat, ok := a.chats[chatID]
+	if !ok {
+		return nil, nil
+	}
+	chat.Summary = updated
+	chat.SummarizedThrough = foldEnd
+	if usage != nil {
+		chat.CumulativeTotalTokens += usage.TotalTokens
+		if usage.CostUsd != nil {
+			if chat.CumulativeCostUsd == nil {
+				cost := *usage.CostUsd
+				chat.CumulativeCostUsd = &cost
+			} else {
+				*chat.CumulativeCostUsd += *usage.CostUsd
+			}
+		}
+	}
+	event := CompressionEvent{
+		FoldEnd:         foldEnd,
+		FoldedCount:     len(segment),
+		SummarizedTotal: foldEnd,
+		Summary:         updated,
+		CreatedAt:       time.Now(),
+		Manual:          manual,
+	}
+	chat.CompressionEvents = append(chat.CompressionEvents, event)
+	log.Printf("agent: chat %s: compressed %d message(s) into summary (manual=%t, %d raw message(s) remain)\n  summary: %s",
+		chatID, len(segment), manual, len(chat.Messages)-foldEnd, truncateForLog(updated))
+	if err := a.store.Save(chat); err != nil {
+		log.Printf("agent: failed to persist chat %s after compression: %v", chatID, err)
+	}
+	return &event, nil
+}
+
+// compressHistoryIfDue is the automatic trigger, called after every turn:
+// once the raw (not-yet-summarized) tail has grown past 2*historyKeepLastN
+// messages, it folds everything except the last historyKeepLastN back into
+// the rolling Summary. This keeps the raw tail actually sent to the model
+// between N and 2N messages at all times, instead of growing without bound.
+// A failure here (e.g. the summarization call itself hits the upstream
+// context/rate limits) is logged and swallowed — it must never fail the
+// user's own turn, which has already completed by the time this runs; the
+// next trigger will simply try again with a larger segment.
+func (a *Agent) compressHistoryIfDue(ctx context.Context, chatID string) *CompressionEvent {
+	a.mu.Lock()
+	chat, ok := a.chats[chatID]
+	if !ok || !chat.CompressionEnabled || a.historyKeepLastN <= 0 {
+		a.mu.Unlock()
+		return nil
+	}
+	n := a.historyKeepLastN
+	total := len(chat.Messages)
+	summarizedThrough := chat.SummarizedThrough
+	if summarizedThrough > total {
+		summarizedThrough = 0
+	}
+	if total-summarizedThrough <= 2*n {
+		a.mu.Unlock()
+		return nil
+	}
+	foldEnd := total - n
+	segment := append([]AgentMessage(nil), chat.Messages[summarizedThrough:foldEnd]...)
+	priorSummary := chat.Summary
+	a.mu.Unlock()
+
+	event, err := a.runCompression(ctx, chatID, priorSummary, segment, foldEnd, false)
+	if err != nil {
+		log.Printf("agent: chat %s: auto history compression failed, keeping previous summary: %v", chatID, err)
+		return nil
+	}
+	return event
+}
+
+// ForceCompress runs the same fold immediately for the /compress command,
+// ignoring the 2N auto-trigger threshold and chat.CompressionEnabled (a
+// manual request overrides the auto toggle) — it only requires that at
+// least one message beyond the last historyKeepLastN exists to fold in.
+// Returns false, nil (not an error) when there's nothing to compress yet.
+func (a *Agent) ForceCompress(ctx context.Context, chatID string) (bool, error) {
+	a.mu.Lock()
+	chat, ok := a.chats[chatID]
+	if !ok {
+		a.mu.Unlock()
+		return false, ErrChatNotFound
+	}
+	n := a.historyKeepLastN
+	if n <= 0 {
+		a.mu.Unlock()
+		return false, nil
+	}
+	total := len(chat.Messages)
+	summarizedThrough := chat.SummarizedThrough
+	if summarizedThrough > total {
+		summarizedThrough = 0
+	}
+	if total-summarizedThrough <= n {
+		a.mu.Unlock()
+		return false, nil
+	}
+	foldEnd := total - n
+	segment := append([]AgentMessage(nil), chat.Messages[summarizedThrough:foldEnd]...)
+	priorSummary := chat.Summary
+	a.mu.Unlock()
+
+	if _, err := a.runCompression(ctx, chatID, priorSummary, segment, foldEnd, true); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SetCompressionEnabled flips a single chat's own compression toggle without
+// touching its already-accumulated Summary/SummarizedThrough — turning it
+// off simply stops folding further messages in (PostMessage falls back to
+// resending the full raw history), turning it back on resumes from wherever
+// it left off.
+func (a *Agent) SetCompressionEnabled(chatID string, enabled bool) (*Chat, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	chat, ok := a.chats[chatID]
+	if !ok {
+		return nil, ErrChatNotFound
+	}
+	chat.CompressionEnabled = enabled
+	if err := a.store.Save(chat); err != nil {
+		log.Printf("agent: failed to persist chat %s after compression toggle: %v", chat.ID, err)
+	}
+
+	copied := *chat
+	copied.Messages = append([]AgentMessage(nil), chat.Messages...)
+	return &copied, nil
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -601,27 +904,41 @@ func chatSummary(c *Chat) ChatSummary {
 // against, so a page reload restores the token panel exactly as a new
 // message would have left it.
 type ChatDetail struct {
-	ID                    string            `json:"id"`
-	Title                 string            `json:"title"`
-	CreatedAt             time.Time         `json:"created_at"`
-	Messages              []AgentMessage    `json:"messages"`
-	Estimate              *EstimateResponse `json:"estimate"`
-	LastContextTokens     int               `json:"last_context_tokens"`
-	CumulativeTotalTokens int               `json:"cumulative_total_tokens"`
-	CumulativeCostUsd     *float64          `json:"cumulative_cost_usd,omitempty"`
-	ContextTokenLimit     int               `json:"context_token_limit"`
+	ID                     string            `json:"id"`
+	Title                  string            `json:"title"`
+	CreatedAt              time.Time         `json:"created_at"`
+	Messages               []AgentMessage    `json:"messages"`
+	Estimate               *EstimateResponse `json:"estimate"`
+	LastContextTokens      int               `json:"last_context_tokens"`
+	CumulativeTotalTokens  int               `json:"cumulative_total_tokens"`
+	CumulativeCostUsd      *float64          `json:"cumulative_cost_usd,omitempty"`
+	ContextTokenLimit      int               `json:"context_token_limit"`
+	CompressionEnabled     bool              `json:"compression_enabled"`
+	HistoryKeepLastN       int               `json:"history_keep_last_n"`
+	SummarizedMessageCount int               `json:"summarized_message_count"`
+	RawMessageCount        int               `json:"raw_message_count"`
+	CompressionEvents      []CompressionEvent `json:"compression_events"`
 }
 
-func chatDetail(c *Chat, contextTokenLimit int) ChatDetail {
+func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
+	events := c.CompressionEvents
+	if events == nil {
+		events = []CompressionEvent{}
+	}
 	return ChatDetail{
-		ID:                    c.ID,
-		Title:                 c.Title,
-		CreatedAt:             c.CreatedAt,
-		Messages:              c.Messages,
-		Estimate:              c.Estimate,
-		LastContextTokens:     c.LastContextTokens,
-		CumulativeTotalTokens: c.CumulativeTotalTokens,
-		CumulativeCostUsd:     c.CumulativeCostUsd,
-		ContextTokenLimit:     contextTokenLimit,
+		ID:                     c.ID,
+		Title:                  c.Title,
+		CreatedAt:              c.CreatedAt,
+		Messages:               c.Messages,
+		Estimate:               c.Estimate,
+		LastContextTokens:      c.LastContextTokens,
+		CumulativeTotalTokens:  c.CumulativeTotalTokens,
+		CumulativeCostUsd:      c.CumulativeCostUsd,
+		ContextTokenLimit:      contextTokenLimit,
+		CompressionEnabled:     c.CompressionEnabled,
+		HistoryKeepLastN:       historyKeepLastN,
+		SummarizedMessageCount: c.SummarizedThrough,
+		RawMessageCount:        len(c.Messages) - c.SummarizedThrough,
+		CompressionEvents:      events,
 	}
 }

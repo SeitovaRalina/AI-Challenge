@@ -272,7 +272,7 @@ func getChatHandler(agent *Agent) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "чат не найден")
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit))
+		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
 	}
 }
 
@@ -361,6 +361,83 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, reply)
+	}
+}
+
+// forceCompressResponse reports whether the /compress command actually found
+// anything to fold (false when the raw tail is already at or below the
+// configured keep-window), alongside the chat's resulting full state.
+type forceCompressResponse struct {
+	Compressed bool       `json:"compressed"`
+	Chat       ChatDetail `json:"chat"`
+}
+
+// compressChatHandler forces an immediate history-compression pass for one
+// chat (the /compress command), instead of waiting for the automatic
+// 2*historyKeepLastN trigger — useful for demoing compression without first
+// generating enough turns for it to fire on its own.
+func compressChatHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		compressed, err := agent.ForceCompress(ctx, chatID)
+		if err != nil {
+			log.Printf("force compress failed: %v", err)
+			switch {
+			case errors.Is(err, ErrChatNotFound):
+				writeError(w, http.StatusNotFound, "чат не найден")
+			case errors.Is(err, ErrUpstreamAuth):
+				writeError(w, http.StatusBadGateway, "ошибка авторизации LLM")
+			case errors.Is(err, ErrUpstreamUnavailable):
+				writeError(w, http.StatusBadGateway, "сервис LLM сейчас недоступен")
+			case errors.Is(err, ErrInvalidOutput):
+				writeError(w, http.StatusBadGateway, "LLM вернул некорректный ответ")
+			default:
+				writeError(w, http.StatusInternalServerError, "внутренняя ошибка")
+			}
+			return
+		}
+
+		chat, err := agent.GetChat(chatID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "чат не найден")
+			return
+		}
+		writeJSON(w, http.StatusOK, forceCompressResponse{
+			Compressed: compressed,
+			Chat:       chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN),
+		})
+	}
+}
+
+// setCompressionRequest is the payload accepted by
+// PATCH /api/agent/chats/{id}/compression.
+type setCompressionRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// setCompressionHandler flips one chat's own compression toggle live, so the
+// same conversation can be compared with compression on and off without
+// starting a new chat.
+func setCompressionHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req setCompressionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		chat, err := agent.SetCompressionEnabled(chatID, req.Enabled)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "чат не найден")
+			return
+		}
+		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
 	}
 }
 

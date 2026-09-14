@@ -235,6 +235,15 @@ export interface AgentMessage {
   usage?: TokenUsage
 }
 
+export interface CompressionEvent {
+  fold_end: number
+  folded_count: number
+  summarized_total: number
+  summary: string
+  created_at: string
+  manual: boolean
+}
+
 export interface ChatDetail {
   id: string
   title: string
@@ -245,6 +254,11 @@ export interface ChatDetail {
   cumulative_total_tokens: number
   cumulative_cost_usd?: number
   context_token_limit: number
+  compression_enabled: boolean
+  history_keep_last_n: number
+  summarized_message_count: number
+  raw_message_count: number
+  compression_events: CompressionEvent[]
 }
 
 export interface AgentReply {
@@ -258,6 +272,16 @@ export interface AgentReply {
   cumulative_total_tokens: number
   cumulative_cost_usd?: number
   context_token_limit: number
+  compression_enabled: boolean
+  history_keep_last_n: number
+  summarized_message_count: number
+  raw_message_count: number
+  new_compression_event?: CompressionEvent | null
+}
+
+export interface ForceCompressResult {
+  compressed: boolean
+  chat: ChatDetail
 }
 
 export function listChats(): Promise<ChatSummary[]> {
@@ -288,4 +312,18 @@ export function postAgentMessage(
   message: string,
 ): Promise<AgentReply> {
   return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, { message })
+}
+
+export function forceCompress(chatId: string): Promise<ForceCompressResult> {
+  return postJson<ForceCompressResult>(`/api/agent/chats/${chatId}/compress`, {})
+}
+
+export function setCompressionEnabled(
+  chatId: string,
+  enabled: boolean,
+): Promise<ChatDetail> {
+  return request<ChatDetail>(`/api/agent/chats/${chatId}/compression`, {
+    method: 'PATCH',
+    body: { enabled },
+  })
 }
