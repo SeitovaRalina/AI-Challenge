@@ -136,7 +136,7 @@ func (a *Agent) PostMessageWithFanOut(ctx context.Context, chatID, userMessage s
 // resulting message doubles as the assignment's own required comparison.
 const labAnalysisSystemPrompt = `You are comparing how the SAME conversation played out under different context-management strategies in a software-task-estimation assistant.
 
-You will see one full transcript per strategy (and, where relevant, its current facts or branch state) plus its token/cost totals. Compare them along exactly these four points, each its own short labeled paragraph, in Russian:
+You will see one full transcript per strategy (and, where relevant, its current facts or branch state) plus its token/cost totals. The output is rendered as Markdown with math support, so two formatting rules matter: refer to each strategy only by the plain, space-separated name given in its transcript header (e.g. "sliding window", "sticky facts") — never with an underscore, which is parsed as emphasis — and never write a literal "$" character; write a cost as a plain number followed by "USD" (e.g. "0.00044 USD"), since a pair of "$" anywhere in the text is parsed as a math span and silently deletes everything between them. Compare them along exactly these four points, each its own short labeled paragraph, in Russian:
 
 1. Качество ответов
 2. Стабильность (не теряет ли важные детали из начала диалога)
@@ -207,9 +207,9 @@ func (a *Agent) AnalyzeLab(ctx context.Context, labID string) (*AgentReply, erro
 func buildLabAnalysisPrompt(chats []*Chat) string {
 	var sb strings.Builder
 	for _, c := range chats {
-		sb.WriteString(fmt.Sprintf("### Стратегия: %s (всего токенов: %d", c.ContextStrategy, c.CumulativeTotalTokens))
+		sb.WriteString(fmt.Sprintf("### Стратегия: %s (всего токенов: %d", strategyLabel(c.ContextStrategy), c.CumulativeTotalTokens))
 		if c.CumulativeCostUsd != nil {
-			sb.WriteString(fmt.Sprintf(", $%.5f", *c.CumulativeCostUsd))
+			sb.WriteString(fmt.Sprintf(", %.5f USD", *c.CumulativeCostUsd))
 		}
 		sb.WriteString(")\n")
 		for _, m := range c.Messages {

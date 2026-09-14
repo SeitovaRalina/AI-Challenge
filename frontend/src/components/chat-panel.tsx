@@ -1,13 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
-import { HelpCircle, Minimize2, X } from 'lucide-react'
+import { Minimize2, Sparkles, X } from 'lucide-react'
 
 import emptyStateGif from '@/assets/empty_state.gif'
+import { BranchToolbar } from '@/components/branch-toolbar'
 import { ChatEstimateCard } from '@/components/chat-estimate-card'
+import { ContextPopup } from '@/components/context-popup'
+import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { cn } from 'cn'
-import type { AgentMessage, CompressionEvent, Estimate, TokenUsage } from '@/lib/api'
+import type {
+  AgentMessage,
+  BranchSummary,
+  Checkpoint,
+  CompressionEvent,
+  ContextStrategy,
+  Estimate,
+  TokenUsage,
+} from '@/lib/api'
 
 const EXAMPLE_TASK =
   'Обновить устаревшее Flutter-приложение до новой версии Flutter, обновить зависимости, исправить проблемы сборки под iOS и Android и подготовить новые билды.'
@@ -15,18 +26,13 @@ const EXAMPLE_TASK =
 const COMPOSER_MAX_HEIGHT = 200
 const TOKENS_COMMAND = '/tokens'
 const COMPRESS_COMMAND = '/compress'
+const CONTEXT_COMMAND = '/context'
+const ANALYZE_COMMAND = '/analyze'
 
 interface SlashCommand {
   name: string
   description: string
 }
-
-// Extend this list as more slash commands are added — the composer's
-// autocomplete dropdown is driven entirely by it.
-const SLASH_COMMANDS: SlashCommand[] = [
-  { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
-  { name: COMPRESS_COMMAND, description: 'сжать историю сейчас' },
-]
 
 interface ChatPanelProps {
   messages: AgentMessage[]
@@ -35,16 +41,26 @@ interface ChatPanelProps {
   error: string | null
   onSend: (message: string) => void
   onForceCompress: () => Promise<boolean>
-  onSetCompressionEnabled: (enabled: boolean) => void
+  contextStrategy: ContextStrategy
+  onSetContextStrategy: (strategy: ContextStrategy) => void
   lastContextTokens: number
   cumulativeTotalTokens: number
   cumulativeCostUsd?: number
   contextTokenLimit: number
-  compressionEnabled: boolean
   historyKeepLastN: number
   summarizedMessageCount: number
   rawMessageCount: number
   compressionEvents: CompressionEvent[]
+  facts?: Record<string, string>
+  branches: BranchSummary[]
+  checkpoints: Checkpoint[]
+  activeBranchId?: string
+  onCreateCheckpoint: (label: string) => void
+  onCreateBranch: (checkpointIndex: number, fromBranchId: string, label: string) => void
+  onSelectBranch: (branchId: string) => void
+  isLabChat: boolean
+  isLabCoordinator: boolean
+  onAnalyzeLab: () => void
 }
 
 export function ChatPanel({
@@ -54,29 +70,54 @@ export function ChatPanel({
   error,
   onSend,
   onForceCompress,
-  onSetCompressionEnabled,
+  contextStrategy,
+  onSetContextStrategy,
   lastContextTokens,
   cumulativeTotalTokens,
   cumulativeCostUsd,
   contextTokenLimit,
-  compressionEnabled,
   historyKeepLastN,
   summarizedMessageCount,
   rawMessageCount,
   compressionEvents,
+  facts,
+  branches,
+  checkpoints,
+  activeBranchId,
+  onCreateCheckpoint,
+  onCreateBranch,
+  onSelectBranch,
+  isLabChat,
+  isLabCoordinator,
+  onAnalyzeLab,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
+  const [contextPopupOpen, setContextPopupOpen] = useState(false)
   const [textareaFocused, setTextareaFocused] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // /compress only means anything on rolling_summary; /analyze only exists
+  // on a lab's coordinator chat — both are hidden from autocomplete (and
+  // simply don't intercept in handleSubmit) otherwise.
+  const slashCommands: SlashCommand[] = [
+    { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
+    { name: CONTEXT_COMMAND, description: 'что сейчас в контексте' },
+    ...(contextStrategy === 'rolling_summary'
+      ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
+      : []),
+    ...(isLabCoordinator
+      ? [{ name: ANALYZE_COMMAND, description: 'сравнить стратегии лаборатории' }]
+      : []),
+  ]
+
   // Only offer suggestions while the draft is still just the command token
   // itself (no space yet — none of today's commands take arguments).
   const suggestions =
     textareaFocused && draft.startsWith('/') && !draft.includes(' ')
-      ? SLASH_COMMANDS.filter((c) => c.name.startsWith(draft))
+      ? slashCommands.filter((c) => c.name.startsWith(draft))
       : []
 
   useEffect(() => {
@@ -114,6 +155,15 @@ export function ChatPanel({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [tokensPopupOpen])
 
+  useEffect(() => {
+    if (!contextPopupOpen) return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setContextPopupOpen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [contextPopupOpen])
+
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     const trimmed = draft.trim()
@@ -129,16 +179,29 @@ export function ChatPanel({
       return
     }
 
+    // /context is also local/offline (like /tokens) — it only reads
+    // whatever the current chat state already is, so it works mid-send too.
+    if (trimmed === CONTEXT_COMMAND) {
+      setContextPopupOpen(true)
+      setDraft('')
+      return
+    }
+
     if (isSending) return
 
     // /compress is a real backend action (its own LLM call), not a chat
     // message — never appended to history, handled the same way /tokens
     // intercepts before reaching onSend. Its result shows up as an in-chat
-    // compression notice (or the error banner if there was nothing to fold),
-    // so it doesn't need to also force the /tokens popup open.
+    // compression notice (or the error banner if there was nothing to fold).
     if (trimmed === COMPRESS_COMMAND) {
       setDraft('')
       void onForceCompress()
+      return
+    }
+
+    if (trimmed === ANALYZE_COMMAND) {
+      setDraft('')
+      onAnalyzeLab()
       return
     }
 
@@ -197,6 +260,16 @@ export function ChatPanel({
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {contextStrategy === 'branching' && (
+          <BranchToolbar
+            branches={branches}
+            checkpoints={checkpoints}
+            activeBranchId={activeBranchId ?? 'main'}
+            onSelectBranch={onSelectBranch}
+            onCreateCheckpoint={onCreateCheckpoint}
+            onCreateBranch={onCreateBranch}
+          />
+        )}
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           {messages.length === 0 ? (
             <div className="flex h-full min-h-[24rem] flex-col items-center justify-center gap-3 px-6 text-center">
@@ -215,7 +288,11 @@ export function ChatPanel({
                   {eventsBeforeIndex.get(index)?.map((event, i) => (
                     <CompressionNotice key={`compression-${index}-${i}`} event={event} />
                   ))}
-                  <MessageBubble message={message} />
+                  {message.is_lab_analysis ? (
+                    <LabAnalysisNotice message={message} />
+                  ) : (
+                    <MessageBubble message={message} />
+                  )}
                 </div>
               ))}
               {eventsBeforeIndex.get(messages.length)?.map((event, i) => (
@@ -243,12 +320,22 @@ export function ChatPanel({
               contextTokenLimit={contextTokenLimit}
               cumulativeTotalTokens={cumulativeTotalTokens}
               cumulativeCostUsd={cumulativeCostUsd}
-              compressionEnabled={compressionEnabled}
-              onCompressionEnabledChange={onSetCompressionEnabled}
+              onClose={() => setTokensPopupOpen(false)}
+            />
+          )}
+
+          {contextPopupOpen && (
+            <ContextPopup
+              strategy={contextStrategy}
               historyKeepLastN={historyKeepLastN}
+              messages={messages}
+              facts={facts}
+              branches={branches}
+              activeBranchId={activeBranchId}
+              compressionEvents={compressionEvents}
               summarizedMessageCount={summarizedMessageCount}
               rawMessageCount={rawMessageCount}
-              onClose={() => setTokensPopupOpen(false)}
+              onClose={() => setContextPopupOpen(false)}
             />
           )}
 
@@ -296,7 +383,10 @@ export function ChatPanel({
               <Button
                 type="submit"
                 size="sm"
-                disabled={!draft.trim() || (isSending && draft.trim() !== TOKENS_COMMAND)}
+                disabled={
+                  !draft.trim() ||
+                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND)
+                }
                 className="absolute right-1.5 bottom-1.5"
               >
                 {isSending ? 'Отправляем…' : 'Отправить'}
@@ -304,20 +394,29 @@ export function ChatPanel({
             </div>
           </form>
 
-          {contextTokenLimit > 0 && (
-            <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
-              <span>
-                Контекст: {lastContextTokens.toLocaleString('ru-RU')} /{' '}
-                {contextTokenLimit.toLocaleString('ru-RU')}
-              </span>
-              {cumulativeCostUsd != null && (
-                <>
-                  <span aria-hidden>·</span>
-                  <span>${cumulativeCostUsd.toFixed(4)}</span>
-                </>
-              )}
-            </div>
-          )}
+          <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
+            <ContextStrategySelect
+              value={contextStrategy}
+              historyKeepLastN={historyKeepLastN}
+              disabled={isLabChat}
+              onChange={onSetContextStrategy}
+            />
+            {contextTokenLimit > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span>
+                  Контекст: {lastContextTokens.toLocaleString('ru-RU')} /{' '}
+                  {contextTokenLimit.toLocaleString('ru-RU')}
+                </span>
+              </>
+            )}
+            {cumulativeCostUsd != null && (
+              <>
+                <span aria-hidden>·</span>
+                <span>${cumulativeCostUsd.toFixed(4)}</span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -397,11 +496,6 @@ function TokensPopup({
   contextTokenLimit,
   cumulativeTotalTokens,
   cumulativeCostUsd,
-  compressionEnabled,
-  onCompressionEnabledChange,
-  historyKeepLastN,
-  summarizedMessageCount,
-  rawMessageCount,
   onClose,
 }: {
   lastUsage?: TokenUsage
@@ -409,11 +503,6 @@ function TokensPopup({
   contextTokenLimit: number
   cumulativeTotalTokens: number
   cumulativeCostUsd?: number
-  compressionEnabled: boolean
-  onCompressionEnabledChange: (enabled: boolean) => void
-  historyKeepLastN: number
-  summarizedMessageCount: number
-  rawMessageCount: number
   onClose: () => void
 }) {
   const percent =
@@ -486,86 +575,26 @@ function TokensPopup({
             <StatRow label="Стоимость" value={`$${cumulativeCostUsd.toFixed(4)}`} />
           )}
         </div>
-
-        <div className="mt-4 border-t border-border pt-3.5">
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              Сжатие истории
-              <CompressionInfoHint historyKeepLastN={historyKeepLastN} />
-            </span>
-            <CompressionSwitch checked={compressionEnabled} onChange={onCompressionEnabledChange} />
-          </div>
-          {summarizedMessageCount > 0 ? (
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Резюме {summarizedMessageCount} сообщений + {rawMessageCount} последних как есть
-            </p>
-          ) : (
-            <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Пока ничего не сжато ({rawMessageCount} сообщений в истории)
-            </p>
-          )}
-        </div>
       </div>
     </>
   )
 }
 
-// CompressionInfoHint is a small, self-contained hover/focus hint — not the
-// shared InfoTooltip component, because that one renders through a portal to
-// document.body, and inside this already-portal-free floating TokensPopup
-// (itself absolutely positioned, not portaled) that put the tooltip content
-// in a different, ambiguous stacking position relative to the popup's own
-// z-index. Staying a plain descendant with CSS-only hover/focus guarantees
-// it paints in the exact same stacking context as the popup around it.
-function CompressionInfoHint({ historyKeepLastN }: { historyKeepLastN: number }) {
+// LabAnalysisNotice renders the one message AnalyzeLab appends — a real
+// assistant message (is_lab_analysis: true), but shown distinctly from a
+// normal reply so it reads as the lab's own comparison verdict, not
+// something the current chat's strategy said.
+function LabAnalysisNotice({ message }: { message: AgentMessage }) {
   return (
-    <span className="group relative inline-flex">
-      <button
-        type="button"
-        aria-label="Как работает сжатие истории"
-        className="text-muted-foreground hover:text-foreground"
-      >
-        <HelpCircle className="h-3.5 w-3.5" />
-      </button>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
-      >
-        Когда несжатых сообщений становится больше {2 * historyKeepLastN} (2×{historyKeepLastN}),
-        всё, кроме последних {historyKeepLastN}, сворачивается в краткое резюме — оно
-        подставляется в запрос вместо полной истории. Выключить/включить можно в любой
-        момент диалога; уже накопленное резюме не теряется. Команда{' '}
-        <span className="font-mono">/compress</span> сжимает сразу, не дожидаясь порога.
-      </span>
-    </span>
-  )
-}
-
-function CompressionSwitch({
-  checked,
-  onChange,
-}: {
-  checked: boolean
-  onChange: (checked: boolean) => void
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative h-5 w-9 flex-shrink-0 rounded-full transition-colors',
-        checked ? 'bg-primary' : 'bg-muted',
-      )}
-    >
-      <span
-        className={cn(
-          'absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-background transition-transform',
-          checked && 'translate-x-4',
-        )}
-      />
-    </button>
+    <div className="self-stretch rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+        <Sparkles className="h-3.5 w-3.5" />
+        Сравнение стратегий · {formatTime(message.created_at)}
+      </div>
+      <div className="mt-2 text-sm">
+        <Markdown>{message.content}</Markdown>
+      </div>
+    </div>
   )
 }
 

@@ -16,13 +16,17 @@ import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
+  analyzeLab,
   ApiError,
   compareControlled,
   compareFormats,
   compareModels,
   compareReasoning,
   compareTemperatures,
+  createBranch,
   createChat,
+  createCheckpoint,
+  createLab,
   deleteChat,
   estimateTask,
   forceCompress,
@@ -30,11 +34,13 @@ import {
   listChats,
   postAgentMessage,
   renameChat,
-  setCompressionEnabled,
+  setActiveBranch,
+  setContextStrategy,
   type ChatDetail,
   type ChatSummary,
   type Comparison,
   type CompareOptions,
+  type ContextStrategy,
   type Estimate,
   type ModelComparison as ModelComparisonData,
   type RawResult,
@@ -145,7 +151,7 @@ function App() {
             last_context_tokens: 0,
             cumulative_total_tokens: 0,
             context_token_limit: 0,
-            compression_enabled: true,
+            context_strategy: 'sliding_window',
             history_keep_last_n: 10,
             summarized_message_count: 0,
             raw_message_count: 0,
@@ -180,7 +186,7 @@ function App() {
         last_context_tokens: 0,
         cumulative_total_tokens: 0,
         context_token_limit: 0,
-        compression_enabled: true,
+        context_strategy: 'sliding_window',
         history_keep_last_n: 10,
         summarized_message_count: 0,
         raw_message_count: 0,
@@ -293,10 +299,15 @@ function App() {
           cumulative_total_tokens: reply.cumulative_total_tokens,
           cumulative_cost_usd: reply.cumulative_cost_usd,
           context_token_limit: reply.context_token_limit,
-          compression_enabled: reply.compression_enabled,
+          context_strategy: reply.context_strategy,
           history_keep_last_n: reply.history_keep_last_n,
           summarized_message_count: reply.summarized_message_count,
           raw_message_count: reply.raw_message_count,
+          facts: reply.facts,
+          branches: reply.branches,
+          active_branch_id: reply.active_branch_id,
+          lab_id: reply.lab_id,
+          is_lab_coordinator: reply.is_lab_coordinator,
           compression_events: reply.new_compression_event
             ? [...prev.compression_events, reply.new_compression_event]
             : prev.compression_events,
@@ -334,14 +345,96 @@ function App() {
     }
   }
 
-  async function handleSetCompressionEnabled(enabled: boolean) {
+  async function handleSetContextStrategy(strategy: ContextStrategy) {
     if (!activeChatId) return
     const chatId = activeChatId
     try {
-      const updated = await setCompressionEnabled(chatId, enabled)
+      const updated = await setContextStrategy(chatId, strategy)
       setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleCreateCheckpoint(label: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await createCheckpoint(chatId, label)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleCreateBranch(checkpointIndex: number, fromBranchId: string, label: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await createBranch(chatId, checkpointIndex, fromBranchId, label)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleSelectBranch(branchId: string) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await setActiveBranch(chatId, branchId)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleNewLab(label: string) {
+    setMode('chat')
+    try {
+      const { chats: created } = await createLab(label)
+      setChats((prev) => [...prev, ...created])
+      const coordinator = created[0]
+      const detail = await getChat(coordinator.id)
+      setActiveChatId(coordinator.id)
+      setActiveChat(detail)
+      setChatError(null)
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleAnalyzeLab() {
+    if (!activeChat?.lab_id) return
+    const chatId = activeChat.id
+    const labId = activeChat.lab_id
+    setChatSending(true)
+    setChatError(null)
+    try {
+      const reply = await analyzeLab(labId)
+      setActiveChat((prev) =>
+        prev && prev.id === chatId
+          ? {
+              ...prev,
+              messages: [
+                ...prev.messages,
+                {
+                  role: 'assistant' as const,
+                  content: reply.reply,
+                  created_at: reply.assistant_message_created_at,
+                  usage: reply.usage ?? undefined,
+                  is_lab_analysis: true,
+                },
+              ],
+              cumulative_total_tokens: reply.cumulative_total_tokens,
+              cumulative_cost_usd: reply.cumulative_cost_usd,
+            }
+          : prev,
+      )
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    } finally {
+      setChatSending(false)
     }
   }
 
@@ -459,6 +552,7 @@ function App() {
             activeChatId={mode === 'chat' ? activeChatId : null}
             activeDemo={activeDemo}
             onNewChat={handleNewChat}
+            onNewLab={handleNewLab}
             onSelectChat={handleSelectChat}
             onSelectDemo={(demo) => setMode(demo)}
             onCollapse={() => setSidebarCollapsed(true)}
@@ -476,16 +570,26 @@ function App() {
               error={chatError}
               onSend={handleSendMessage}
               onForceCompress={handleForceCompress}
-              onSetCompressionEnabled={handleSetCompressionEnabled}
+              contextStrategy={activeChat?.context_strategy ?? 'sliding_window'}
+              onSetContextStrategy={handleSetContextStrategy}
               lastContextTokens={activeChat?.last_context_tokens ?? 0}
               cumulativeTotalTokens={activeChat?.cumulative_total_tokens ?? 0}
               cumulativeCostUsd={activeChat?.cumulative_cost_usd}
               contextTokenLimit={activeChat?.context_token_limit ?? 0}
-              compressionEnabled={activeChat?.compression_enabled ?? true}
               historyKeepLastN={activeChat?.history_keep_last_n ?? 10}
               summarizedMessageCount={activeChat?.summarized_message_count ?? 0}
               rawMessageCount={activeChat?.raw_message_count ?? 0}
               compressionEvents={activeChat?.compression_events ?? []}
+              facts={activeChat?.facts}
+              branches={activeChat?.branches ?? []}
+              checkpoints={activeChat?.checkpoints ?? []}
+              activeBranchId={activeChat?.active_branch_id}
+              onCreateCheckpoint={handleCreateCheckpoint}
+              onCreateBranch={handleCreateBranch}
+              onSelectBranch={handleSelectBranch}
+              isLabChat={Boolean(activeChat?.lab_id)}
+              isLabCoordinator={Boolean(activeChat?.is_lab_coordinator)}
+              onAnalyzeLab={handleAnalyzeLab}
             />
           </main>
         ) : (
