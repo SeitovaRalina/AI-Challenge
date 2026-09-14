@@ -33,6 +33,15 @@ func writeAgentError(w http.ResponseWriter, err error) {
 	}
 }
 
+// chatDetailWithLab builds chat's ChatDetail and fills in IsLabCoordinator —
+// every handler below that returns a ChatDetail uses this instead of calling
+// chatDetail directly, so that field is never forgotten on one path.
+func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
+	detail := chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN)
+	detail.IsLabCoordinator = agent.IsLabCoordinator(chat.LabID, chat.ID)
+	return detail
+}
+
 // agentMessageRequest is the payload accepted by POST /api/agent/chats/{id}/messages.
 type agentMessageRequest struct {
 	Message string `json:"message"`
@@ -62,7 +71,7 @@ func getChatHandler(agent *Agent) http.HandlerFunc {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 
@@ -173,7 +182,7 @@ func setStrategyHandler(agent *Agent) http.HandlerFunc {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 
@@ -209,7 +218,7 @@ func compressChatHandler(agent *Agent) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, forceCompressResponse{
 			Compressed: compressed,
-			Chat:       chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN),
+			Chat:       chatDetailWithLab(agent, chat),
 		})
 	}
 }
@@ -241,7 +250,7 @@ func createCheckpointHandler(agent *Agent) http.HandlerFunc {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 
@@ -281,7 +290,7 @@ func createBranchHandler(agent *Agent) http.HandlerFunc {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 
@@ -313,7 +322,7 @@ func setActiveBranchHandler(agent *Agent) http.HandlerFunc {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN))
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 

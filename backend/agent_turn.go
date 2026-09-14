@@ -247,6 +247,12 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 // Callers must hold a.mu. Shared by PostMessage's success path and
 // finishGracefulTurn so both return the exact same shape.
 func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsage, userSentAt, assistantSentAt time.Time) *AgentReply {
+	isCoordinator := false
+	if chat.LabID != "" {
+		if lab, ok := a.labs[chat.LabID]; ok {
+			isCoordinator = lab.CoordinatorChatID == chat.ID
+		}
+	}
 	return &AgentReply{
 		Reply:                     reply,
 		Estimate:                  chat.Estimate,
@@ -265,6 +271,8 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, reply string, usage *TokenUsag
 		Facts:                     chat.Facts,
 		Branches:                  branchSummaries(chat),
 		ActiveBranchID:            chat.ActiveBranchID,
+		LabID:                     chat.LabID,
+		IsLabCoordinator:          isCoordinator,
 	}
 }
 

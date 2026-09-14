@@ -46,6 +46,19 @@ func strategyLabel(s ContextStrategy) string {
 
 var ErrLabNotFound = fmt.Errorf("agent: lab not found")
 
+// IsLabCoordinator reports whether chatID is labID's coordinator chat — the
+// one the user actually types into, and the only one PostMessageWithFanOut
+// fans a message out from. Safe to call with an empty labID (returns false).
+func (a *Agent) IsLabCoordinator(labID, chatID string) bool {
+	if labID == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	lab, ok := a.labs[labID]
+	return ok && lab.CoordinatorChatID == chatID
+}
+
 // CreateLab creates one chat per strategy in labStrategies, all tagged with
 // label in their title, groups them under a new Lab, and returns both.
 func (a *Agent) CreateLab(label string) (*Lab, []ChatSummary, error) {

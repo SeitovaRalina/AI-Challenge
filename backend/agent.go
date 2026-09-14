@@ -345,6 +345,8 @@ type AgentReply struct {
 	Facts                     map[string]string `json:"facts,omitempty"`
 	Branches                  []BranchSummary   `json:"branches,omitempty"`
 	ActiveBranchID            string            `json:"active_branch_id,omitempty"`
+	LabID                     string            `json:"lab_id,omitempty"`
+	IsLabCoordinator          bool              `json:"is_lab_coordinator,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -413,6 +415,7 @@ type ChatDetail struct {
 	Branches               []BranchSummary    `json:"branches,omitempty"`
 	ActiveBranchID         string             `json:"active_branch_id,omitempty"`
 	LabID                  string             `json:"lab_id,omitempty"`
+	IsLabCoordinator       bool               `json:"is_lab_coordinator,omitempty"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
