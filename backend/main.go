@@ -18,6 +18,11 @@ import (
 // actually reach (e.g. 2000).
 const defaultContextTokenLimit = 128000
 
+// defaultHistoryKeepLastN is how many of the most recent messages a chat
+// keeps "as is" once history compression is due (see
+// Agent.compressHistoryIfDue) — matches the day-9 assignment's own example.
+const defaultHistoryKeepLastN = 10
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("no .env file found, relying on process environment")
@@ -49,8 +54,27 @@ func main() {
 	}
 	log.Printf("chat context token limit: %d", contextTokenLimit)
 
+	historyKeepLastN := defaultHistoryKeepLastN
+	if v := os.Getenv("HISTORY_KEEP_LAST_N"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			historyKeepLastN = parsed
+		} else {
+			log.Printf("invalid HISTORY_KEEP_LAST_N %q, using default %d", v, historyKeepLastN)
+		}
+	}
+
+	historyCompressionDefault := true
+	if v := os.Getenv("HISTORY_COMPRESSION_ENABLED"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			historyCompressionDefault = parsed
+		} else {
+			log.Printf("invalid HISTORY_COMPRESSION_ENABLED %q, using default %t", v, historyCompressionDefault)
+		}
+	}
+	log.Printf("history compression: keep last %d message(s) raw, default %t for new chats", historyKeepLastN, historyCompressionDefault)
+
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	agent := NewAgent(client, NewChatStore(dataDir), contextTokenLimit)
+	agent := NewAgent(client, NewChatStore(dataDir), contextTokenLimit, historyKeepLastN, historyCompressionDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -65,6 +89,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/agent/chats/{id}", deleteChatHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}", renameChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/compression", setCompressionHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {
