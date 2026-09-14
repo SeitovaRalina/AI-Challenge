@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,8 +71,12 @@ func (s *ChatStore) LoadAll() ([]*Chat, error) {
 			return nil, err
 		}
 		var chat Chat
+		// A single malformed or unrelated *.json file in this directory
+		// must not take down every other chat with it — skip and log it
+		// instead of aborting the whole load.
 		if err := json.Unmarshal(data, &chat); err != nil {
-			return nil, err
+			log.Printf("store: skipping %s: %v", entry.Name(), err)
+			continue
 		}
 		chats = append(chats, &chat)
 	}

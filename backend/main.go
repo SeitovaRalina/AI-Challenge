@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -18,10 +19,17 @@ import (
 // actually reach (e.g. 2000).
 const defaultContextTokenLimit = 128000
 
-// defaultHistoryKeepLastN is how many of the most recent messages a chat
-// keeps "as is" once history compression is due (see
-// Agent.compressHistoryIfDue) — matches the day-9 assignment's own example.
+// defaultHistoryKeepLastN is how many of the most recent messages
+// sliding_window/sticky_facts resend, and how many rolling_summary keeps "as
+// is" once compression is due (see Agent.compressHistoryIfDue) — matches the
+// day-9 assignment's own example.
 const defaultHistoryKeepLastN = 10
+
+// defaultContextStrategy is the strategy a new (non-lab) chat starts on:
+// sliding_window is the cheapest — no extra LLM call on top of the turn
+// itself, unlike sticky_facts (a facts-update call) or rolling_summary (a
+// summarization call once due).
+const defaultContextStrategy = StrategySlidingWindow
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -63,18 +71,23 @@ func main() {
 		}
 	}
 
-	historyCompressionDefault := true
-	if v := os.Getenv("HISTORY_COMPRESSION_ENABLED"); v != "" {
-		if parsed, err := strconv.ParseBool(v); err == nil {
-			historyCompressionDefault = parsed
+	contextStrategyDefault := ContextStrategy(defaultContextStrategy)
+	if v := os.Getenv("CONTEXT_STRATEGY_DEFAULT"); v != "" {
+		parsed := ContextStrategy(v)
+		if parsed.IsValid() {
+			contextStrategyDefault = parsed
 		} else {
-			log.Printf("invalid HISTORY_COMPRESSION_ENABLED %q, using default %t", v, historyCompressionDefault)
+			log.Printf("invalid CONTEXT_STRATEGY_DEFAULT %q, using default %s", v, contextStrategyDefault)
 		}
 	}
-	log.Printf("history compression: keep last %d message(s) raw, default %t for new chats", historyKeepLastN, historyCompressionDefault)
+	log.Printf("context strategies: keep last %d message(s) raw/windowed, new chats default to %s", historyKeepLastN, contextStrategyDefault)
 
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	agent := NewAgent(client, NewChatStore(dataDir), contextTokenLimit, historyKeepLastN, historyCompressionDefault)
+	// Labs get their own sibling directory rather than sharing dataDir:
+	// ChatStore.LoadAll globs every *.json file in its directory as a chat,
+	// so a labs index file sitting next to it would collide.
+	labsDir := filepath.Join(filepath.Dir(dataDir), "labs")
+	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -89,8 +102,13 @@ func main() {
 	mux.HandleFunc("DELETE /api/agent/chats/{id}", deleteChatHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}", renameChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/strategy", setStrategyHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
-	mux.HandleFunc("PATCH /api/agent/chats/{id}/compression", setCompressionHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/checkpoints", createCheckpointHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/branches", createBranchHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/active-branch", setActiveBranchHandler(agent))
+	mux.HandleFunc("POST /api/labs", createLabHandler(agent))
+	mux.HandleFunc("POST /api/labs/{id}/analyze", analyzeLabHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {
