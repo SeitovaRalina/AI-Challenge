@@ -12,3 +12,6 @@ backend/data/
 # Agent Skills (regenerable via `npx skills experimental_install` + skills-lock.json)
 .agents/
 .claude/
+
+# Per-day video-demo scenarios (local recording prep, not project docs)
+demo/

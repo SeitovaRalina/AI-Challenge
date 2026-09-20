@@ -54,7 +54,14 @@ topic — follow it whether or not it's spelled out again in the request:
    running dev servers. Get the user's explicit permission before any
    browser-automation (claude-in-chrome) test — every time, even for a
    change that looks self-verifying.
-6. Commit as you go, in small, logically-scoped commits with a descriptive
+6. Write a demo scenario: `demo/wNN-dDD-slug.md` — same filename as that
+   day's `days/` file (see "Current milestone" above). A full, scene-by-scene
+   script covering everything implemented that day, each scene flowing from
+   the state the previous one left behind, ready to record as a video
+   walkthrough: exact text to type, expected model/UI behavior, what to
+   click or point at, what to say on camera. `demo/` itself is gitignored —
+   local-only, never part of a commit or PR.
+7. Commit as you go, in small, logically-scoped commits with a descriptive
    body (why, not just what) — on any day branch, without asking first,
    until the user says to stop.
 
