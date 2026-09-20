@@ -400,11 +400,19 @@ export function renameChat(chatId: string, title: string): Promise<ChatSummary> 
   })
 }
 
+// interview flags this turn as part of day 12's onboarding interview — the
+// backend injects a turn-only system message steering the reply away from
+// task estimation, invisible to task/profile extraction (see
+// interviewModeSystemPrompt in backend/agent_turn.go).
 export function postAgentMessage(
   chatId: string,
   message: string,
+  interview?: boolean,
 ): Promise<AgentReply> {
-  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, { message })
+  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, {
+    message,
+    ...(interview ? { interview: true } : {}),
+  })
 }
 
 export function forceCompress(chatId: string): Promise<ForceCompressResult> {

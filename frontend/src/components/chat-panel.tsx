@@ -53,10 +53,15 @@ interface InterviewStep {
 // statement ("Меня зовут Ралина.") before sending, the same shape as the
 // organic messages already confirmed to extract correctly — never a bare
 // ambiguous word, and never any meta-instruction for task-memory to latch
-// onto.
+// onto. onSend's second argument flags each of these turns as interview
+// mode, which the backend uses to steer the reply away from
+// agentSystemPrompt's own task-estimation persona (confirmed live: without
+// it, replies like "Меня зовут Раля." got answered with "опишите задачу" —
+// see interviewModeSystemPrompt in backend/agent_turn.go for why that's a
+// turn-only system message, not more text stuffed into the user message).
 const INTERVIEW_STEPS: InterviewStep[] = [
   { question: 'Как к вам обращаться?', wrap: (text) => `Меня зовут ${text}.` },
-  { question: 'На каком стеке вы обычно пишете?', wrap: (text) => `Обычно пишу на ${text}.` },
+  { question: 'На каком стеке вы обычно пишете?', wrap: (text) => `Мой обычный стек: ${text}.` },
   { question: 'Какой стиль общения вам удобен?', wrap: (text) => `Мне удобен такой стиль общения: ${text}.` },
   { question: 'В каком формате вам удобны ответы?', wrap: (text) => `Мне удобен такой формат ответов: ${text}.` },
   {
@@ -83,7 +88,7 @@ interface ChatPanelProps {
   estimate: Estimate | null
   isSending: boolean
   error: string | null
-  onSend: (message: string) => void
+  onSend: (message: string, interview?: boolean) => void
   onForceCompress: () => Promise<boolean>
   contextStrategy: ContextStrategy
   onSetContextStrategy: (strategy: ContextStrategy) => void
@@ -259,7 +264,7 @@ export function ChatPanel({
     // command or any of the offline branches below.
     if (interviewStep !== null) {
       if (!trimmed || isSending || fanOutPending || !canSendMessages) return
-      onSend(INTERVIEW_STEPS[interviewStep].wrap(trimmed))
+      onSend(INTERVIEW_STEPS[interviewStep].wrap(trimmed), true)
       setDraft('')
       advanceInterview()
       return

@@ -59,11 +59,35 @@ type agentTurn struct {
 	Estimate *EstimateResponse `json:"estimate"`
 }
 
+// interviewModeSystemPrompt is injected, turn-only, when the frontend flags
+// a message as part of day 12's onboarding interview (see
+// ONBOARDING_KICKOFF... no — see chat-panel.tsx's INTERVIEW_STEPS). It
+// exists only in this one call's messages slice: never appended to
+// chat.Messages, never part of userMessage/assistantReply, so neither
+// updateTaskMemory nor updateProfile (both take only those two plain
+// strings — see memory_task.go/memory_profile.go) ever see it, can't
+// capture it, and can't replay it back into a later turn. That's the exact
+// failure mode that broke the main call outright when an earlier design put
+// equivalent instructions inside a real user message instead (day 11's
+// task-memory extraction captured them as "task constraints" and
+// re-injected them next turn) — routing the override through a system
+// message that lives for one call only closes that off structurally, not by
+// carefully wording it.
+//
+// Needed at all because agentSystemPrompt's own persona keeps steering
+// every reply back toward "опишите задачу" — confirmed live: mid-interview
+// turns like "Меня зовут Раля." got replies asking for a task to estimate,
+// which reads as the assistant ignoring what was just said.
+const interviewModeSystemPrompt = `Пользователь сейчас отвечает на вопросы короткого интервью для заполнения своего личного профиля (имя, стек, стиль общения, формат ответов, ограничения) — вопросы ему показывает интерфейс, не ты. Его текущее сообщение — просто ответ на один такой вопрос, не начало задачи на оценку.
+
+Тепло и коротко прими то, что он сказал, в 1-2 предложениях. НЕ предлагай оценить задачу, НЕ спрашивай "какую задачу оценить" и не упоминай оценку вовсе — до конца интервью никаких task-оценок. Оценка задач начнётся сама, когда пользователь заговорит о конкретной задаче.`
+
 // PostMessage appends the user's message to chatID's active branch (or its
 // plain history, for every strategy but branching), asks the LLM for a reply
 // using that strategy's own view of the conversation so far, and stores the
-// assistant's reply back into that same place.
-func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*AgentReply, error) {
+// assistant's reply back into that same place. interviewMode injects
+// interviewModeSystemPrompt for this call only — see its own doc comment.
+func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, interviewMode bool) (*AgentReply, error) {
 	a.mu.Lock()
 	chat, ok := a.chats[chatID]
 	if !ok {
@@ -126,8 +150,11 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 	}
 
-	messages := make([]chatMessage, 0, len(history)+3)
+	messages := make([]chatMessage, 0, len(history)+4)
 	messages = append(messages, chatMessage{Role: "system", Content: agentSystemPrompt})
+	if interviewMode {
+		messages = append(messages, chatMessage{Role: "system", Content: interviewModeSystemPrompt})
+	}
 	// Re-stating the exact current estimate (subtasks included) as its own
 	// system message means a question like "how long will X take" is answered
 	// from these precise numbers, not from however the prior reply phrased it.

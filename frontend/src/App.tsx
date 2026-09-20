@@ -348,7 +348,7 @@ function App() {
     }
   }
 
-  async function handleSendMessage(message: string) {
+  async function handleSendMessage(message: string, interview?: boolean) {
     if (!activeChatId) return
     const chatId = activeChatId
     // Branches share one chat id, so switching tabs alone doesn't change
@@ -375,7 +375,7 @@ function App() {
     setChatError(null)
 
     try {
-      const reply = await postAgentMessage(chatId, message)
+      const reply = await postAgentMessage(chatId, message, interview)
       setActiveChat((prev) => {
         // The user may have switched chats or branches while this was in
         // flight — prev is now a different conversation's state, fetched

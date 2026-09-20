@@ -57,8 +57,11 @@ func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
 }
 
 // agentMessageRequest is the payload accepted by POST /api/agent/chats/{id}/messages.
+// Interview flags this turn as part of day 12's onboarding interview — see
+// interviewModeSystemPrompt in agent_turn.go for what that changes and why.
 type agentMessageRequest struct {
-	Message string `json:"message"`
+	Message   string `json:"message"`
+	Interview bool   `json:"interview,omitempty"`
 }
 
 // createChatRequest is the payload accepted by POST /api/agent/chats.
@@ -176,7 +179,7 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		reply, err := agent.PostChatMessage(ctx, chatID, message)
+		reply, err := agent.PostChatMessage(ctx, chatID, message, req.Interview)
 		if err != nil {
 			log.Printf("agent message failed: %v", err)
 			writeAgentError(w, err)
