@@ -436,10 +436,13 @@ function App() {
           compression_events: reply.new_compression_event
             ? [...prev.compression_events, reply.new_compression_event]
             : prev.compression_events,
+          task_state: reply.task_state,
         }
       })
       setChats((prev) =>
-        prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
+        prev.map((chat) =>
+          chat.id === chatId ? { ...chat, title: reply.title, task_state: reply.task_state } : chat,
+        ),
       )
       if (reply.project) upsertProject(reply.project)
       if (reply.profile) setProfile(reply.profile)
@@ -503,6 +506,9 @@ function App() {
     try {
       const taskState = await setTaskDone(chatId, done)
       setActiveChat((prev) => (prev && prev.id === chatId ? { ...prev, task_state: taskState } : prev))
+      setChats((prev) =>
+        prev.map((chat) => (chat.id === chatId ? { ...chat, task_state: taskState } : chat)),
+      )
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
