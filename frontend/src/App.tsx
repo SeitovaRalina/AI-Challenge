@@ -812,6 +812,8 @@ function App() {
               onJumpToCoordinator={handleJumpToCoordinator}
               fanOut={activeChat?.fan_out}
               onJumpToChat={handleSelectChat}
+              profile={profile ?? undefined}
+              onOpenProfile={() => setProfilePopupOpen(true)}
             />
           </main>
         ) : (

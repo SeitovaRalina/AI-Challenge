@@ -20,11 +20,21 @@ import type {
   FanOutStatus,
   TaskMemory,
   TokenUsage,
+  UserProfile,
 } from '@/lib/api'
 import { isRealStrategy, STRATEGY_META } from '@/lib/strategy'
 
 const EXAMPLE_TASK =
   'Обновить устаревшее Flutter-приложение до новой версии Flutter, обновить зависимости, исправить проблемы сборки под iOS и Android и подготовить новые билды.'
+
+// Sent as a normal user message when the empty-state hint's "Начать
+// интервью" is clicked — deliberately NOT a task description, and says so
+// explicitly, since agentSystemPrompt otherwise treats a chat's first
+// message as one. Everything the user reveals in the exchanges that follow
+// still flows through the ordinary per-turn profile extraction (day 12) —
+// this is just a conversation starter, no new backend mechanism.
+const ONBOARDING_KICKOFF_MESSAGE =
+  'Это не задача для оценки — знакомство. Узнай обо мне: как меня зовут, на каком стеке я обычно пишу, какой стиль и формат ответов мне удобен, есть ли особые пожелания или ограничения к твоим ответам. Задавай вопросы по одному.'
 
 const COMPOSER_MAX_HEIGHT = 200
 const TOKENS_COMMAND = '/tokens'
@@ -71,6 +81,8 @@ interface ChatPanelProps {
   onJumpToCoordinator?: () => void
   fanOut?: FanOutStatus[]
   onJumpToChat?: (chatId: string) => void
+  profile?: UserProfile
+  onOpenProfile: () => void
 }
 
 export function ChatPanel({
@@ -107,6 +119,8 @@ export function ChatPanel({
   onJumpToCoordinator,
   fanOut,
   onJumpToChat,
+  profile,
+  onOpenProfile,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
@@ -309,6 +323,23 @@ export function ChatPanel({
               <p className="max-w-sm text-sm text-muted-foreground">
                 Например: «{EXAMPLE_TASK}»
               </p>
+              {!isLabChat && !profile?.name && (
+                <Alert className="mt-2 max-w-sm text-left">
+                  <AlertTitle>Ассистент вас пока не знает</AlertTitle>
+                  <AlertDescription>
+                    Заполните профиль — и ассистент будет обращаться по имени и
+                    подстраиваться под ваш стиль в каждом чате.
+                  </AlertDescription>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button size="sm" onClick={() => onSend(ONBOARDING_KICKOFF_MESSAGE)}>
+                      Начать интервью с ассистентом
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={onOpenProfile}>
+                      Заполнить вручную
+                    </Button>
+                  </div>
+                </Alert>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-4">
