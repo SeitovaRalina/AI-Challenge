@@ -678,9 +678,6 @@ function MessageBubble({
         isUser ? 'self-end items-end' : 'self-start items-start',
       )}
     >
-      {!isUser && showTaskStage && message.task_state && (
-        <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
-      )}
       <div
         className={cn(
           'rounded-xl px-4 py-2.5',
@@ -689,6 +686,9 @@ function MessageBubble({
             : 'border border-border bg-card',
         )}
       >
+        {!isUser && showTaskStage && message.task_state && (
+          <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
+        )}
         {isUser ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap">
             {message.content}
@@ -921,9 +921,9 @@ function formatTime(iso: string): string {
 // this reply about to land in", one turn behind at most.
 function TypingIndicator({ taskState }: { taskState?: TaskState }) {
   return (
-    <div className="flex max-w-[85%] flex-col gap-1 self-start items-start">
+    <div className="flex w-fit max-w-[85%] flex-col self-start rounded-xl border border-border bg-card px-4 py-3">
       {taskState && <TaskStageHeader stage={taskState.stage} step={taskState.step} />}
-      <div className="flex w-fit items-center gap-1 rounded-xl border border-border bg-card px-4 py-3">
+      <div className="flex items-center gap-1">
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
