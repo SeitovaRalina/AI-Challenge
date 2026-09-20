@@ -49,9 +49,13 @@ func (a *Agent) updateProfile(ctx context.Context, prior *UserProfile, userMessa
 	}
 
 	// Bounded for the same reason as updateTaskMemory/updateProjectMemory —
-	// 500 was cutting the JSON off mid-object; 2000 leaves room for hidden
-	// reasoning tokens plus the JSON itself.
-	const profileMaxTokens = 2000
+	// 500 was cutting the JSON off mid-object. 2000 wasn't enough either:
+	// confirmed live (finish_reason="length", 0 bytes of content) on an
+	// exchange that mixed a real task description with personal preferences
+	// — reasoning about which parts belong in the profile vs the task ate
+	// the entire budget as hidden reasoning tokens, leaving nothing for the
+	// JSON itself. 4000 leaves real headroom for that harder case.
+	const profileMaxTokens = 4000
 	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, profileMaxTokens, nil)
 	if err != nil {
 		return nil, nil, err
