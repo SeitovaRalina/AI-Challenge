@@ -67,10 +67,17 @@ func (s *ProfileStore) Save(profile *UserProfile) error {
 
 // profileCopy returns a copy of p safe to hand to a caller outside the lock
 // — Constraints is deep-copied so the caller can't mutate agent state
-// through the returned value.
+// through the returned value. Built with make+copy, not append(nil, ...):
+// for an empty (but non-nil) Constraints, append(([]string)(nil)) with no
+// elements to add returns nil, not an allocated empty slice — the same
+// "null where the frontend expects an array" hazard fixed in copyChat/
+// updateTaskMemory (Constraints here has no omitempty tag, so a nil value
+// serializes as a literal JSON null the frontend's .length access would
+// crash on).
 func profileCopy(p *UserProfile) *UserProfile {
 	copied := *p
-	copied.Constraints = append([]string(nil), p.Constraints...)
+	copied.Constraints = make([]string, len(p.Constraints))
+	copy(copied.Constraints, p.Constraints)
 	return &copied
 }
 
