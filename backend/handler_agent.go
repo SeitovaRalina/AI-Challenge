@@ -52,12 +52,16 @@ func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
 			detail.Project = project
 		}
 	}
+	detail.Profile = agent.GetProfile()
 	return detail
 }
 
 // agentMessageRequest is the payload accepted by POST /api/agent/chats/{id}/messages.
+// Interview flags this turn as part of day 12's onboarding interview — see
+// interviewModeSystemPrompt in agent_turn.go for what that changes and why.
 type agentMessageRequest struct {
-	Message string `json:"message"`
+	Message   string `json:"message"`
+	Interview bool   `json:"interview,omitempty"`
 }
 
 // createChatRequest is the payload accepted by POST /api/agent/chats.
@@ -175,7 +179,7 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
-		reply, err := agent.PostChatMessage(ctx, chatID, message)
+		reply, err := agent.PostChatMessage(ctx, chatID, message, req.Interview)
 		if err != nil {
 			log.Printf("agent message failed: %v", err)
 			writeAgentError(w, err)
@@ -551,5 +555,42 @@ func updateChatTaskHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, task)
+	}
+}
+
+// getProfileHandler returns the single global user profile (day 12).
+func getProfileHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, agent.GetProfile())
+	}
+}
+
+// updateProfileRequest is the payload accepted by PATCH /api/profile.
+type updateProfileRequest struct {
+	Name        string   `json:"name"`
+	Stack       []string `json:"stack"`
+	Style       string   `json:"style"`
+	Format      string   `json:"format"`
+	Constraints []string `json:"constraints"`
+}
+
+// updateProfileHandler lets the user manually add, edit, or delete the
+// global profile — the explicit counterpart to the automatic per-turn
+// extraction in memory_profile.go, and the only path for Name (the model
+// never infers it — see profileSystemPrompt).
+func updateProfileHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req updateProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		profile, err := agent.UpdateProfile(req.Name, req.Stack, req.Style, req.Format, req.Constraints)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
 	}
 }

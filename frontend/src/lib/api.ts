@@ -234,6 +234,17 @@ export interface TaskMemory {
   clarifying_answers: Record<string, string>
 }
 
+// UserProfile is day 12's personalization layer: a single global profile
+// (there is only ever one) applied to every non-lab chat, distinct from
+// TaskMemory (this chat) and Project (this project's chats).
+export interface UserProfile {
+  name: string
+  stack: string[]
+  style: string
+  format: string
+  constraints: string[]
+}
+
 export interface TokenUsage {
   prompt_tokens: number
   completion_tokens: number
@@ -312,6 +323,7 @@ interface StrategyState {
   project_id?: string
   project?: Project
   task?: TaskMemory
+  profile?: UserProfile
 }
 
 export interface ChatDetail extends StrategyState {
@@ -388,11 +400,19 @@ export function renameChat(chatId: string, title: string): Promise<ChatSummary> 
   })
 }
 
+// interview flags this turn as part of day 12's onboarding interview — the
+// backend injects a turn-only system message steering the reply away from
+// task estimation, invisible to task/profile extraction (see
+// interviewModeSystemPrompt in backend/agent_turn.go).
 export function postAgentMessage(
   chatId: string,
   message: string,
+  interview?: boolean,
 ): Promise<AgentReply> {
-  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, { message })
+  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, {
+    message,
+    ...(interview ? { interview: true } : {}),
+  })
 }
 
 export function forceCompress(chatId: string): Promise<ForceCompressResult> {
@@ -487,5 +507,19 @@ export function updateChatTask(chatId: string, task: TaskMemory): Promise<TaskMe
   return request<TaskMemory>(`/api/agent/chats/${chatId}/task`, {
     method: 'PATCH',
     body: { ...task },
+  })
+}
+
+export function getProfile(): Promise<UserProfile> {
+  return request<UserProfile>('/api/profile')
+}
+
+// updateProfile lets the user manually add, edit, or delete the global
+// profile — the explicit counterpart to the automatic per-turn extraction,
+// and the only path for name (the model never infers it).
+export function updateProfile(profile: UserProfile): Promise<UserProfile> {
+  return request<UserProfile>('/api/profile', {
+    method: 'PATCH',
+    body: { ...profile },
   })
 }

@@ -224,6 +224,7 @@ type Agent struct {
 	store             *ChatStore
 	labStore          *LabStore
 	projectStore      *ProjectStore
+	profileStore      *ProfileStore
 	contextTokenLimit int // 0 disables the pre-call overflow guard entirely
 
 	historyKeepLastN       int             // 0 disables windowing/compression entirely
@@ -234,6 +235,7 @@ type Agent struct {
 	order    []string // chat IDs, oldest first, for stable listing order
 	labs     map[string]*Lab
 	projects map[string]*Project
+	profile  *UserProfile               // day 12: single global profile, never nil after NewAgent
 	fanOut   map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
 }
 
@@ -247,18 +249,20 @@ type Agent struct {
 // sticky_facts resend, and how many rolling_summary keeps raw before folding;
 // pass 0 to disable windowing/compression entirely, for every chat.
 // contextStrategyDefault seeds new chats' ContextStrategy.
-func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, projectStore *ProjectStore, contextTokenLimit, historyKeepLastN int, contextStrategyDefault ContextStrategy) *Agent {
+func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, projectStore *ProjectStore, profileStore *ProfileStore, contextTokenLimit, historyKeepLastN int, contextStrategyDefault ContextStrategy) *Agent {
 	agent := &Agent{
 		client:                 client,
 		store:                  store,
 		labStore:               labStore,
 		projectStore:           projectStore,
+		profileStore:           profileStore,
 		contextTokenLimit:      contextTokenLimit,
 		historyKeepLastN:       historyKeepLastN,
 		contextStrategyDefault: contextStrategyDefault,
 		chats:                  make(map[string]*Chat),
 		labs:                   make(map[string]*Lab),
 		projects:               make(map[string]*Project),
+		profile:                &UserProfile{Constraints: []string{}},
 		fanOut:                 make(map[string][]FanOutStatus),
 	}
 
@@ -314,6 +318,13 @@ func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, proje
 		agent.projects[project.ID] = project
 	}
 	log.Printf("agent: restored %d project(s)", len(projects))
+
+	if profile, err := profileStore.Load(); err != nil {
+		log.Printf("agent: failed to load persisted profile, starting empty: %v", err)
+	} else {
+		agent.profile = profile
+		log.Printf("agent: restored profile (name=%q)", profile.Name)
+	}
 
 	return agent
 }
@@ -485,6 +496,7 @@ type AgentReply struct {
 	ProjectID                 string            `json:"project_id,omitempty"`
 	Project                   *Project          `json:"project,omitempty"`
 	Task                      *TaskMemory       `json:"task,omitempty"`
+	Profile                   *UserProfile      `json:"profile,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -578,6 +590,9 @@ type ChatDetail struct {
 	// stale" discipline every other strategy field here already follows.
 	Project *Project    `json:"project,omitempty"`
 	Task    *TaskMemory `json:"task,omitempty"`
+	// Profile is the single global profile (day 12), always populated
+	// regardless of this chat's project/lab — see chatDetailWithLab.
+	Profile *UserProfile `json:"profile,omitempty"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {

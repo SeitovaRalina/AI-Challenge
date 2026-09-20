@@ -226,7 +226,7 @@ func (a *Agent) DeleteLab(labID string) error {
 // lab's own strategy chats never accepts direct input — only the
 // coordinator's fan-out writes to it, so the comparison always reflects the
 // same input across every strategy; every other chat is a normal turn.
-func (a *Agent) PostChatMessage(ctx context.Context, chatID, userMessage string) (*AgentReply, error) {
+func (a *Agent) PostChatMessage(ctx context.Context, chatID, userMessage string, interviewMode bool) (*AgentReply, error) {
 	a.mu.Lock()
 	chat, ok := a.chats[chatID]
 	if !ok {
@@ -238,12 +238,15 @@ func (a *Agent) PostChatMessage(ctx context.Context, chatID, userMessage string)
 	a.mu.Unlock()
 
 	if strategy == StrategyCoordinator {
+		// Interview mode is never relevant to a lab's own fan-out — the
+		// empty-state hint that starts an interview is hidden for lab chats
+		// (see chat-panel.tsx), so this path never carries it.
 		return a.PostCoordinatorMessage(ctx, chatID, userMessage)
 	}
 	if labID != "" {
 		return nil, ErrWrongStrategy
 	}
-	return a.PostMessage(ctx, chatID, userMessage)
+	return a.PostMessage(ctx, chatID, userMessage, interviewMode)
 }
 
 // PostCoordinatorMessage logs userMessage into the coordinator chat itself
@@ -305,7 +308,7 @@ func (a *Agent) PostCoordinatorMessage(ctx context.Context, chatID, userMessage 
 		go func() {
 			for _, id := range chatIDs {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-				_, err := a.PostMessage(bgCtx, id, userMessage)
+				_, err := a.PostMessage(bgCtx, id, userMessage, false)
 				cancel()
 				a.setFanOutResult(labID, id, err)
 				if err != nil {

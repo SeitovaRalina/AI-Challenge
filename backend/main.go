@@ -47,10 +47,22 @@ func main() {
 		baseURL = "https://llm.effective.land"
 	}
 
+	// AGENT_USER namespaces this whole process's data tree (chats, labs,
+	// projects, profile — everything main.go wires up below derives from
+	// dataDir) under data/<user>/ instead of the shared default — one env
+	// var picked at process start gives a fully independent agent instance
+	// for a different person, without any multi-tenant UI or per-request
+	// user concept. Not surfaced in the frontend; CHAT_DATA_DIR, when set
+	// explicitly, still wins outright for fine-grained control.
 	dataDir := os.Getenv("CHAT_DATA_DIR")
 	if dataDir == "" {
-		dataDir = "data/sessions"
+		if user := os.Getenv("AGENT_USER"); user != "" {
+			dataDir = filepath.Join("data", user, "sessions")
+		} else {
+			dataDir = "data/sessions"
+		}
 	}
+	log.Printf("data directory: %s", dataDir)
 
 	contextTokenLimit := defaultContextTokenLimit
 	if v := os.Getenv("CHAT_CONTEXT_TOKEN_LIMIT"); v != "" {
@@ -89,7 +101,8 @@ func main() {
 	// collide.
 	labsDir := filepath.Join(filepath.Dir(dataDir), "labs")
 	projectsDir := filepath.Join(filepath.Dir(dataDir), "projects")
-	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
+	profilePath := filepath.Join(filepath.Dir(dataDir), "profile.json")
+	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), NewProfileStore(profilePath), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -118,6 +131,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/projects/{id}", deleteProjectHandler(agent))
 	mux.HandleFunc("PATCH /api/projects/{id}/memory", updateProjectMemoryHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/task", updateChatTaskHandler(agent))
+	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
+	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {
