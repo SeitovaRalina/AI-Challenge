@@ -7,6 +7,7 @@ import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
 import { ModelComparison } from '@/components/model-comparison'
 import { ModelLineup } from '@/components/model-lineup'
+import { ProfilePopup } from '@/components/profile-popup'
 import { ProjectMemoryPopup } from '@/components/project-memory-popup'
 import {
   ReasoningComparison,
@@ -35,6 +36,7 @@ import {
   estimateTask,
   forceCompress,
   getChat,
+  getProfile,
   listChats,
   listProjects,
   postAgentMessage,
@@ -51,6 +53,7 @@ import {
   type Project,
   type RawResult,
   type TaskMemory,
+  type UserProfile,
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
 } from '@/lib/api'
@@ -114,6 +117,8 @@ function App() {
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [projectMemoryPopupId, setProjectMemoryPopupId] = useState<string | null>(null)
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [profilePopupOpen, setProfilePopupOpen] = useState(false)
 
   // Single source of truth for a Project's known_stack/notes — called
   // whenever a fresh Project object arrives (mount, createProject, or a
@@ -206,6 +211,8 @@ function App() {
       try {
         const existingProjects = await listProjects()
         setProjects(existingProjects)
+        const existingProfile = await getProfile()
+        setProfile(existingProfile)
 
         const existing = await listChats()
         if (existing.length === 0) {
@@ -423,6 +430,7 @@ function App() {
         prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
       )
       if (reply.project) upsertProject(reply.project)
+      if (reply.profile) setProfile(reply.profile)
     } catch (err) {
       setChatError(
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
@@ -742,6 +750,7 @@ function App() {
             onDeleteLab={handleDeleteLab}
             onDeleteProject={handleDeleteProject}
             onOpenProjectMemory={setProjectMemoryPopupId}
+            onOpenProfile={() => setProfilePopupOpen(true)}
           />
         )}
 
@@ -752,6 +761,14 @@ function App() {
               <ProjectMemoryPopup project={project} onClose={() => setProjectMemoryPopupId(null)} onUpdate={upsertProject} />
             ) : null
           })()}
+
+        {profilePopupOpen && profile && (
+          <ProfilePopup
+            profile={profile}
+            onClose={() => setProfilePopupOpen(false)}
+            onUpdate={setProfile}
+          />
+        )}
 
         {mode === 'chat' ? (
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">

@@ -11,6 +11,7 @@ import {
   Plus,
   Target,
   Trash2,
+  User,
   X,
 } from 'lucide-react'
 
@@ -63,6 +64,7 @@ interface SidebarProps {
   onDeleteLab: (labId: string) => void
   onDeleteProject: (projectId: string) => void
   onOpenProjectMemory: (projectId: string) => void
+  onOpenProfile: () => void
 }
 
 interface ChatGroup {
@@ -110,6 +112,7 @@ export function Sidebar({
   onDeleteLab,
   onDeleteProject,
   onOpenProjectMemory,
+  onOpenProfile,
 }: SidebarProps) {
   const [demosOpen, setDemosOpen] = useState(false)
   const [labFormOpen, setLabFormOpen] = useState(false)
@@ -171,6 +174,14 @@ export function Sidebar({
           >
             <Plus className="h-4 w-4" />
             Новый чат
+          </button>
+          <button
+            type="button"
+            onClick={onOpenProfile}
+            title="Профиль пользователя"
+            className="flex-shrink-0 rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <User className="h-4 w-4" />
           </button>
           <button
             type="button"
