@@ -32,11 +32,9 @@ Every chat is persisted to disk as it's used (one JSON file per chat under
 `backend/data/sessions/`, path configurable via `CHAT_DATA_DIR`) and reloaded
 on startup, so restarting the backend does not lose any conversation — see
 [`days/w02-d07-context-persistence.md`](days/w02-d07-context-persistence.md).
-Labs, projects, and the global profile (see below) live in sibling
-directories derived from `CHAT_DATA_DIR`; setting `AGENT_USER=<name>` instead
-namespaces all of it under `backend/data/<name>/` in one step — a fully
-separate agent instance (own chats, own memory, own profile) for a different
-person, one process per user, with no multi-user concept in the UI itself.
+Labs, projects, and the global profile live in sibling directories derived
+from `CHAT_DATA_DIR` — see "Multiple profiles" below for running a fully
+separate instance for a different person.
 
 Token/cost usage is read directly from the LiteLLM gateway's `usage` field
 (no local tokenizer), and an artificial `CHAT_CONTEXT_TOKEN_LIMIT` bounds
@@ -108,6 +106,41 @@ npm run dev
 
 Open `http://localhost:5173`. In dev mode, Vite proxies `/api/*` to
 `http://localhost:8080`, so both servers need to be running.
+
+### Multiple profiles
+
+The app is a **personal** assistant, not a multi-tenant one — see
+[`docs/concept.md`](docs/concept.md). Its memory model (chats, projects,
+the global profile) belongs to whoever is running that instance, so there is
+deliberately no account system or in-app profile switcher: the personalization
+day 12 adds (name, tone, response format, constraints) only makes sense
+addressed to one specific person at a time, and letting one running instance
+juggle several people's data would work against the whole point of days
+11-12 — an agent that actually knows the person it's talking to.
+
+"Multiple profiles" instead means multiple independent **processes**, each
+with its own data tree, picked at startup via `AGENT_USER`:
+
+```
+cd backend
+AGENT_USER=bob PORT=8081 go run .
+```
+
+(PowerShell: `$env:AGENT_USER="bob"; $env:PORT="8081"; go run .`)
+
+This namespaces that whole instance's chats/labs/projects/profile.json under
+`backend/data/bob/`, completely isolated from the default instance's
+`backend/data/`. Explicit `CHAT_DATA_DIR` still overrides `AGENT_USER` if you
+need finer-grained control than one directory per name.
+
+To talk to that second backend from a browser, point a second frontend at
+its port — Vite's dev proxy target is hardcoded in `vite.config.ts`, so
+either edit it temporarily or run a second `vite` process from its own
+config with `server.port`/`server.proxy['/api'].target` set to match.
+
+Filling in that instance's profile works exactly like the default one — the
+sidebar's profile button, or the empty-chat "Начать интервью с ассистентом"
+prompt — it's just a different person's data underneath.
 
 ## Testing the backend standalone
 
