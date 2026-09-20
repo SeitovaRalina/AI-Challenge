@@ -119,6 +119,7 @@ function App() {
   const [projectMemoryPopupId, setProjectMemoryPopupId] = useState<string | null>(null)
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [profilePopupOpen, setProfilePopupOpen] = useState(false)
+  const [profilePopupEditing, setProfilePopupEditing] = useState(false)
 
   // Single source of truth for a Project's known_stack/notes — called
   // whenever a fresh Project object arrives (mount, createProject, or a
@@ -750,7 +751,10 @@ function App() {
             onDeleteLab={handleDeleteLab}
             onDeleteProject={handleDeleteProject}
             onOpenProjectMemory={setProjectMemoryPopupId}
-            onOpenProfile={() => setProfilePopupOpen(true)}
+            onOpenProfile={() => {
+              setProfilePopupEditing(false)
+              setProfilePopupOpen(true)
+            }}
           />
         )}
 
@@ -765,6 +769,7 @@ function App() {
         {profilePopupOpen && profile && (
           <ProfilePopup
             profile={profile}
+            initialEditing={profilePopupEditing}
             onClose={() => setProfilePopupOpen(false)}
             onUpdate={setProfile}
           />
@@ -813,7 +818,10 @@ function App() {
               fanOut={activeChat?.fan_out}
               onJumpToChat={handleSelectChat}
               profile={profile ?? undefined}
-              onOpenProfile={() => setProfilePopupOpen(true)}
+              onOpenProfile={() => {
+                setProfilePopupEditing(true)
+                setProfilePopupOpen(true)
+              }}
             />
           </main>
         ) : (

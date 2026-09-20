@@ -33,8 +33,26 @@ const EXAMPLE_TASK =
 // message as one. Everything the user reveals in the exchanges that follow
 // still flows through the ordinary per-turn profile extraction (day 12) —
 // this is just a conversation starter, no new backend mechanism.
+//
+// Names exactly UserProfile's 5 fields, nothing else, and asks for a closing
+// summary — went through two real bugs before landing here:
+//   1. An earlier version never mentioned stack at all, silently dropping
+//      whatever the user said about it (UserProfile had no field for it yet
+//      — see the Stack field's own doc comment).
+//   2. A version that spelled out 5 numbered imperatives, several of them
+//      negations ("не спрашивай ни о чём другом", "не продолжай задавать
+//      вопросы"), reproducibly made the model return an EMPTY completion one
+//      turn later — day 11's task-memory extraction faithfully captured
+//      those meta-instructions as "task constraints" and re-injected them as
+//      a system message, and that redundant, negation-heavy instruction
+//      stack broke the main turn (confirmed by reproducing it with a
+//      manually-set Chat.Task carrying the same constraints, and by testing
+//      that this shorter, less directive-dense version does not reproduce
+//      it, across a full 5-question run). Keep this message short and light
+//      on "не делай X" phrasing — that's a real constraint, not style
+//      preference, given what already broke here once.
 const ONBOARDING_KICKOFF_MESSAGE =
-  'Это не задача для оценки — знакомство. Узнай обо мне: как меня зовут, на каком стеке я обычно пишу, какой стиль и формат ответов мне удобен, есть ли особые пожелания или ограничения к твоим ответам. Задавай вопросы по одному.'
+  'Не задача для оценки, а знакомство — узнай, как меня зовут, мой обычный стек, стиль общения и формат ответов, есть ли особые ограничения. Спрашивай по одному вопросу, потом кратко подытожь и на этом закончи.'
 
 const COMPOSER_MAX_HEIGHT = 200
 const TOKENS_COMMAND = '/tokens'

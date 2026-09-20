@@ -5,6 +5,7 @@ import { updateProfile, type UserProfile } from '@/lib/api'
 
 interface ProfilePopupProps {
   profile: UserProfile
+  initialEditing?: boolean
   onClose: () => void
   onUpdate: (profile: UserProfile) => void
 }
@@ -22,13 +23,13 @@ function linesToList(text: string): string[] {
 // ProfilePopup shows day 12's personalization layer — the single global
 // profile applied to every non-lab chat. Same backdrop + centered-modal
 // shell as ProjectMemoryPopup, props-driven except for the edit save, which
-// calls the API directly and reports the result up via onUpdate — day 12's
-// "явный выбор, что сохраняется" requirement means manual editing must
-// always be available here, not just the automatic per-turn extraction in
-// memory_profile.go, so the popup opens straight into an editable view by
-// default rather than a read-only one first.
-export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) {
-  const [editing, setEditing] = useState(true)
+// calls the API directly and reports the result up via onUpdate. Opens in a
+// read-only preview by default (the sidebar's profile icon) — initialEditing
+// switches it straight to editing instead, for the empty-state hint's
+// "Заполнить вручную" button, where the user has already signaled intent to
+// edit.
+export function ProfilePopup({ profile, initialEditing, onClose, onUpdate }: ProfilePopupProps) {
+  const [editing, setEditing] = useState(initialEditing ?? false)
   const [nameDraft, setNameDraft] = useState(profile.name)
   const [stackDraft, setStackDraft] = useState(() => listToLines(profile.stack))
   const [styleDraft, setStyleDraft] = useState(profile.style)
