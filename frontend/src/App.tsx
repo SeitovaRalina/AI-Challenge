@@ -7,7 +7,6 @@ import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
 import { ModelComparison } from '@/components/model-comparison'
 import { ModelLineup } from '@/components/model-lineup'
-import { OnboardingInterview } from '@/components/onboarding-interview'
 import { ProfilePopup } from '@/components/profile-popup'
 import { ProjectMemoryPopup } from '@/components/project-memory-popup'
 import {
@@ -121,7 +120,6 @@ function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [profilePopupOpen, setProfilePopupOpen] = useState(false)
   const [profilePopupEditing, setProfilePopupEditing] = useState(false)
-  const [interviewOpen, setInterviewOpen] = useState(false)
 
   // Single source of truth for a Project's known_stack/notes — called
   // whenever a fresh Project object arrives (mount, createProject, or a
@@ -777,14 +775,6 @@ function App() {
           />
         )}
 
-        {interviewOpen && profile && (
-          <OnboardingInterview
-            profile={profile}
-            onClose={() => setInterviewOpen(false)}
-            onUpdate={setProfile}
-          />
-        )}
-
         {mode === 'chat' ? (
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatPanel
@@ -832,7 +822,6 @@ function App() {
                 setProfilePopupEditing(true)
                 setProfilePopupOpen(true)
               }}
-              onStartInterview={() => setInterviewOpen(true)}
             />
           </main>
         ) : (

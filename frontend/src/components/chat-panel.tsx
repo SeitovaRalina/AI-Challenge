@@ -27,6 +27,45 @@ import { isRealStrategy, STRATEGY_META } from '@/lib/strategy'
 const EXAMPLE_TASK =
   'Обновить устаревшее Flutter-приложение до новой версии Flutter, обновить зависимости, исправить проблемы сборки под iOS и Android и подготовить новые билды.'
 
+interface InterviewStep {
+  question: string
+  wrap: (text: string) => string
+  optional?: boolean
+}
+
+// "Начать интервью с ассистентом" — day 12's onboarding flow. Went through
+// three broken designs before this one: one big kickoff message that asked
+// the model to both pose all 5 questions AND track progress AND stop itself
+// reproducibly either drifted onto unrelated follow-up questions, wrapped
+// up after only 2 of 5, or (with a heavily negated prompt) made day 11's
+// task-memory extraction capture its own meta-instructions and re-inject
+// them into the next turn, breaking the main LLM call outright. A fully
+// scripted modal form fixed all of that but stopped feeling like talking to
+// the assistant at all.
+//
+// This is the middle ground: the FRONTEND decides what to ask and when to
+// stop — nothing here asks the model to manage the interview — but every
+// answer still goes through onSend as a REAL chat turn, so the model's own
+// reply appears in the transcript and day 12's already-proven per-turn
+// profile extraction (memory_profile.go) picks the answer up exactly like
+// it would from any ordinary message that happens to mention a preference.
+// wrap() turns the user's raw answer into a self-contained first-person
+// statement ("Меня зовут Ралина.") before sending, the same shape as the
+// organic messages already confirmed to extract correctly — never a bare
+// ambiguous word, and never any meta-instruction for task-memory to latch
+// onto.
+const INTERVIEW_STEPS: InterviewStep[] = [
+  { question: 'Как к вам обращаться?', wrap: (text) => `Меня зовут ${text}.` },
+  { question: 'На каком стеке вы обычно пишете?', wrap: (text) => `Обычно пишу на ${text}.` },
+  { question: 'Какой стиль общения вам удобен?', wrap: (text) => `Мне удобен такой стиль общения: ${text}.` },
+  { question: 'В каком формате вам удобны ответы?', wrap: (text) => `Мне удобен такой формат ответов: ${text}.` },
+  {
+    question: 'Есть особые ограничения к ответам? Если нет — нажмите «Пропустить».',
+    wrap: (text) => `Ограничение к твоим ответам: ${text}.`,
+    optional: true,
+  },
+]
+
 const COMPOSER_MAX_HEIGHT = 200
 const TOKENS_COMMAND = '/tokens'
 const COMPRESS_COMMAND = '/compress'
@@ -74,7 +113,6 @@ interface ChatPanelProps {
   onJumpToChat?: (chatId: string) => void
   profile?: UserProfile
   onOpenProfile: () => void
-  onStartInterview: () => void
 }
 
 export function ChatPanel({
@@ -113,9 +151,12 @@ export function ChatPanel({
   onJumpToChat,
   profile,
   onOpenProfile,
-  onStartInterview,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
+  // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
+  // currently being asked. Local-only and per-mount (not persisted) — this
+  // is a one-time onboarding nicety, not chat state.
+  const [interviewStep, setInterviewStep] = useState<number | null>(null)
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
   const [contextPopupOpen, setContextPopupOpen] = useState(false)
   const [textareaFocused, setTextareaFocused] = useState(false)
@@ -197,9 +238,33 @@ export function ChatPanel({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [contextPopupOpen])
 
+  function advanceInterview() {
+    setInterviewStep((current) => {
+      if (current === null) return null
+      const next = current + 1
+      return next < INTERVIEW_STEPS.length ? next : null
+    })
+  }
+
+  function handleSkipInterviewStep() {
+    advanceInterview()
+  }
+
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     const trimmed = draft.trim()
+
+    // Mid-interview, every non-empty answer is a real chat message (wrapped
+    // into a self-contained statement — see INTERVIEW_STEPS), never a slash
+    // command or any of the offline branches below.
+    if (interviewStep !== null) {
+      if (!trimmed || isSending || fanOutPending || !canSendMessages) return
+      onSend(INTERVIEW_STEPS[interviewStep].wrap(trimmed))
+      setDraft('')
+      advanceInterview()
+      return
+    }
+
     if (!trimmed) return
 
     // /tokens is a local, offline command — it never reaches the LLM and
@@ -316,7 +381,7 @@ export function ChatPanel({
               <p className="max-w-sm text-sm text-muted-foreground">
                 Например: «{EXAMPLE_TASK}»
               </p>
-              {!isLabChat && !profile?.name && (
+              {!isLabChat && !profile?.name && interviewStep === null && (
                 <Alert className="mt-2 max-w-sm text-left">
                   <AlertTitle>Ассистент вас пока не знает</AlertTitle>
                   <AlertDescription>
@@ -324,7 +389,7 @@ export function ChatPanel({
                     подстраиваться под ваш стиль в каждом чате.
                   </AlertDescription>
                   <div className="mt-2 flex items-center gap-2">
-                    <Button size="sm" onClick={onStartInterview}>
+                    <Button size="sm" onClick={() => setInterviewStep(0)}>
                       Начать интервью с ассистентом
                     </Button>
                     <Button size="sm" variant="ghost" onClick={onOpenProfile}>
@@ -416,6 +481,34 @@ export function ChatPanel({
             </div>
           )}
 
+          {interviewStep !== null && (
+            <div className="mx-6 mb-2 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+              <span className="text-foreground">
+                Вопрос {interviewStep + 1} из {INTERVIEW_STEPS.length} ·{' '}
+                {INTERVIEW_STEPS[interviewStep].question}
+              </span>
+              <div className="flex flex-shrink-0 items-center gap-1">
+                {INTERVIEW_STEPS[interviewStep].optional && (
+                  <button
+                    type="button"
+                    onClick={handleSkipInterviewStep}
+                    className="rounded-md border border-border px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Пропустить
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setInterviewStep(null)}
+                  title="Прервать знакомство"
+                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="flex px-6 pt-2">
             <div className="relative flex-1">
               {suggestions.length > 0 && (
@@ -454,13 +547,15 @@ export function ChatPanel({
                 onFocus={() => setTextareaFocused(true)}
                 onBlur={() => setTextareaFocused(false)}
                 placeholder={
-                  isLabCoordinator
-                    ? fanOutPending
-                      ? 'Ждём ответы стратегий на предыдущее сообщение…'
-                      : 'Сообщение уйдёт во все стратегии лаборатории, или введите /analyze…'
-                    : canSendMessages
-                      ? 'Опишите задачу, уточните детали или введите команду через /…'
-                      : 'Только команды (/tokens, /context) — обычные сообщения пишите в координаторском чате'
+                  interviewStep !== null
+                    ? 'Ваш ответ…'
+                    : isLabCoordinator
+                      ? fanOutPending
+                        ? 'Ждём ответы стратегий на предыдущее сообщение…'
+                        : 'Сообщение уйдёт во все стратегии лаборатории, или введите /analyze…'
+                      : canSendMessages
+                        ? 'Опишите задачу, уточните детали или введите команду через /…'
+                        : 'Только команды (/tokens, /context) — обычные сообщения пишите в координаторском чате'
                 }
                 rows={1}
                 className="block max-h-[200px] min-h-11 w-full resize-none overflow-hidden rounded-lg border border-input bg-transparent py-2.5 pr-24 pl-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
