@@ -7,6 +7,7 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
+import { TaskStateBadge } from '@/components/task-state-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { cn } from 'cn'
@@ -19,6 +20,7 @@ import type {
   Estimate,
   FanOutStatus,
   TaskMemory,
+  TaskState,
   TokenUsage,
   UserProfile,
 } from '@/lib/api'
@@ -118,6 +120,8 @@ interface ChatPanelProps {
   onJumpToChat?: (chatId: string) => void
   profile?: UserProfile
   onOpenProfile: () => void
+  taskState: TaskState
+  onSetTaskDone: (done: boolean) => void
 }
 
 export function ChatPanel({
@@ -156,6 +160,8 @@ export function ChatPanel({
   onJumpToChat,
   profile,
   onOpenProfile,
+  taskState,
+  onSetTaskDone,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
@@ -581,6 +587,12 @@ export function ChatPanel({
           </form>
 
           <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
+            {!isLabChat && (
+              <>
+                <TaskStateBadge stage={taskState.stage} />
+                <span aria-hidden>·</span>
+              </>
+            )}
             {isLabCoordinator ? (
               <span className="rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-primary">
                 Координатор
@@ -615,8 +627,32 @@ export function ChatPanel({
       </div>
 
       {estimate && (
-        <div className="h-72 flex-shrink-0 px-6 pb-6 lg:h-full lg:w-[26rem] lg:py-6 lg:pl-0">
-          <ChatEstimateCard estimate={estimate} />
+        <div className="flex h-72 min-h-0 flex-shrink-0 flex-col px-6 pb-6 lg:h-full lg:w-[26rem] lg:py-6 lg:pl-0">
+          {!isLabChat && (
+            <div className="mb-3 flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <TaskStateBadge stage={taskState.stage} />
+                {taskState.stage === 'estimated' && (
+                  <Button size="sm" onClick={() => onSetTaskDone(true)}>
+                    Принять оценку
+                  </Button>
+                )}
+                {taskState.stage === 'done' && (
+                  <button
+                    type="button"
+                    onClick={() => onSetTaskDone(false)}
+                    className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    Возобновить
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">{taskState.expected_action}</p>
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            <ChatEstimateCard estimate={estimate} />
+          </div>
         </div>
       )}
     </div>

@@ -19,6 +19,7 @@ import { StrategyBadge } from '@/components/strategy-badge'
 import { cn } from 'cn'
 import type { ChatSummary, Project } from '@/lib/api'
 import { isRealStrategy } from '@/lib/strategy'
+import { TASK_STAGE_META } from '@/lib/task-state'
 
 export type DemoMode = 'estimate' | 'compare' | 'reasoning' | 'temperature' | 'models'
 
@@ -668,6 +669,11 @@ function ChatListItem({ chat, active, onSelect, onRename, onDelete, icon, highli
         title={chat.title}
       >
         {icon}
+        <span
+          className="size-1.5 flex-shrink-0 rounded-full"
+          style={{ background: TASK_STAGE_META[chat.task_state.stage].color }}
+          title={chat.task_state.step}
+        />
         <span className="truncate">{chat.title}</span>
       </button>
       {(onRename || onDelete) && (
