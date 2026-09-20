@@ -239,6 +239,7 @@ export interface TaskMemory {
 // TaskMemory (this chat) and Project (this project's chats).
 export interface UserProfile {
   name: string
+  stack: string[]
   style: string
   format: string
   constraints: string[]

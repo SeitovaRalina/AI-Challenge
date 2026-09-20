@@ -392,7 +392,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 // chats — see PostMessage).
 func buildMemorySystemMessages(task *TaskMemory, project *Project, profile *UserProfile) []chatMessage {
 	var messages []chatMessage
-	if profile != nil && (profile.Name != "" || profile.Style != "" || profile.Format != "" || len(profile.Constraints) > 0) {
+	if profile != nil && (profile.Name != "" || len(profile.Stack) > 0 || profile.Style != "" || profile.Format != "" || len(profile.Constraints) > 0) {
 		if encoded, err := json.Marshal(profile); err == nil {
 			messages = append(messages, chatMessage{
 				Role: "system",

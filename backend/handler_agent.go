@@ -565,6 +565,7 @@ func getProfileHandler(agent *Agent) http.HandlerFunc {
 // updateProfileRequest is the payload accepted by PATCH /api/profile.
 type updateProfileRequest struct {
 	Name        string   `json:"name"`
+	Stack       []string `json:"stack"`
 	Style       string   `json:"style"`
 	Format      string   `json:"format"`
 	Constraints []string `json:"constraints"`
@@ -582,7 +583,7 @@ func updateProfileHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 
-		profile, err := agent.UpdateProfile(req.Name, req.Style, req.Format, req.Constraints)
+		profile, err := agent.UpdateProfile(req.Name, req.Stack, req.Style, req.Format, req.Constraints)
 		if err != nil {
 			writeAgentError(w, err)
 			return

@@ -15,6 +15,7 @@ import (
 // any particular chat or project.
 type UserProfile struct {
 	Name        string   `json:"name"`
+	Stack       []string `json:"stack"`
 	Style       string   `json:"style"`
 	Format      string   `json:"format"`
 	Constraints []string `json:"constraints"`
@@ -37,7 +38,7 @@ func NewProfileStore(path string) *ProfileStore {
 func (s *ProfileStore) Load() (*UserProfile, error) {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
-		return &UserProfile{Constraints: []string{}}, nil
+		return &UserProfile{Stack: []string{}, Constraints: []string{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -45,6 +46,9 @@ func (s *ProfileStore) Load() (*UserProfile, error) {
 	var profile UserProfile
 	if err := json.Unmarshal(data, &profile); err != nil {
 		return nil, err
+	}
+	if profile.Stack == nil {
+		profile.Stack = []string{}
 	}
 	if profile.Constraints == nil {
 		profile.Constraints = []string{}
@@ -76,6 +80,8 @@ func (s *ProfileStore) Save(profile *UserProfile) error {
 // crash on).
 func profileCopy(p *UserProfile) *UserProfile {
 	copied := *p
+	copied.Stack = make([]string, len(p.Stack))
+	copy(copied.Stack, p.Stack)
 	copied.Constraints = make([]string, len(p.Constraints))
 	copy(copied.Constraints, p.Constraints)
 	return &copied
@@ -95,15 +101,19 @@ func (a *Agent) GetProfile() *UserProfile {
 // stated (see profileSystemPrompt) — a mistaken guess here would be a worse
 // experience than an empty field, so a direct, explicit edit must always be
 // available regardless of what auto-extraction has or hasn't picked up.
-func (a *Agent) UpdateProfile(name, style, format string, constraints []string) (*UserProfile, error) {
+func (a *Agent) UpdateProfile(name string, stack []string, style, format string, constraints []string) (*UserProfile, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if stack == nil {
+		stack = []string{}
+	}
 	if constraints == nil {
 		constraints = []string{}
 	}
 	a.profile = &UserProfile{
 		Name:        name,
+		Stack:       stack,
 		Style:       style,
 		Format:      format,
 		Constraints: constraints,
@@ -111,6 +121,6 @@ func (a *Agent) UpdateProfile(name, style, format string, constraints []string) 
 	if err := a.profileStore.Save(a.profile); err != nil {
 		log.Printf("agent: failed to persist profile after manual edit: %v", err)
 	}
-	log.Printf("agent: profile manually edited (%d constraint(s))", len(constraints))
+	log.Printf("agent: profile manually edited (%d stack item(s), %d constraint(s))", len(stack), len(constraints))
 	return profileCopy(a.profile), nil
 }

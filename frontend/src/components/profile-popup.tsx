@@ -30,6 +30,7 @@ function linesToList(text: string): string[] {
 export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) {
   const [editing, setEditing] = useState(true)
   const [nameDraft, setNameDraft] = useState(profile.name)
+  const [stackDraft, setStackDraft] = useState(() => listToLines(profile.stack))
   const [styleDraft, setStyleDraft] = useState(profile.style)
   const [formatDraft, setFormatDraft] = useState(profile.format)
   const [constraintsDraft, setConstraintsDraft] = useState(() => listToLines(profile.constraints))
@@ -37,6 +38,7 @@ export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) 
 
   function startEditing() {
     setNameDraft(profile.name)
+    setStackDraft(listToLines(profile.stack))
     setStyleDraft(profile.style)
     setFormatDraft(profile.format)
     setConstraintsDraft(listToLines(profile.constraints))
@@ -48,6 +50,7 @@ export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) 
     try {
       const updated = await updateProfile({
         name: nameDraft.trim(),
+        stack: linesToList(stackDraft),
         style: styleDraft.trim(),
         format: formatDraft.trim(),
         constraints: linesToList(constraintsDraft),
@@ -107,6 +110,18 @@ export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) 
                 />
               </div>
               <div>
+                <p className="text-xs font-medium text-muted-foreground">
+                  Стек (по одному на строку)
+                </p>
+                <textarea
+                  value={stackDraft}
+                  onChange={(event) => setStackDraft(event.target.value)}
+                  placeholder="Например: Flutter"
+                  rows={2}
+                  className="mt-1.5 w-full rounded-md border border-border bg-transparent p-2 text-xs outline-none focus-visible:border-ring"
+                />
+              </div>
+              <div>
                 <p className="text-xs font-medium text-muted-foreground">Стиль общения</p>
                 <input
                   value={styleDraft}
@@ -161,6 +176,24 @@ export function ProfilePopup({ profile, onClose, onUpdate }: ProfilePopupProps) 
                 <p className="mt-1.5 text-sm text-foreground">
                   {profile.name || <span className="text-muted-foreground">Не задано</span>}
                 </p>
+              </div>
+
+              <div className="mt-3.5">
+                <p className="text-xs font-medium text-muted-foreground">Стек</p>
+                {profile.stack.length === 0 ? (
+                  <p className="mt-1.5 text-sm text-muted-foreground">Не задано</p>
+                ) : (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {profile.stack.map((item) => (
+                      <span
+                        key={item}
+                        className="rounded-full border border-border px-2.5 py-1 text-xs text-foreground"
+                      >
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mt-3.5">
