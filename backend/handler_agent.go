@@ -11,8 +11,9 @@ import (
 )
 
 // Handlers for the day 7+ chat agent: chats themselves, their context
-// strategy, branching (checkpoints/branches/active branch), and labs (the
-// day-10 side-by-side strategy comparison). Day 1-6's one-shot comparison
+// strategy, branching (checkpoints/branches/active branch), labs (the
+// day-10 side-by-side strategy comparison), and projects (the day-11
+// long-term memory layer — see project.go). Day 1-6's one-shot comparison
 // endpoints live in handler.go.
 
 // writeAgentError maps the agent-layer sentinel errors shared across these
@@ -30,6 +31,8 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "недоступно для текущей стратегии контекста")
 	case errors.Is(err, ErrFanOutInProgress):
 		writeError(w, http.StatusConflict, "предыдущий фан-аут ещё выполняется, подождите")
+	case errors.Is(err, ErrProjectNotFound):
+		writeError(w, http.StatusNotFound, "проект не найден")
 	default:
 		writeLLMError(w, err)
 	}
@@ -44,6 +47,11 @@ func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
 	if detail.IsLabCoordinator {
 		detail.FanOut = agent.FanOutStatus(chat.LabID)
 	}
+	if chat.ProjectID != "" {
+		if project, err := agent.GetProject(chat.ProjectID); err == nil {
+			detail.Project = project
+		}
+	}
 	return detail
 }
 
@@ -52,10 +60,29 @@ type agentMessageRequest struct {
 	Message string `json:"message"`
 }
 
-// createChatHandler starts a new, empty chat and returns its summary.
+// createChatRequest is the payload accepted by POST /api/agent/chats.
+// ProjectID is optional — empty means the new chat belongs to no project,
+// exactly like before day 11.
+type createChatRequest struct {
+	ProjectID string `json:"project_id,omitempty"`
+}
+
+// createChatHandler starts a new, empty chat — optionally scoped to an
+// existing project — and returns its summary.
 func createChatHandler(agent *Agent) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusCreated, agent.CreateChat())
+		var req createChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		summary, err := agent.CreateChat(strings.TrimSpace(req.ProjectID))
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, summary)
 	}
 }
 
@@ -396,5 +423,133 @@ func deleteLabHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// createProjectRequest is the payload accepted by POST /api/projects.
+type createProjectRequest struct {
+	Name string `json:"name"`
+}
+
+// createProjectHandler creates a new, empty project (day 11's long-term
+// memory layer — see project.go).
+func createProjectHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req createProjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "название проекта не может быть пустым")
+			return
+		}
+
+		project, err := agent.CreateProject(name)
+		if err != nil {
+			log.Printf("create project failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "внутренняя ошибка")
+			return
+		}
+		writeJSON(w, http.StatusCreated, project)
+	}
+}
+
+// listProjectsHandler returns every project, so the sidebar can group chats
+// by project.
+func listProjectsHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, agent.ListProjects())
+	}
+}
+
+// getProjectHandler returns one project's full state, including its
+// long-term memory (known_stack/notes).
+func getProjectHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("id")
+		project, err := agent.GetProject(projectID)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+// deleteProjectHandler removes a project. Its chats are kept — only their
+// project_id is cleared (see Agent.DeleteProject).
+func deleteProjectHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("id")
+		if err := agent.DeleteProject(projectID); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// updateProjectMemoryRequest is the payload accepted by
+// PATCH /api/projects/{id}/memory.
+type updateProjectMemoryRequest struct {
+	KnownStack []string `json:"known_stack"`
+	Notes      []string `json:"notes"`
+}
+
+// updateProjectMemoryHandler lets the user manually add, edit, or delete a
+// project's long-term memory — the explicit counterpart to the automatic
+// per-turn extraction.
+func updateProjectMemoryHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("id")
+
+		var req updateProjectMemoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		project, err := agent.UpdateProjectMemory(projectID, req.KnownStack, req.Notes)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+// updateChatTaskRequest is the payload accepted by
+// PATCH /api/agent/chats/{id}/task.
+type updateChatTaskRequest struct {
+	Goal              string            `json:"goal"`
+	Constraints       []string          `json:"constraints"`
+	ClarifyingAnswers map[string]string `json:"clarifying_answers"`
+}
+
+// updateChatTaskHandler lets the user manually add, edit, or delete a
+// chat's own working memory — the explicit counterpart to the automatic
+// per-turn extraction.
+func updateChatTaskHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req updateChatTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		task, err := agent.UpdateChatTask(chatID, TaskMemory{
+			Goal:              req.Goal,
+			Constraints:       req.Constraints,
+			ClarifyingAnswers: req.ClarifyingAnswers,
+		})
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, task)
 	}
 }

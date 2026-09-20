@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -80,6 +81,13 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	facts := chat.Facts
 	summary := chat.Summary
 	summarizedThrough := chat.SummarizedThrough
+	task := chat.Task
+	labID := chat.LabID
+	projectID := chat.ProjectID
+	var project *Project
+	if projectID != "" {
+		project = a.projects[projectID]
+	}
 	// Captured once, up front — this turn's result must land on the branch
 	// it was actually asked about even if SetActiveBranch runs while the
 	// (slow) LLM call below is in flight; re-reading chat.ActiveBranchID
@@ -130,6 +138,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			})
 		}
 	}
+	messages = append(messages, buildMemorySystemMessages(task, project)...)
 	extra, raw := buildContextMessages(strategy, a.historyKeepLastN, history, facts, summary, summarizedThrough)
 	messages = append(messages, extra...)
 	for _, m := range raw {
@@ -234,6 +243,64 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			a.mu.Unlock()
 		}
 	}
+	// Working/long-term memory (day 11) are independent of ContextStrategy —
+	// they run for every non-lab chat, not just sticky_facts. A lab's
+	// strategy chats are skipped entirely: AnalyzeLab's token/cost comparison
+	// is specifically about the strategy being tested, and an extra uniform
+	// side-call on all of them would pollute those numbers with something
+	// unrelated to that comparison.
+	if labID == "" {
+		// Run concurrently, not sequentially: two independent LLM calls
+		// (this chat's working memory, this project's long-term memory)
+		// chained one after another was observed stacking enough latency to
+		// blow past the 60s budget postAgentMessageHandler gives the whole
+		// turn — running them side by side keeps the added latency to
+		// whichever of the two is slower, not their sum.
+		//
+		// memCtx is deliberately its own context.WithTimeout(context.Background(), ...),
+		// NOT derived from ctx (the request's, itself bounded to 60s total by
+		// postAgentMessageHandler): on a slow gateway day the MAIN call alone
+		// was observed taking 34-50s, leaving as little as 10s of that shared
+		// 60s for both memory calls together — nowhere near enough, and both
+		// silently failed (by design — a memory-update failure never fails
+		// the user's own turn) every single time. Memory updates get a fresh,
+		// independent budget instead, so a slow main call never starves them.
+		var wg sync.WaitGroup
+		var updatedTask *TaskMemory
+		var updatedProject *Project
+
+		memCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			updatedTask = a.updateTaskMemoryAfterTurn(memCtx, chatID, userMessage, turn.Reply)
+		}()
+		if projectID != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				updatedProject = a.updateProjectMemoryAfterTurn(memCtx, chatID, projectID, userMessage, turn.Reply)
+			}()
+		}
+		wg.Wait()
+
+		if updatedTask != nil || updatedProject != nil {
+			a.mu.Lock()
+			if c, ok := a.chats[chatID]; ok {
+				if updatedTask != nil {
+					agentReply.Task = c.Task
+				}
+				agentReply.CumulativeTotalTokens = c.CumulativeTotalTokens
+				agentReply.CumulativeCostUsd = c.CumulativeCostUsd
+			}
+			if updatedProject != nil {
+				agentReply.Project = updatedProject
+			}
+			a.mu.Unlock()
+		}
+	}
 	if event := a.compressHistoryIfDue(ctx, chatID); event != nil {
 		agentReply.NewCompressionEvent = event
 		a.mu.Lock()
@@ -266,6 +333,10 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 			fanOut = a.fanOutLocked(chat.LabID)
 		}
 	}
+	var project *Project
+	if chat.ProjectID != "" {
+		project = a.projects[chat.ProjectID]
+	}
 	return &AgentReply{
 		Reply:                     reply,
 		Estimate:                  chat.branchEstimate(branchID),
@@ -287,7 +358,43 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 		LabID:                     chat.LabID,
 		IsLabCoordinator:          isCoordinator,
 		FanOut:                    fanOut,
+		ProjectID:                 chat.ProjectID,
+		Project:                   project,
+		Task:                      chat.Task,
 	}
+}
+
+// buildMemorySystemMessages renders day 11's working-memory (task) and
+// long-term-memory (project) layers as system messages — a parallel
+// injection to buildContextMessages, not part of its strategy switch: that
+// switch is about how history gets windowed/compressed, this is a separate,
+// always-on layer independent of ContextStrategy.
+func buildMemorySystemMessages(task *TaskMemory, project *Project) []chatMessage {
+	var messages []chatMessage
+	if task != nil && (task.Goal != "" || len(task.Constraints) > 0 || len(task.ClarifyingAnswers) > 0) {
+		if encoded, err := json.Marshal(task); err == nil {
+			messages = append(messages, chatMessage{
+				Role: "system",
+				Content: "Рабочая память текущей задачи (JSON; цель, принятые ограничения, " +
+					"уже полученные ответы — используй как контекст, не переспрашивай то, что уже есть): " + string(encoded),
+			})
+		}
+	}
+	if project != nil && (len(project.KnownStack) > 0 || len(project.Notes) > 0) {
+		payload := struct {
+			Name       string   `json:"name"`
+			KnownStack []string `json:"known_stack,omitempty"`
+			Notes      []string `json:"notes,omitempty"`
+		}{Name: project.Name, KnownStack: project.KnownStack, Notes: project.Notes}
+		if encoded, err := json.Marshal(payload); err == nil {
+			messages = append(messages, chatMessage{
+				Role: "system",
+				Content: "Долговременная память проекта «" + project.Name + "» (JSON; известна из других чатов этого же проекта — " +
+					"используй как контекст, не переспрашивай то, что уже есть): " + string(encoded),
+			})
+		}
+	}
+	return messages
 }
 
 // contextFullReplyText is shown when the dialog's history genuinely leaves
@@ -351,9 +458,9 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, branchID, us
 	a.mu.Unlock()
 
 	// A graceful turn (context full, or a truncated reply) never touches
-	// facts — there's no real assistant content to extract them from — but
-	// history has still grown, so a rolling_summary chat may still be due
-	// for a fold.
+	// facts, task memory, or project memory — there's no real assistant
+	// content to extract any of them from — but history has still grown, so
+	// a rolling_summary chat may still be due for a fold.
 	if event := a.compressHistoryIfDue(ctx, chatID); event != nil {
 		agentReply.NewCompressionEvent = event
 		a.mu.Lock()

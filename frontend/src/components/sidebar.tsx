@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Brain,
   Check,
   ChevronDown,
   FlaskConical,
+  FolderKanban,
+  FolderPlus,
   PanelLeftClose,
   Pencil,
   Plus,
@@ -13,7 +16,7 @@ import {
 
 import { StrategyBadge } from '@/components/strategy-badge'
 import { cn } from 'cn'
-import type { ChatSummary } from '@/lib/api'
+import type { ChatSummary, Project } from '@/lib/api'
 import { isRealStrategy } from '@/lib/strategy'
 
 export type DemoMode = 'estimate' | 'compare' | 'reasoning' | 'temperature' | 'models'
@@ -45,16 +48,21 @@ function loadStoredWidth(): number {
 
 interface SidebarProps {
   chats: ChatSummary[]
+  projects: Project[]
   activeChatId: string | null
   activeDemo: DemoMode | null
   onNewChat: () => void
   onNewLab: (label: string) => void
+  onNewProject: (name: string) => void
+  onNewChatInProject: (projectId: string) => void
   onSelectChat: (id: string) => void
   onSelectDemo: (mode: DemoMode) => void
   onCollapse: () => void
   onRenameChat: (id: string, title: string) => void
   onDeleteChat: (id: string) => void
   onDeleteLab: (labId: string) => void
+  onDeleteProject: (projectId: string) => void
+  onOpenProjectMemory: (projectId: string) => void
 }
 
 interface ChatGroup {
@@ -87,22 +95,30 @@ function groupChats(chats: ChatSummary[]): ChatGroup[] {
 
 export function Sidebar({
   chats,
+  projects,
   activeChatId,
   activeDemo,
   onNewChat,
   onNewLab,
+  onNewProject,
+  onNewChatInProject,
   onSelectChat,
   onSelectDemo,
   onCollapse,
   onRenameChat,
   onDeleteChat,
   onDeleteLab,
+  onDeleteProject,
+  onOpenProjectMemory,
 }: SidebarProps) {
   const [demosOpen, setDemosOpen] = useState(false)
   const [labFormOpen, setLabFormOpen] = useState(false)
+  const [projectFormOpen, setProjectFormOpen] = useState(false)
   const [width, setWidth] = useState(loadStoredWidth)
   const resizing = useRef(false)
-  const groups = groupChats(chats)
+  // A chat with a project_id is rendered under its project group below, not
+  // as a standalone/lab-grouped item — groupChats only ever sees the rest.
+  const groups = groupChats(chats.filter((c) => !c.project_id))
 
   const handlePointerMove = useCallback((event: PointerEvent) => {
     if (!resizing.current) return
@@ -166,6 +182,25 @@ export function Sidebar({
           </button>
         </div>
 
+        {projectFormOpen ? (
+          <NewProjectForm
+            onCreate={(name) => {
+              onNewProject(name)
+              setProjectFormOpen(false)
+            }}
+            onCancel={() => setProjectFormOpen(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setProjectFormOpen(true)}
+            className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <FolderPlus className="h-4 w-4" />
+            Проект
+          </button>
+        )}
+
         {labFormOpen ? (
           <NewLabForm
             onCreate={(label) => {
@@ -188,6 +223,31 @@ export function Sidebar({
 
       <nav className="flex-1 overflow-y-auto px-2">
         <ul className="flex flex-col gap-0.5">
+          {projects.map((project) => {
+            const projectChats = chats.filter((c) => c.project_id === project.id)
+            return (
+              <li key={project.id} className="flex flex-col gap-0.5">
+                <ProjectGroupHeader
+                  name={project.name}
+                  onOpenMemory={() => onOpenProjectMemory(project.id)}
+                  onNewChat={() => onNewChatInProject(project.id)}
+                  onDelete={() => onDeleteProject(project.id)}
+                />
+                <ul className="flex flex-col gap-0.5 border-l border-border pl-2">
+                  {projectChats.map((chat) => (
+                    <ChatListItem
+                      key={chat.id}
+                      chat={chat}
+                      active={activeChatId === chat.id}
+                      onSelect={() => onSelectChat(chat.id)}
+                      onRename={(title) => onRenameChat(chat.id, title)}
+                      onDelete={() => onDeleteChat(chat.id)}
+                    />
+                  ))}
+                </ul>
+              </li>
+            )
+          })}
           {groups.map((group) => {
             if (!group.labId) {
               const chat = group.chats[0]
@@ -282,6 +342,127 @@ export function Sidebar({
         className="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-primary/30"
       />
     </aside>
+  )
+}
+
+// ProjectGroupHeader names the project and is where its chats are created,
+// its long-term memory (known_stack/notes, day 11) is opened, and the
+// project itself is deleted (member chats are kept — see DeleteProject).
+function ProjectGroupHeader({
+  name,
+  onOpenMemory,
+  onNewChat,
+  onDelete,
+}: {
+  name: string
+  onOpenMemory: () => void
+  onNewChat: () => void
+  onDelete: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+
+  if (confirming) {
+    return (
+      <div className="mt-1.5 flex items-center gap-1 rounded-md bg-destructive/10 px-3 py-1">
+        <span className="flex-1 truncate text-[11px] text-foreground">Удалить проект? Чаты останутся.</span>
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Да, удалить"
+          className="rounded p-1 text-destructive hover:bg-destructive/20"
+        >
+          <Check className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          title="Отмена"
+          className="rounded p-1 text-muted-foreground hover:bg-accent"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="group mt-1.5 flex items-center gap-1.5 px-3 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+      <FolderKanban className="h-3 w-3 shrink-0" />
+      <span className="flex-1 truncate normal-case">{name}</span>
+      <button
+        type="button"
+        onClick={onOpenMemory}
+        title="Память проекта"
+        className="rounded p-1 opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
+      >
+        <Brain className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={onNewChat}
+        title="Новый чат в проекте"
+        className="rounded p-1 opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100"
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        title="Удалить проект"
+        className="rounded p-1 opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100"
+      >
+        <Trash2 className="h-3 w-3" />
+      </button>
+    </div>
+  )
+}
+
+// NewProjectForm asks for the project's name — mirrors NewLabForm.
+function NewProjectForm({
+  onCreate,
+  onCancel,
+}: {
+  onCreate: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState('')
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed) return
+    onCreate(trimmed)
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 rounded-md border border-border p-2">
+      <input
+        autoFocus
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') onCancel()
+        }}
+        placeholder="Название проекта"
+        className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+      />
+      <div className="flex items-center gap-1.5">
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="flex-1 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+        >
+          Создать проект
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+        >
+          Отмена
+        </button>
+      </div>
+    </form>
   )
 }
 
