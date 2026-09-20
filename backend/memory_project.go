@@ -18,9 +18,11 @@ const projectMemorySystemPrompt = `You maintain the long-term memory of a softwa
 Given the project's current known facts (a JSON object, possibly with empty fields) and the latest exchange from ONE of its chats (one user message and the assistant's reply), return the UPDATED complete set of facts as a single JSON object: {"known_stack": ["..."], "notes": ["..."]}.
 
 Rules:
-- "known_stack": short technology names (e.g. "Flutter", "Python", "PostgreSQL") the user has confirmed this project actually uses. No duplicates, no near-duplicates (update the existing entry instead of adding a slightly different phrasing of the same thing).
-- "notes": short factual statements about the project that matter for estimating future tasks in it (roles, constraints, past decisions) — not small talk, not anything specific to only this one task (that belongs in that chat's own working memory, not here).
-- Merge: keep existing entries that are still valid, add new ones the exchange revealed, consolidate one that changed, drop one the user explicitly retracted. Never invent a fact the exchange didn't actually establish.
+- "known_stack": short technology names (e.g. "Flutter", "Python", "PostgreSQL") the user has confirmed this project actually uses. No duplicates, no near-duplicates (update the existing entry instead of adding a slightly different phrasing of the same thing). NEVER also restate a stack item as a note ("uses MongoDB" is redundant with known_stack containing "MongoDB" — leave it out of notes entirely).
+- "notes": SETTLED facts about the project that matter across MULTIPLE future tasks in it — team roles, business rules, architectural decisions actually made. NOT: small talk; anything specific to only the one task this exchange discussed (that belongs in that chat's own working memory, not here); open questions, unknowns, or missing information ("data structure is not yet defined", "current state is unknown" are NOT facts — never write them as notes, drop them instead).
+- Be extremely conservative about adding a note at all: most exchanges reveal nothing project-wide and should leave "notes" completely unchanged. A note describes a standing decision someone could rely on next month in a different chat — not a restatement of what this one message said.
+- Merge, don't accumulate: before adding a note, check whether an existing one already covers it (even loosely) — update that one instead of adding a near-duplicate. Keep existing entries that are still valid, drop one the user explicitly retracted. Never invent a fact the exchange didn't actually establish.
+- All text values (known_stack items, notes) are in Russian, regardless of what language the exchange itself was in.
 
 Output ONLY that JSON object: no markdown fences, no commentary before or after it.`
 

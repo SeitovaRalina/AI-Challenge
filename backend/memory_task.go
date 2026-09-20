@@ -24,6 +24,8 @@ Rules:
 - "constraints": settled facts or boundaries the user has explicitly agreed for THIS task (e.g. "offline mode is not needed", "payments are out of scope for this pass") — decisions, not open questions. Only add one when the exchange actually settled it; never invent one.
 - "clarifying_answers": short factual answers the user has actually given, keyed by a short label for the question they answer (not the full question text).
 - This is scoped to THIS conversation only — never invent a goal, constraint, or answer the exchange didn't actually establish.
+- Merge, don't accumulate: before adding a constraint, check whether an existing one already covers it — update that one instead of adding a near-duplicate.
+- All text values (goal, constraints, clarifying_answers) are in Russian, regardless of what language the exchange itself was in.
 
 Output ONLY that JSON object: no markdown fences, no commentary before or after it.`
 
