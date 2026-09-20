@@ -83,11 +83,13 @@ func main() {
 	log.Printf("context strategies: keep last %d message(s) raw/windowed, new chats default to %s", historyKeepLastN, contextStrategyDefault)
 
 	client := NewLiteLLMClient(baseURL, apiKey, model)
-	// Labs get their own sibling directory rather than sharing dataDir:
-	// ChatStore.LoadAll globs every *.json file in its directory as a chat,
-	// so a labs index file sitting next to it would collide.
+	// Labs and projects get their own sibling directories rather than
+	// sharing dataDir: ChatStore.LoadAll globs every *.json file in its
+	// directory as a chat, so a labs/projects file sitting next to it would
+	// collide.
 	labsDir := filepath.Join(filepath.Dir(dataDir), "labs")
-	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
+	projectsDir := filepath.Join(filepath.Dir(dataDir), "projects")
+	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -110,6 +112,12 @@ func main() {
 	mux.HandleFunc("POST /api/labs", createLabHandler(agent))
 	mux.HandleFunc("POST /api/labs/{id}/analyze", analyzeLabHandler(agent))
 	mux.HandleFunc("DELETE /api/labs/{id}", deleteLabHandler(agent))
+	mux.HandleFunc("GET /api/projects", listProjectsHandler(agent))
+	mux.HandleFunc("POST /api/projects", createProjectHandler(agent))
+	mux.HandleFunc("GET /api/projects/{id}", getProjectHandler(agent))
+	mux.HandleFunc("DELETE /api/projects/{id}", deleteProjectHandler(agent))
+	mux.HandleFunc("PATCH /api/projects/{id}/memory", updateProjectMemoryHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/task", updateChatTaskHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {

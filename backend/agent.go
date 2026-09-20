@@ -74,6 +74,36 @@ type Chat struct {
 	// LabID is non-empty when this chat was created as one of a
 	// ContextLab's strategy chats (see lab.go) — empty for a normal chat.
 	LabID string `json:"lab_id,omitempty"`
+
+	// ProjectID is non-empty when this chat belongs to a Project (see
+	// project.go) — a lab chat and a project chat are mutually exclusive by
+	// construction (newChatLocked's two ID params are never both set).
+	ProjectID string `json:"project_id,omitempty"`
+
+	// Task is day 11's working-memory layer: this one chat's own task data
+	// (goal, agreed constraints, answers gathered so far), auto-updated
+	// after every real turn regardless of ContextStrategy — unlike Facts,
+	// which only exists for chats on the sticky_facts strategy. It lives and
+	// dies with this chat; it is never shared with any other chat, project
+	// or not.
+	Task *TaskMemory `json:"task,omitempty"`
+}
+
+// TaskMemory is one chat's working memory: data about the specific task this
+// conversation is estimating, distinct from both the raw dialog (Messages)
+// and any project-level long-term memory (Project.KnownStack/Notes).
+// Constraints is settled facts/boundaries the user has agreed for THIS task
+// (e.g. "офлайн-режим не нужен") — deliberately facts, not open questions:
+// a decision silently forgotten once the raw message that stated it slides
+// out of the short-term window is a real risk (the model could contradict
+// it later); a follow-up question never asked isn't — the model can just
+// ask it again from the live conversation, so tracking "still unanswered"
+// separately added little the raw window didn't already cover. See
+// memory_task.go for how this is kept up to date.
+type TaskMemory struct {
+	Goal              string            `json:"goal"`
+	Constraints       []string          `json:"constraints"`
+	ClarifyingAnswers map[string]string `json:"clarifying_answers"`
 }
 
 // branchMessages/appendToBranch, branchEstimate/setBranchEstimate, and
@@ -180,6 +210,7 @@ type ChatSummary struct {
 	Title            string          `json:"title"`
 	CreatedAt        time.Time       `json:"created_at"`
 	LabID            string          `json:"lab_id,omitempty"`
+	ProjectID        string          `json:"project_id,omitempty"`
 	ContextStrategy  ContextStrategy `json:"context_strategy"`
 	IsLabCoordinator bool            `json:"is_lab_coordinator,omitempty"`
 }
@@ -192,16 +223,18 @@ type Agent struct {
 	client            *LiteLLMClient
 	store             *ChatStore
 	labStore          *LabStore
+	projectStore      *ProjectStore
 	contextTokenLimit int // 0 disables the pre-call overflow guard entirely
 
 	historyKeepLastN       int             // 0 disables windowing/compression entirely
 	contextStrategyDefault ContextStrategy // initial Chat.ContextStrategy for new chats
 
-	mu     sync.Mutex
-	chats  map[string]*Chat
-	order  []string // chat IDs, oldest first, for stable listing order
-	labs   map[string]*Lab
-	fanOut map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
+	mu       sync.Mutex
+	chats    map[string]*Chat
+	order    []string // chat IDs, oldest first, for stable listing order
+	labs     map[string]*Lab
+	projects map[string]*Project
+	fanOut   map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each
@@ -214,16 +247,18 @@ type Agent struct {
 // sticky_facts resend, and how many rolling_summary keeps raw before folding;
 // pass 0 to disable windowing/compression entirely, for every chat.
 // contextStrategyDefault seeds new chats' ContextStrategy.
-func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, contextTokenLimit, historyKeepLastN int, contextStrategyDefault ContextStrategy) *Agent {
+func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, projectStore *ProjectStore, contextTokenLimit, historyKeepLastN int, contextStrategyDefault ContextStrategy) *Agent {
 	agent := &Agent{
 		client:                 client,
 		store:                  store,
 		labStore:               labStore,
+		projectStore:           projectStore,
 		contextTokenLimit:      contextTokenLimit,
 		historyKeepLastN:       historyKeepLastN,
 		contextStrategyDefault: contextStrategyDefault,
 		chats:                  make(map[string]*Chat),
 		labs:                   make(map[string]*Lab),
+		projects:               make(map[string]*Project),
 		fanOut:                 make(map[string][]FanOutStatus),
 	}
 
@@ -238,6 +273,22 @@ func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, conte
 		}
 		if chat.ContextStrategy == StrategyBranching {
 			ensureBranchState(chat)
+		}
+		// A chat persisted before Constraints existed (it was called
+		// OpenQuestions) — or from any other schema change to TaskMemory —
+		// loads with Task.Constraints as Go's nil zero value, since the old
+		// key doesn't match this field's json tag. Normalized here, once, on
+		// load, rather than leaving it nil until the next turn happens to
+		// call updateTaskMemory's own normalization: the same "null where
+		// the frontend expects an array" hazard fixed in copyChat/
+		// updateTaskMemory, guarded here too since this path bypasses both.
+		if chat.Task != nil {
+			if chat.Task.Constraints == nil {
+				chat.Task.Constraints = []string{}
+			}
+			if chat.Task.ClarifyingAnswers == nil {
+				chat.Task.ClarifyingAnswers = map[string]string{}
+			}
 		}
 		agent.chats[chat.ID] = chat
 		agent.order = append(agent.order, chat.ID)
@@ -254,6 +305,16 @@ func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, conte
 	}
 	log.Printf("agent: restored %d lab(s)", len(labs))
 
+	projects, err := projectStore.LoadAll()
+	if err != nil {
+		log.Printf("agent: failed to load persisted projects: %v", err)
+		return agent
+	}
+	for _, project := range projects {
+		agent.projects[project.ID] = project
+	}
+	log.Printf("agent: restored %d project(s)", len(projects))
+
 	return agent
 }
 
@@ -264,10 +325,11 @@ func newChatID() string {
 }
 
 // newChatLocked creates and persists a chat with an explicit title/strategy/
-// lab membership. Callers must hold a.mu. Shared by CreateChat (a plain new
-// chat, agent-default strategy, no lab) and CreateLab (one call per strategy
-// chat in the lab).
-func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID string) *Chat {
+// lab/project membership. Callers must hold a.mu. Shared by CreateChat (a
+// plain new chat, agent-default strategy, optionally in a project, never in
+// a lab) and CreateLab (one call per strategy chat in the lab, never in a
+// project — labID and projectID are never both non-empty).
+func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID, projectID string) *Chat {
 	chat := &Chat{
 		ID:              newChatID(),
 		Title:           title,
@@ -275,6 +337,7 @@ func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID stri
 		Messages:        []AgentMessage{},
 		ContextStrategy: strategy,
 		LabID:           labID,
+		ProjectID:       projectID,
 	}
 	if strategy == StrategyBranching {
 		ensureBranchState(chat)
@@ -290,13 +353,20 @@ func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID stri
 }
 
 // CreateChat starts a new, empty conversation using the agent's default
-// strategy and returns its summary.
-func (a *Agent) CreateChat() ChatSummary {
+// strategy, optionally scoped to an existing project (empty projectID means
+// no project), and returns its summary.
+func (a *Agent) CreateChat(projectID string) (ChatSummary, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	chat := a.newChatLocked("Новый чат", a.contextStrategyDefault, "")
-	return chatSummary(chat, a.labs)
+	if projectID != "" {
+		if _, ok := a.projects[projectID]; !ok {
+			return ChatSummary{}, ErrProjectNotFound
+		}
+	}
+
+	chat := a.newChatLocked("Новый чат", a.contextStrategyDefault, "", projectID)
+	return chatSummary(chat, a.labs), nil
 }
 
 // ListChats returns every chat's summary, oldest first.
@@ -412,6 +482,9 @@ type AgentReply struct {
 	LabID                     string            `json:"lab_id,omitempty"`
 	IsLabCoordinator          bool              `json:"is_lab_coordinator,omitempty"`
 	FanOut                    []FanOutStatus    `json:"fan_out,omitempty"`
+	ProjectID                 string            `json:"project_id,omitempty"`
+	Project                   *Project          `json:"project,omitempty"`
+	Task                      *TaskMemory       `json:"task,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -464,6 +537,7 @@ func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
 		Title:            c.Title,
 		CreatedAt:        c.CreatedAt,
 		LabID:            c.LabID,
+		ProjectID:        c.ProjectID,
 		ContextStrategy:  c.ContextStrategy,
 		IsLabCoordinator: isCoordinator,
 	}
@@ -497,6 +571,13 @@ type ChatDetail struct {
 	LabID                  string             `json:"lab_id,omitempty"`
 	IsLabCoordinator       bool               `json:"is_lab_coordinator,omitempty"`
 	FanOut                 []FanOutStatus     `json:"fan_out,omitempty"`
+	ProjectID              string             `json:"project_id,omitempty"`
+	// Project is always populated from live agent state when the chat
+	// belongs to one (see chatDetailWithLab in handler_agent.go), not only
+	// when this request happened to change it — same "always current, never
+	// stale" discipline every other strategy field here already follows.
+	Project *Project    `json:"project,omitempty"`
+	Task    *TaskMemory `json:"task,omitempty"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
@@ -524,5 +605,7 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 		Branches:               branchSummaries(c),
 		ActiveBranchID:         c.ActiveBranchID,
 		LabID:                  c.LabID,
+		ProjectID:              c.ProjectID,
+		Task:                   c.Task,
 	}
 }

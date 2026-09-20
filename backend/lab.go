@@ -177,12 +177,12 @@ func (a *Agent) CreateLab(label string) (*Lab, []ChatSummary, error) {
 	// still visible through this same map entry.
 	a.labs[lab.ID] = lab
 
-	coordinator := a.newChatLocked(label, StrategyCoordinator, lab.ID)
+	coordinator := a.newChatLocked(label, StrategyCoordinator, lab.ID, "")
 	lab.CoordinatorChatID = coordinator.ID
 
 	summaries := make([]ChatSummary, 0, len(labStrategies)+1)
 	for _, strategy := range labStrategies {
-		chat := a.newChatLocked(strategyTitle(strategy), strategy, lab.ID)
+		chat := a.newChatLocked(strategyTitle(strategy), strategy, lab.ID, "")
 		lab.ChatIDs = append(lab.ChatIDs, chat.ID)
 		summaries = append(summaries, chatSummary(chat, a.labs))
 	}
