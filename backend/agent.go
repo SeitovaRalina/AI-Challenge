@@ -356,10 +356,17 @@ func (a *Agent) RenameChat(chatID, title string) (ChatSummary, error) {
 // copyChat returns a copy of chat safe to hand to a caller outside the lock:
 // a shallow copy with Messages replaced by the active strategy's own message
 // slice (see Chat.activeMessages), deep-copied so the caller can't mutate
-// agent state through it.
+// agent state through it. Built with make+copy, not append(nil, ...): for a
+// brand-new chat with zero messages, append(([]AgentMessage)(nil)) with no
+// elements to add returns nil, not an allocated empty slice — that
+// serialized as a JSON "messages": null, which crashed the frontend's
+// [...prev.messages, ...] optimistic-append on the first message of any chat
+// fetched (not just newly created) with none yet.
 func copyChat(c *Chat) *Chat {
 	copied := *c
-	copied.Messages = append([]AgentMessage(nil), c.activeMessages()...)
+	active := c.activeMessages()
+	copied.Messages = make([]AgentMessage, len(active))
+	copy(copied.Messages, active)
 	return &copied
 }
 
