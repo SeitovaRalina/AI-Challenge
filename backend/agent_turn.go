@@ -88,6 +88,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 	if projectID != "" {
 		project = a.projects[projectID]
 	}
+	profile := a.profile
 	// Captured once, up front — this turn's result must land on the branch
 	// it was actually asked about even if SetActiveBranch runs while the
 	// (slow) LLM call below is in flight; re-reading chat.ActiveBranchID
@@ -138,7 +139,15 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			})
 		}
 	}
-	messages = append(messages, buildMemorySystemMessages(task, project)...)
+	// Profile (day 12) is deliberately withheld for lab chats, same reasoning
+	// as the labID=="" gate around the side-calls below: AnalyzeLab's token/
+	// cost comparison must stay about the ContextStrategy being tested, not an
+	// extra always-on system message none of the pre-day-12 runs had.
+	injectedProfile := profile
+	if labID != "" {
+		injectedProfile = nil
+	}
+	messages = append(messages, buildMemorySystemMessages(task, project, injectedProfile)...)
 	extra, raw := buildContextMessages(strategy, a.historyKeepLastN, history, facts, summary, summarizedThrough)
 	messages = append(messages, extra...)
 	for _, m := range raw {
@@ -268,6 +277,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 		var wg sync.WaitGroup
 		var updatedTask *TaskMemory
 		var updatedProject *Project
+		var updatedProfile *UserProfile
 
 		memCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -284,9 +294,14 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 				updatedProject = a.updateProjectMemoryAfterTurn(memCtx, chatID, projectID, userMessage, turn.Reply)
 			}()
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			updatedProfile = a.updateProfileAfterTurn(memCtx, chatID, userMessage, turn.Reply)
+		}()
 		wg.Wait()
 
-		if updatedTask != nil || updatedProject != nil {
+		if updatedTask != nil || updatedProject != nil || updatedProfile != nil {
 			a.mu.Lock()
 			if c, ok := a.chats[chatID]; ok {
 				if updatedTask != nil {
@@ -297,6 +312,9 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string) (*A
 			}
 			if updatedProject != nil {
 				agentReply.Project = updatedProject
+			}
+			if updatedProfile != nil {
+				agentReply.Profile = updatedProfile
 			}
 			a.mu.Unlock()
 		}
@@ -361,16 +379,28 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 		ProjectID:                 chat.ProjectID,
 		Project:                   project,
 		Task:                      chat.Task,
+		Profile:                   a.profile,
 	}
 }
 
 // buildMemorySystemMessages renders day 11's working-memory (task) and
-// long-term-memory (project) layers as system messages — a parallel
-// injection to buildContextMessages, not part of its strategy switch: that
-// switch is about how history gets windowed/compressed, this is a separate,
-// always-on layer independent of ContextStrategy.
-func buildMemorySystemMessages(task *TaskMemory, project *Project) []chatMessage {
+// long-term-memory (project) layers, plus day 12's global profile, as system
+// messages — a parallel injection to buildContextMessages, not part of its
+// strategy switch: that switch is about how history gets windowed/
+// compressed, this is a separate, always-on layer independent of
+// ContextStrategy. profile is nil when the caller wants it withheld (lab
+// chats — see PostMessage).
+func buildMemorySystemMessages(task *TaskMemory, project *Project, profile *UserProfile) []chatMessage {
 	var messages []chatMessage
+	if profile != nil && (profile.Name != "" || profile.Style != "" || profile.Format != "" || len(profile.Constraints) > 0) {
+		if encoded, err := json.Marshal(profile); err == nil {
+			messages = append(messages, chatMessage{
+				Role: "system",
+				Content: "Профиль пользователя (JSON; имя, стиль/формат/ограничения — соблюдай их в каждом ответе, " +
+					"обращайся по имени, если оно задано): " + string(encoded),
+			})
+		}
+	}
 	if task != nil && (task.Goal != "" || len(task.Constraints) > 0 || len(task.ClarifyingAnswers) > 0) {
 		if encoded, err := json.Marshal(task); err == nil {
 			messages = append(messages, chatMessage{

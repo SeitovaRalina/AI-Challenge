@@ -52,6 +52,7 @@ func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
 			detail.Project = project
 		}
 	}
+	detail.Profile = agent.GetProfile()
 	return detail
 }
 
@@ -551,5 +552,41 @@ func updateChatTaskHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, task)
+	}
+}
+
+// getProfileHandler returns the single global user profile (day 12).
+func getProfileHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, agent.GetProfile())
+	}
+}
+
+// updateProfileRequest is the payload accepted by PATCH /api/profile.
+type updateProfileRequest struct {
+	Name        string   `json:"name"`
+	Style       string   `json:"style"`
+	Format      string   `json:"format"`
+	Constraints []string `json:"constraints"`
+}
+
+// updateProfileHandler lets the user manually add, edit, or delete the
+// global profile — the explicit counterpart to the automatic per-turn
+// extraction in memory_profile.go, and the only path for Name (the model
+// never infers it — see profileSystemPrompt).
+func updateProfileHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req updateProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		profile, err := agent.UpdateProfile(req.Name, req.Style, req.Format, req.Constraints)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
 	}
 }

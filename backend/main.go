@@ -89,7 +89,8 @@ func main() {
 	// collide.
 	labsDir := filepath.Join(filepath.Dir(dataDir), "labs")
 	projectsDir := filepath.Join(filepath.Dir(dataDir), "projects")
-	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
+	profilePath := filepath.Join(filepath.Dir(dataDir), "profile.json")
+	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), NewProfileStore(profilePath), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/estimate", estimateHandler(client))
@@ -118,6 +119,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/projects/{id}", deleteProjectHandler(agent))
 	mux.HandleFunc("PATCH /api/projects/{id}/memory", updateProjectMemoryHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/task", updateChatTaskHandler(agent))
+	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
+	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
 
 	port := os.Getenv("PORT")
 	if port == "" {
