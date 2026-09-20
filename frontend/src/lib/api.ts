@@ -271,6 +271,9 @@ export interface AgentMessage {
   created_at: string
   usage?: TokenUsage
   is_lab_analysis?: boolean
+  // Set only on assistant messages from a real turn — the stage as of
+  // right after that reply, durable across reload (see task_state.go).
+  task_state?: TaskState
 }
 
 export interface CompressionEvent {

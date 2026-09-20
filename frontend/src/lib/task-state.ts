@@ -14,3 +14,12 @@ export const TASK_STAGE_META: Record<TaskStage, TaskStageMeta> = {
   estimated: { label: 'Оценка сформирована', color: '#2563eb' },
   done: { label: 'Принято', color: '#16a34a' },
 }
+
+// Canonical stage order, for rendering "Этап N/4" — the pipeline a task
+// normally moves through, even though a given chat can skip `clarifying`
+// (straight intake -> estimated) if the first message is detailed enough.
+export const TASK_STAGE_ORDER: TaskStage[] = ['intake', 'clarifying', 'estimated', 'done']
+
+export function taskStageOrdinal(stage: TaskStage): number {
+  return TASK_STAGE_ORDER.indexOf(stage) + 1
+}

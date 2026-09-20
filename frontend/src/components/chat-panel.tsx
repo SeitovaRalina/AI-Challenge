@@ -7,7 +7,7 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
-import { TaskStateBadge } from '@/components/task-state-badge'
+import { TaskStageHeader, TaskStateBadge } from '@/components/task-state-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { cn } from 'cn'
@@ -420,7 +420,7 @@ export function ChatPanel({
                   {message.is_lab_analysis ? (
                     <LabAnalysisNotice message={message} />
                   ) : (
-                    <MessageBubble message={message} />
+                    <MessageBubble message={message} showTaskStage={!isLabChat} />
                   )}
                 </div>
               ))}
@@ -430,7 +430,7 @@ export function ChatPanel({
               {isLabCoordinator && fanOut && fanOut.length > 0 && (
                 <FanOutPanel fanOut={fanOut} onJumpToChat={onJumpToChat} />
               )}
-              {isSending && <TypingIndicator />}
+              {isSending && <TypingIndicator taskState={isLabChat ? undefined : taskState} />}
             </div>
           )}
         </div>
@@ -659,7 +659,13 @@ export function ChatPanel({
   )
 }
 
-function MessageBubble({ message }: { message: AgentMessage }) {
+function MessageBubble({
+  message,
+  showTaskStage,
+}: {
+  message: AgentMessage
+  showTaskStage: boolean
+}) {
   const isUser = message.role === 'user'
   const tokenCount = isUser
     ? message.usage?.prompt_tokens
@@ -672,6 +678,9 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         isUser ? 'self-end items-end' : 'self-start items-start',
       )}
     >
+      {!isUser && showTaskStage && message.task_state && (
+        <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
+      )}
       <div
         className={cn(
           'rounded-xl px-4 py-2.5',
@@ -906,12 +915,19 @@ function formatTime(iso: string): string {
   })
 }
 
-function TypingIndicator() {
+// While waiting for a reply there's no new AgentMessage yet to carry its own
+// task_state, so this shows the stage as of right before this turn (the
+// chat's current taskState) — the best available answer to "what stage is
+// this reply about to land in", one turn behind at most.
+function TypingIndicator({ taskState }: { taskState?: TaskState }) {
   return (
-    <div className="flex w-fit items-center gap-1 self-start rounded-xl border border-border bg-card px-4 py-3">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+    <div className="flex max-w-[85%] flex-col gap-1 self-start items-start">
+      {taskState && <TaskStageHeader stage={taskState.stage} step={taskState.step} />}
+      <div className="flex w-fit items-center gap-1 rounded-xl border border-border bg-card px-4 py-3">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+      </div>
     </div>
   )
 }

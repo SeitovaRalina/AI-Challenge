@@ -18,12 +18,19 @@ import (
 // this field existed, and for the synthetic reply a context-overflow turn
 // returns without ever calling the LLM. IsLabAnalysis marks the one message
 // AnalyzeLab appends — the frontend renders it distinctly from a normal reply.
+// TaskState is set only on the assistant message of a real turn (see
+// PostMessage) — a durable stamp of what stage the task was AT as of that
+// reply, so a reloaded chat can still render each message's stage without
+// the frontend having to recompute history retroactively (which it can't:
+// EstimateRevisions/TaskDone are current-only counters, not a log). It's
+// nil for user messages and for messages from before this field existed.
 type AgentMessage struct {
 	Role          string      `json:"role"`
 	Content       string      `json:"content"`
 	CreatedAt     time.Time   `json:"created_at"`
 	Usage         *TokenUsage `json:"usage,omitempty"`
 	IsLabAnalysis bool        `json:"is_lab_analysis,omitempty"`
+	TaskState     *TaskState  `json:"task_state,omitempty"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
@@ -185,6 +192,23 @@ func (c *Chat) setBranchLastContextTokens(branchID string, n int) {
 		}
 	}
 	c.LastContextTokens = n
+}
+
+// setLastMessageTaskState stamps the most recently appended message (the
+// assistant reply of the turn that just ran) with the chat's stage as of
+// right after that turn's own mutations (estimate/done/revisions) — must be
+// called after those, and after appendToBranch, or it would stamp either
+// the wrong message or the pre-turn stage.
+func (c *Chat) setLastMessageTaskState(branchID string, state TaskState) {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[branchID]; b != nil && len(b.Messages) > 0 {
+			b.Messages[len(b.Messages)-1].TaskState = &state
+		}
+		return
+	}
+	if len(c.Messages) > 0 {
+		c.Messages[len(c.Messages)-1].TaskState = &state
+	}
 }
 
 func (c *Chat) activeMessages() []AgentMessage    { return c.branchMessages(c.ActiveBranchID) }

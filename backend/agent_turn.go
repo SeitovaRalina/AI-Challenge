@@ -262,6 +262,10 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		chat.EstimateRevisions++
 		chat.TaskDone = false
 	}
+	// Stamped after the estimate mutation above (and after appendToBranch),
+	// so it reflects this turn's actual outcome, not the pre-turn snapshot
+	// (taskStateBefore) used for prompt injection.
+	chat.setLastMessageTaskState(branchID, computeTaskState(chat))
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
 	}
@@ -515,6 +519,11 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, branchID, us
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
 		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
+	// A graceful turn never touches the estimate, so the stage can only have
+	// moved by message count alone (e.g. intake -> clarifying on the very
+	// first message) — still worth stamping for the same reason every real
+	// turn is.
+	chat.setLastMessageTaskState(branchID, computeTaskState(chat))
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
 	}

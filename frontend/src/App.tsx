@@ -411,6 +411,7 @@ function App() {
             content: reply.reply,
             created_at: reply.assistant_message_created_at,
             usage: reply.usage ?? undefined,
+            task_state: reply.task_state,
           },
         ]
         return {
