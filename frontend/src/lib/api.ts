@@ -220,8 +220,18 @@ export interface ChatSummary {
   title: string
   created_at: string
   lab_id?: string
+  project_id?: string
   context_strategy: ContextStrategy
   is_lab_coordinator?: boolean
+}
+
+// TaskMemory is day 11's working-memory layer: this one chat's own task
+// data (goal, agreed constraints, answers gathered so far) — scoped to this
+// chat, distinct from the long-term memory a Project shares across chats.
+export interface TaskMemory {
+  goal: string
+  constraints: string[]
+  clarifying_answers: Record<string, string>
 }
 
 export interface TokenUsage {
@@ -299,6 +309,9 @@ interface StrategyState {
   lab_id?: string
   is_lab_coordinator?: boolean
   fan_out?: FanOutStatus[]
+  project_id?: string
+  project?: Project
+  task?: TaskMemory
 }
 
 export interface ChatDetail extends StrategyState {
@@ -342,12 +355,22 @@ export interface Lab {
   created_at: string
 }
 
+// Project is day 11's long-term memory layer: a folder of chats that share
+// known_stack/notes across every chat in it, outliving any single chat.
+export interface Project {
+  id: string
+  name: string
+  known_stack?: string[]
+  notes?: string[]
+  created_at: string
+}
+
 export function listChats(): Promise<ChatSummary[]> {
   return request<ChatSummary[]>('/api/agent/chats')
 }
 
-export function createChat(): Promise<ChatSummary> {
-  return postJson<ChatSummary>('/api/agent/chats', {})
+export function createChat(projectId?: string): Promise<ChatSummary> {
+  return postJson<ChatSummary>('/api/agent/chats', projectId ? { project_id: projectId } : {})
 }
 
 export function getChat(chatId: string): Promise<ChatDetail> {
@@ -425,4 +448,44 @@ export function analyzeLab(labId: string): Promise<AgentReply> {
 
 export function deleteLab(labId: string): Promise<void> {
   return request<void>(`/api/labs/${labId}`, { method: 'DELETE' })
+}
+
+export function listProjects(): Promise<Project[]> {
+  return request<Project[]>('/api/projects')
+}
+
+export function createProject(name: string): Promise<Project> {
+  return postJson<Project>('/api/projects', { name })
+}
+
+export function getProject(projectId: string): Promise<Project> {
+  return request<Project>(`/api/projects/${projectId}`)
+}
+
+export function deleteProject(projectId: string): Promise<void> {
+  return request<void>(`/api/projects/${projectId}`, { method: 'DELETE' })
+}
+
+// updateProjectMemory lets the user manually add, edit, or delete a
+// project's long-term memory (the explicit counterpart to the automatic
+// per-turn extraction) — overwrites known_stack/notes wholesale.
+export function updateProjectMemory(
+  projectId: string,
+  knownStack: string[],
+  notes: string[],
+): Promise<Project> {
+  return request<Project>(`/api/projects/${projectId}/memory`, {
+    method: 'PATCH',
+    body: { known_stack: knownStack, notes },
+  })
+}
+
+// updateChatTask lets the user manually add, edit, or delete a chat's own
+// working memory — the explicit counterpart to the automatic per-turn
+// extraction.
+export function updateChatTask(chatId: string, task: TaskMemory): Promise<TaskMemory> {
+  return request<TaskMemory>(`/api/agent/chats/${chatId}/task`, {
+    method: 'PATCH',
+    body: { ...task },
+  })
 }

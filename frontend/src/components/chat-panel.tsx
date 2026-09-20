@@ -18,6 +18,7 @@ import type {
   ContextStrategy,
   Estimate,
   FanOutStatus,
+  TaskMemory,
   TokenUsage,
 } from '@/lib/api'
 import { isRealStrategy, STRATEGY_META } from '@/lib/strategy'
@@ -37,6 +38,7 @@ interface SlashCommand {
 }
 
 interface ChatPanelProps {
+  chatId: string
   messages: AgentMessage[]
   estimate: Estimate | null
   isSending: boolean
@@ -54,6 +56,8 @@ interface ChatPanelProps {
   rawMessageCount: number
   compressionEvents: CompressionEvent[]
   facts?: Record<string, string>
+  task?: TaskMemory
+  onUpdateTask: (task: TaskMemory) => void
   branches: BranchSummary[]
   checkpoints: Checkpoint[]
   activeBranchId?: string
@@ -70,6 +74,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({
+  chatId,
   messages,
   estimate,
   isSending,
@@ -87,6 +92,8 @@ export function ChatPanel({
   rawMessageCount,
   compressionEvents,
   facts,
+  task,
+  onUpdateTask,
   branches,
   checkpoints,
   activeBranchId,
@@ -351,10 +358,13 @@ export function ChatPanel({
 
           {contextPopupOpen && (
             <ContextPopup
+              chatId={chatId}
               strategy={contextStrategy}
               historyKeepLastN={historyKeepLastN}
               messages={messages}
               facts={facts}
+              task={task}
+              onUpdateTask={onUpdateTask}
               branches={branches}
               activeBranchId={activeBranchId}
               compressionEvents={compressionEvents}

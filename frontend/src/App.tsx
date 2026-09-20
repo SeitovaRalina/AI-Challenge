@@ -7,6 +7,7 @@ import { EstimateResult } from '@/components/estimate-result'
 import { FormatComparison } from '@/components/format-comparison'
 import { ModelComparison } from '@/components/model-comparison'
 import { ModelLineup } from '@/components/model-lineup'
+import { ProjectMemoryPopup } from '@/components/project-memory-popup'
 import {
   ReasoningComparison,
   type ReasoningReaction,
@@ -27,12 +28,15 @@ import {
   createChat,
   createCheckpoint,
   createLab,
+  createProject,
   deleteChat,
   deleteLab,
+  deleteProject,
   estimateTask,
   forceCompress,
   getChat,
   listChats,
+  listProjects,
   postAgentMessage,
   renameChat,
   setActiveBranch,
@@ -44,7 +48,9 @@ import {
   type ContextStrategy,
   type Estimate,
   type ModelComparison as ModelComparisonData,
+  type Project,
   type RawResult,
+  type TaskMemory,
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
 } from '@/lib/api'
@@ -106,6 +112,21 @@ function App() {
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [projectMemoryPopupId, setProjectMemoryPopupId] = useState<string | null>(null)
+
+  // Single source of truth for a Project's known_stack/notes — called
+  // whenever a fresh Project object arrives (mount, createProject, or a
+  // ChatDetail/AgentReply that carries one), so the sidebar's memory popup
+  // never shows stale data even when it wasn't this project's own chat that
+  // just updated it.
+  function upsertProject(project: Project) {
+    setProjects((prev) =>
+      prev.some((p) => p.id === project.id)
+        ? prev.map((p) => (p.id === project.id ? project : p))
+        : [...prev, project],
+    )
+  }
   // Which chat/branch keys (see chatKey) currently have a send-like request
   // in flight — a Set, not one shared boolean, so switching to a branch (or
   // chat) with nothing in flight never shows another branch's spinner, and
@@ -183,6 +204,9 @@ function App() {
   useEffect(() => {
     async function init() {
       try {
+        const existingProjects = await listProjects()
+        setProjects(existingProjects)
+
         const existing = await listChats()
         if (existing.length === 0) {
           const created = await createChat()
@@ -239,10 +263,10 @@ function App() {
     return () => window.clearInterval(interval)
   }, [activeChatId, activeChat?.is_lab_coordinator, activeChat?.fan_out])
 
-  async function handleNewChat() {
+  async function handleNewChat(projectId?: string) {
     setMode('chat')
     try {
-      const created = await createChat()
+      const created = await createChat(projectId)
       setChats((prev) => [...prev, created])
       setActiveChatId(created.id)
       setActiveChat({
@@ -384,6 +408,7 @@ function App() {
           summarized_message_count: reply.summarized_message_count,
           raw_message_count: reply.raw_message_count,
           facts: reply.facts,
+          task: reply.task,
           branches: reply.branches,
           active_branch_id: reply.active_branch_id,
           lab_id: reply.lab_id,
@@ -397,6 +422,7 @@ function App() {
       setChats((prev) =>
         prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
       )
+      if (reply.project) upsertProject(reply.project)
     } catch (err) {
       setChatError(
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
@@ -442,6 +468,13 @@ function App() {
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
+  }
+
+  // The actual PATCH already happened inside TaskSection (context-popup.tsx)
+  // before this is called — this just merges the already-saved result into
+  // activeChat, same as every other "server told us the fresh state" path.
+  function handleUpdateTask(task: TaskMemory) {
+    setActiveChat((prev) => (prev ? { ...prev, task } : prev))
   }
 
   async function handleCreateCheckpoint(label: string) {
@@ -508,6 +541,32 @@ function App() {
       const detail = await getChat(next.id)
       setActiveChatId(next.id)
       setActiveChat(withPendingMessage(detail))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleNewProject(name: string) {
+    try {
+      const project = await createProject(name)
+      upsertProject(project)
+      setChatError(null)
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleDeleteProject(projectId: string) {
+    try {
+      await deleteProject(projectId)
+      setProjects((prev) => prev.filter((p) => p.id !== projectId))
+      setChats((prev) =>
+        prev.map((chat) => (chat.project_id === projectId ? { ...chat, project_id: undefined } : chat)),
+      )
+      setActiveChat((prev) =>
+        prev && prev.project_id === projectId ? { ...prev, project_id: undefined, project: undefined } : prev,
+      )
+      if (projectMemoryPopupId === projectId) setProjectMemoryPopupId(null)
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
@@ -668,22 +727,36 @@ function App() {
         {!sidebarCollapsed && (
           <Sidebar
             chats={chats}
+            projects={projects}
             activeChatId={mode === 'chat' ? activeChatId : null}
             activeDemo={activeDemo}
-            onNewChat={handleNewChat}
+            onNewChat={() => handleNewChat()}
             onNewLab={handleNewLab}
+            onNewProject={handleNewProject}
+            onNewChatInProject={handleNewChat}
             onSelectChat={handleSelectChat}
             onSelectDemo={(demo) => setMode(demo)}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
             onDeleteLab={handleDeleteLab}
+            onDeleteProject={handleDeleteProject}
+            onOpenProjectMemory={setProjectMemoryPopupId}
           />
         )}
+
+        {projectMemoryPopupId &&
+          (() => {
+            const project = projects.find((p) => p.id === projectMemoryPopupId)
+            return project ? (
+              <ProjectMemoryPopup project={project} onClose={() => setProjectMemoryPopupId(null)} onUpdate={upsertProject} />
+            ) : null
+          })()}
 
         {mode === 'chat' ? (
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatPanel
+              chatId={activeChatId ?? ''}
               messages={activeChat?.messages ?? []}
               estimate={activeChat?.estimate ?? null}
               isSending={pendingKeys.has(chatKey(activeChatId ?? '', activeChat?.active_branch_id))}
@@ -701,6 +774,8 @@ function App() {
               rawMessageCount={activeChat?.raw_message_count ?? 0}
               compressionEvents={activeChat?.compression_events ?? []}
               facts={activeChat?.facts}
+              task={activeChat?.task}
+              onUpdateTask={handleUpdateTask}
               branches={activeChat?.branches ?? []}
               checkpoints={activeChat?.checkpoints ?? []}
               activeBranchId={activeChat?.active_branch_id}
