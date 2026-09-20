@@ -32,6 +32,11 @@ Every chat is persisted to disk as it's used (one JSON file per chat under
 `backend/data/sessions/`, path configurable via `CHAT_DATA_DIR`) and reloaded
 on startup, so restarting the backend does not lose any conversation — see
 [`days/w02-d07-context-persistence.md`](days/w02-d07-context-persistence.md).
+Labs, projects, and the global profile (see below) live in sibling
+directories derived from `CHAT_DATA_DIR`; setting `AGENT_USER=<name>` instead
+namespaces all of it under `backend/data/<name>/` in one step — a fully
+separate agent instance (own chats, own memory, own profile) for a different
+person, one process per user, with no multi-user concept in the UI itself.
 
 Token/cost usage is read directly from the LiteLLM gateway's `usage` field
 (no local tokenizer), and an artificial `CHAT_CONTEXT_TOKEN_LIMIT` bounds
@@ -40,10 +45,13 @@ cap — see [`days/w02-d08-tokens.md`](days/w02-d08-tokens.md) and, for the
 implementation detail and known approximation tradeoffs,
 [`docs/token-accounting.md`](docs/token-accounting.md).
 
-This is a **preliminary, generic AI estimate**. There is no user history yet, so
-nothing here is personalized. See [`docs/concept.md`](docs/concept.md) for the
-overall product vision, and [`days/`](days/) for each day's exact assignment
-scope as the product grows.
+This is a **preliminary AI estimate**, grounded in an explicit memory model —
+short-term (this chat), working (this chat's own task state), and long-term
+(a project's known stack/notes, and a single global user profile) — see
+[`days/w03-d11-agent-memory-model.md`](days/w03-d11-agent-memory-model.md) and
+[`days/w03-d12-personalization.md`](days/w03-d12-personalization.md). See
+[`docs/concept.md`](docs/concept.md) for the overall product vision, and
+[`days/`](days/) for each day's exact assignment scope as the product grows.
 
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the

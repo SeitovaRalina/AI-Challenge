@@ -47,10 +47,22 @@ func main() {
 		baseURL = "https://llm.effective.land"
 	}
 
+	// AGENT_USER namespaces this whole process's data tree (chats, labs,
+	// projects, profile — everything main.go wires up below derives from
+	// dataDir) under data/<user>/ instead of the shared default — one env
+	// var picked at process start gives a fully independent agent instance
+	// for a different person, without any multi-tenant UI or per-request
+	// user concept. Not surfaced in the frontend; CHAT_DATA_DIR, when set
+	// explicitly, still wins outright for fine-grained control.
 	dataDir := os.Getenv("CHAT_DATA_DIR")
 	if dataDir == "" {
-		dataDir = "data/sessions"
+		if user := os.Getenv("AGENT_USER"); user != "" {
+			dataDir = filepath.Join("data", user, "sessions")
+		} else {
+			dataDir = "data/sessions"
+		}
 	}
+	log.Printf("data directory: %s", dataDir)
 
 	contextTokenLimit := defaultContextTokenLimit
 	if v := os.Getenv("CHAT_CONTEXT_TOKEN_LIMIT"); v != "" {
