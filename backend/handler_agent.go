@@ -33,6 +33,8 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "предыдущий фан-аут ещё выполняется, подождите")
 	case errors.Is(err, ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, "проект не найден")
+	case errors.Is(err, ErrNoEstimateYet):
+		writeError(w, http.StatusBadRequest, "оценка ещё не сформирована")
 	default:
 		writeLLMError(w, err)
 	}
@@ -555,6 +557,34 @@ func updateChatTaskHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, task)
+	}
+}
+
+// updateTaskStateRequest is the payload accepted by
+// PATCH /api/agent/chats/{id}/task-state.
+type updateTaskStateRequest struct {
+	Done bool `json:"done"`
+}
+
+// updateTaskStateHandler is day 13's manual accept/reopen action — the only
+// path that ever moves a chat between "estimated" and "done" (the model is
+// never asked to decide this itself; see task_state.go).
+func updateTaskStateHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req updateTaskStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		state, err := agent.SetTaskDone(chatID, req.Done)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
 	}
 }
 

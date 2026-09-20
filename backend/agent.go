@@ -87,6 +87,15 @@ type Chat struct {
 	// dies with this chat; it is never shared with any other chat, project
 	// or not.
 	Task *TaskMemory `json:"task,omitempty"`
+
+	// TaskDone and EstimateRevisions back day 13's task state machine (see
+	// task_state.go). The stage itself is never stored — always recomputed
+	// by computeTaskState from Messages/Estimate/these two fields — so only
+	// the one genuinely manual bit (has the user accepted the current
+	// estimate) and a revision counter (for the "step" label) need
+	// persisting.
+	TaskDone          bool `json:"task_done,omitempty"`
+	EstimateRevisions int  `json:"estimate_revisions,omitempty"`
 }
 
 // TaskMemory is one chat's working memory: data about the specific task this
@@ -213,6 +222,7 @@ type ChatSummary struct {
 	ProjectID        string          `json:"project_id,omitempty"`
 	ContextStrategy  ContextStrategy `json:"context_strategy"`
 	IsLabCoordinator bool            `json:"is_lab_coordinator,omitempty"`
+	TaskState        TaskState       `json:"task_state"`
 }
 
 // Agent is the entity that owns every chat and lab, encapsulating
@@ -497,6 +507,7 @@ type AgentReply struct {
 	Project                   *Project          `json:"project,omitempty"`
 	Task                      *TaskMemory       `json:"task,omitempty"`
 	Profile                   *UserProfile      `json:"profile,omitempty"`
+	TaskState                 TaskState         `json:"task_state"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -552,6 +563,7 @@ func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
 		ProjectID:        c.ProjectID,
 		ContextStrategy:  c.ContextStrategy,
 		IsLabCoordinator: isCoordinator,
+		TaskState:        computeTaskState(c),
 	}
 }
 
@@ -593,6 +605,9 @@ type ChatDetail struct {
 	// Profile is the single global profile (day 12), always populated
 	// regardless of this chat's project/lab — see chatDetailWithLab.
 	Profile *UserProfile `json:"profile,omitempty"`
+	// TaskState is day 13's task state machine — always populated, unlike
+	// Task/Profile which are nil until something exists to report.
+	TaskState TaskState `json:"task_state"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
@@ -622,5 +637,6 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 		LabID:                  c.LabID,
 		ProjectID:              c.ProjectID,
 		Task:                   c.Task,
+		TaskState:              computeTaskState(c),
 	}
 }
