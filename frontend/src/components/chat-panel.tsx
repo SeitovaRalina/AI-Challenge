@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, CheckCircle2, Loader2, Minimize2, Sparkles, X, XCircle } from 'lucide-react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  Loader2,
+  Minimize2,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  X,
+  XCircle,
+} from 'lucide-react'
 
 import emptyStateGif from '@/assets/empty_state.gif'
 import { BranchToolbar } from '@/components/branch-toolbar'
@@ -689,6 +699,19 @@ function MessageBubble({
         {!isUser && showTaskStage && message.task_state && (
           <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
         )}
+        {!isUser && message.invariant_conflict && message.invariant_conflict.length > 0 && (
+          <div className="mb-2 rounded-lg border border-destructive/40 bg-destructive/5 px-2.5 py-2 text-xs text-destructive">
+            <div className="flex items-center gap-1.5 font-medium">
+              <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+              Конфликт с инвариантами проекта
+            </div>
+            <ul className="mt-1 flex flex-col gap-0.5 pl-5 list-disc">
+              {message.invariant_conflict.map((invariant, index) => (
+                <li key={index}>{invariant}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {isUser ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap">
             {message.content}
@@ -696,6 +719,24 @@ function MessageBubble({
         ) : (
           <Markdown>{message.content}</Markdown>
         )}
+        {!isUser &&
+          message.invariant_diff &&
+          (message.invariant_diff.added?.length || message.invariant_diff.removed?.length) && (
+            <div className="mt-2 rounded-lg border border-warning/40 bg-warning/5 px-2.5 py-2 text-xs text-warning">
+              <div className="flex items-center gap-1.5 font-medium">
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                Инварианты проекта обновлены
+              </div>
+              <ul className="mt-1 flex flex-col gap-0.5 pl-5 list-disc">
+                {message.invariant_diff.added?.map((invariant, index) => (
+                  <li key={`added-${index}`}>+ {invariant}</li>
+                ))}
+                {message.invariant_diff.removed?.map((invariant, index) => (
+                  <li key={`removed-${index}`}>− {invariant}</li>
+                ))}
+              </ul>
+            </div>
+          )}
       </div>
       <span className="px-1 text-[11px] text-muted-foreground">
         {formatTime(message.created_at)}

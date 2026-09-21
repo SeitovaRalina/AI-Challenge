@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Pencil, X } from 'lucide-react'
 
-import { updateProjectMemory, type Project } from '@/lib/api'
+import { updateProjectInvariants, updateProjectMemory, type Project } from '@/lib/api'
 
 interface ProjectMemoryPopupProps {
   project: Project
@@ -33,23 +33,29 @@ function linesToList(text: string): string[] {
 export function ProjectMemoryPopup({ project, onClose, onUpdate }: ProjectMemoryPopupProps) {
   const knownStack = project.known_stack ?? []
   const notes = project.notes ?? []
+  const invariants = project.invariants ?? []
 
   const [editing, setEditing] = useState(false)
   const [stackDraft, setStackDraft] = useState(() => listToLines(knownStack))
   const [notesDraft, setNotesDraft] = useState(() => listToLines(notes))
+  const [invariantsDraft, setInvariantsDraft] = useState(() => listToLines(invariants))
   const [saving, setSaving] = useState(false)
 
   function startEditing() {
     setStackDraft(listToLines(knownStack))
     setNotesDraft(listToLines(notes))
+    setInvariantsDraft(listToLines(invariants))
     setEditing(true)
   }
 
   async function handleSave() {
     setSaving(true)
     try {
-      const updated = await updateProjectMemory(project.id, linesToList(stackDraft), linesToList(notesDraft))
-      onUpdate(updated)
+      const [updated] = await Promise.all([
+        updateProjectMemory(project.id, linesToList(stackDraft), linesToList(notesDraft)),
+        updateProjectInvariants(project.id, linesToList(invariantsDraft)),
+      ])
+      onUpdate({ ...updated, invariants: linesToList(invariantsDraft) })
       setEditing(false)
     } finally {
       setSaving(false)
@@ -118,6 +124,21 @@ export function ProjectMemoryPopup({ project, onClose, onUpdate }: ProjectMemory
                   className="mt-1.5 w-full rounded-md border border-border bg-transparent p-2 text-xs outline-none focus-visible:border-ring"
                 />
               </div>
+              <div>
+                <p className="text-xs font-medium text-amber-600 dark:text-amber-500">
+                  Инварианты — жёсткие ограничения (по одному на строку)
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  Агент добавляет их сам, когда в диалоге явно зафиксировано решение; убрать
+                  можно только здесь.
+                </p>
+                <textarea
+                  value={invariantsDraft}
+                  onChange={(event) => setInvariantsDraft(event.target.value)}
+                  rows={3}
+                  className="mt-1.5 w-full rounded-md border border-amber-600/40 bg-transparent p-2 text-xs outline-none focus-visible:border-ring"
+                />
+              </div>
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -166,6 +187,26 @@ export function ProjectMemoryPopup({ project, onClose, onUpdate }: ProjectMemory
                     {notes.map((note, index) => (
                       <li key={index} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground">
                         {note}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="mt-4 border-t border-border pt-3.5">
+                <p className="text-xs font-medium text-amber-600 dark:text-amber-500">
+                  Инварианты — жёсткие ограничения
+                </p>
+                {invariants.length === 0 ? (
+                  <p className="mt-1.5 text-sm text-muted-foreground">Пока не зафиксировано ни одного</p>
+                ) : (
+                  <ul className="mt-2 flex flex-col gap-1.5">
+                    {invariants.map((invariant, index) => (
+                      <li
+                        key={index}
+                        className="rounded-md border border-amber-600/30 bg-amber-600/5 px-2.5 py-1.5 text-xs text-foreground"
+                      >
+                        {invariant}
                       </li>
                     ))}
                   </ul>
