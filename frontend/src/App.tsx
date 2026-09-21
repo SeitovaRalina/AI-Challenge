@@ -855,6 +855,11 @@ function App() {
               }}
               taskState={activeChat?.task_state ?? FALLBACK_TASK_STATE}
               onSetTaskDone={handleSetTaskDone}
+              onOpenProjectMemory={
+                activeChat?.project_id
+                  ? () => setProjectMemoryPopupId(activeChat.project_id!)
+                  : undefined
+              }
             />
           </main>
         ) : (

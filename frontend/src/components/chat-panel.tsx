@@ -132,6 +132,11 @@ interface ChatPanelProps {
   onOpenProfile: () => void
   taskState: TaskState
   onSetTaskDone: (done: boolean) => void
+  // Present only when the active chat belongs to a project — opens that
+  // project's memory popup, so the invariant notices below can offer a
+  // one-click way to see the full list, not just the ones this message
+  // itself mentions.
+  onOpenProjectMemory?: () => void
 }
 
 export function ChatPanel({
@@ -172,6 +177,7 @@ export function ChatPanel({
   onOpenProfile,
   taskState,
   onSetTaskDone,
+  onOpenProjectMemory,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
@@ -430,7 +436,11 @@ export function ChatPanel({
                   {message.is_lab_analysis ? (
                     <LabAnalysisNotice message={message} />
                   ) : (
-                    <MessageBubble message={message} showTaskStage={!isLabChat} />
+                    <MessageBubble
+                      message={message}
+                      showTaskStage={!isLabChat}
+                      onOpenProjectMemory={onOpenProjectMemory}
+                    />
                   )}
                 </div>
               ))}
@@ -672,9 +682,11 @@ export function ChatPanel({
 function MessageBubble({
   message,
   showTaskStage,
+  onOpenProjectMemory,
 }: {
   message: AgentMessage
   showTaskStage: boolean
+  onOpenProjectMemory?: () => void
 }) {
   const isUser = message.role === 'user'
   const tokenCount = isUser
@@ -710,6 +722,15 @@ function MessageBubble({
                 <li key={index}>{invariant}</li>
               ))}
             </ul>
+            {onOpenProjectMemory && (
+              <button
+                type="button"
+                onClick={onOpenProjectMemory}
+                className="mt-1.5 text-[11px] font-medium text-destructive underline-offset-2 hover:underline"
+              >
+                Все инварианты проекта →
+              </button>
+            )}
           </div>
         )}
         {isUser ? (
@@ -735,6 +756,15 @@ function MessageBubble({
                   <li key={`removed-${index}`}>− {invariant}</li>
                 ))}
               </ul>
+              {onOpenProjectMemory && (
+                <button
+                  type="button"
+                  onClick={onOpenProjectMemory}
+                  className="mt-1.5 text-[11px] font-medium text-warning underline-offset-2 hover:underline"
+                >
+                  Все инварианты проекта →
+                </button>
+              )}
             </div>
           )}
       </div>
