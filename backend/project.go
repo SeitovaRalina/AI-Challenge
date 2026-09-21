@@ -16,13 +16,16 @@ import (
 // to date automatically after every turn of every chat in the project (see
 // memory_project.go) — unlike Chat.Task (working memory), this state is
 // visible to every chat in the project, not just the one that produced it.
-// Project.Invariants (a separate, stricter list — day 14) deliberately does
-// not exist yet; do not add it here ahead of that day.
+// Invariants (day 14, see memory_invariants.go) is a separate, stricter
+// list: hard constraints the agent must never violate, not just reference
+// memory — extracted with a much higher bar, and never self-removed by the
+// agent (only a manual UpdateProjectInvariants call can shrink it).
 type Project struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
 	KnownStack []string  `json:"known_stack,omitempty"`
 	Notes      []string  `json:"notes,omitempty"`
+	Invariants []string  `json:"invariants,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -109,6 +112,7 @@ func projectCopy(p *Project) *Project {
 	copied := *p
 	copied.KnownStack = append([]string(nil), p.KnownStack...)
 	copied.Notes = append([]string(nil), p.Notes...)
+	copied.Invariants = append([]string(nil), p.Invariants...)
 	return &copied
 }
 
@@ -185,6 +189,31 @@ func (a *Agent) UpdateProjectMemory(projectID string, knownStack, notes []string
 		log.Printf("agent: failed to persist project %s after manual memory edit: %v", projectID, err)
 	}
 	log.Printf("agent: project %s: memory manually edited (%d stack item(s), %d note(s))", projectID, len(knownStack), len(notes))
+	return projectCopy(project), nil
+}
+
+// UpdateProjectInvariants overwrites a project's invariants (day 14) with an
+// explicit, user-authored value — the manual counterpart to the automatic
+// per-turn extraction in memory_invariants.go. Unlike KnownStack/Notes,
+// invariants are never shrunk by the agent itself (updateInvariantsAfterTurn
+// only ever adds), so this manual path is the ONLY way to remove or correct
+// one — a safety net against the agent recording something wrong.
+func (a *Agent) UpdateProjectInvariants(projectID string, invariants []string) (*Project, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	project, ok := a.projects[projectID]
+	if !ok {
+		return nil, ErrProjectNotFound
+	}
+	if invariants == nil {
+		invariants = []string{}
+	}
+	project.Invariants = invariants
+	if err := a.projectStore.Save(project); err != nil {
+		log.Printf("agent: failed to persist project %s after manual invariants edit: %v", projectID, err)
+	}
+	log.Printf("agent: project %s: invariants manually edited (%d item(s))", projectID, len(invariants))
 	return projectCopy(project), nil
 }
 
