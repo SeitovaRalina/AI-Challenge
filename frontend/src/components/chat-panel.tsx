@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, CheckCircle2, Loader2, Minimize2, Sparkles, X, XCircle } from 'lucide-react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  Loader2,
+  Minimize2,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  X,
+  XCircle,
+} from 'lucide-react'
 
 import emptyStateGif from '@/assets/empty_state.gif'
 import { BranchToolbar } from '@/components/branch-toolbar'
@@ -122,6 +132,11 @@ interface ChatPanelProps {
   onOpenProfile: () => void
   taskState: TaskState
   onSetTaskDone: (done: boolean) => void
+  // Present only when the active chat belongs to a project — opens that
+  // project's memory popup, so the invariant notices below can offer a
+  // one-click way to see the full list, not just the ones this message
+  // itself mentions.
+  onOpenProjectMemory?: () => void
 }
 
 export function ChatPanel({
@@ -162,6 +177,7 @@ export function ChatPanel({
   onOpenProfile,
   taskState,
   onSetTaskDone,
+  onOpenProjectMemory,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
@@ -420,7 +436,11 @@ export function ChatPanel({
                   {message.is_lab_analysis ? (
                     <LabAnalysisNotice message={message} />
                   ) : (
-                    <MessageBubble message={message} showTaskStage={!isLabChat} />
+                    <MessageBubble
+                      message={message}
+                      showTaskStage={!isLabChat}
+                      onOpenProjectMemory={onOpenProjectMemory}
+                    />
                   )}
                 </div>
               ))}
@@ -662,9 +682,11 @@ export function ChatPanel({
 function MessageBubble({
   message,
   showTaskStage,
+  onOpenProjectMemory,
 }: {
   message: AgentMessage
   showTaskStage: boolean
+  onOpenProjectMemory?: () => void
 }) {
   const isUser = message.role === 'user'
   const tokenCount = isUser
@@ -689,6 +711,28 @@ function MessageBubble({
         {!isUser && showTaskStage && message.task_state && (
           <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
         )}
+        {!isUser && message.invariant_conflict && message.invariant_conflict.length > 0 && (
+          <div className="mb-2 rounded-lg border border-destructive/40 bg-destructive/5 px-2.5 py-2 text-xs text-destructive">
+            <div className="flex items-center gap-1.5 font-medium">
+              <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+              Конфликт с инвариантами проекта
+            </div>
+            <ul className="mt-1 flex flex-col gap-0.5 pl-5 list-disc">
+              {message.invariant_conflict.map((invariant, index) => (
+                <li key={index}>{invariant}</li>
+              ))}
+            </ul>
+            {onOpenProjectMemory && (
+              <button
+                type="button"
+                onClick={onOpenProjectMemory}
+                className="mt-1.5 text-[11px] font-medium text-destructive underline-offset-2 hover:underline"
+              >
+                Все инварианты проекта →
+              </button>
+            )}
+          </div>
+        )}
         {isUser ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap">
             {message.content}
@@ -696,6 +740,33 @@ function MessageBubble({
         ) : (
           <Markdown>{message.content}</Markdown>
         )}
+        {!isUser &&
+          message.invariant_diff &&
+          (message.invariant_diff.added?.length || message.invariant_diff.removed?.length) && (
+            <div className="mt-2 rounded-lg border border-warning/40 bg-warning/5 px-2.5 py-2 text-xs text-warning">
+              <div className="flex items-center gap-1.5 font-medium">
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                Инварианты проекта обновлены
+              </div>
+              <ul className="mt-1 flex flex-col gap-0.5 pl-5 list-disc">
+                {message.invariant_diff.added?.map((invariant, index) => (
+                  <li key={`added-${index}`}>+ {invariant}</li>
+                ))}
+                {message.invariant_diff.removed?.map((invariant, index) => (
+                  <li key={`removed-${index}`}>− {invariant}</li>
+                ))}
+              </ul>
+              {onOpenProjectMemory && (
+                <button
+                  type="button"
+                  onClick={onOpenProjectMemory}
+                  className="mt-1.5 text-[11px] font-medium text-warning underline-offset-2 hover:underline"
+                >
+                  Все инварианты проекта →
+                </button>
+              )}
+            </div>
+          )}
       </div>
       <span className="px-1 text-[11px] text-muted-foreground">
         {formatTime(message.created_at)}

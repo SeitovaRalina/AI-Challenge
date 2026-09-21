@@ -526,6 +526,35 @@ func updateProjectMemoryHandler(agent *Agent) http.HandlerFunc {
 	}
 }
 
+// updateProjectInvariantsRequest is the payload accepted by
+// PATCH /api/projects/{id}/invariants.
+type updateProjectInvariantsRequest struct {
+	Invariants []string `json:"invariants"`
+}
+
+// updateProjectInvariantsHandler lets the user manually add, edit, or remove
+// a project's invariants (day 14) — the ONLY way to shrink the list, since
+// the automatic per-turn extraction (memory_invariants.go) never removes an
+// entry itself.
+func updateProjectInvariantsHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("id")
+
+		var req updateProjectInvariantsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		project, err := agent.UpdateProjectInvariants(projectID, req.Invariants)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
 // updateChatTaskRequest is the payload accepted by
 // PATCH /api/agent/chats/{id}/task.
 type updateChatTaskRequest struct {

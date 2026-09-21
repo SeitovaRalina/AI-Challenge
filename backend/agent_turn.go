@@ -24,13 +24,19 @@ outside it:
 
 {
   "reply": "the message shown to the user in the chat, in Russian, conversational, may reference the estimate but does not need to repeat every field",
-  "estimate": <the EstimateResponse object described above> or null
+  "estimate": <the EstimateResponse object described above> or null,
+  "invariant_conflict": ["verbatim text of each violated project invariant"] or [] when there is no conflict, or no invariants are configured
 }
 
 This applies even to a plain conversational answer that changes nothing (a
 clarifying question, summing existing subtask hours, small talk) — NEVER
 respond with bare prose outside this envelope, even then; put that prose in
 "reply" and set "estimate" to null.
+
+"invariant_conflict" is only ever non-empty when the project's hard
+invariants (given to you as their own system message, when any exist) rule
+out what the user is asking for — see that message for the exact rules on
+when and how to refuse. Otherwise always set it to [].
 
 Set "estimate" to a full, updated EstimateResponse object only when this
 message is the task description itself, or when the user's message changes
@@ -55,8 +61,9 @@ of guessing.`
 
 // agentTurn is the envelope the agent asks the model for on every turn.
 type agentTurn struct {
-	Reply    string            `json:"reply"`
-	Estimate *EstimateResponse `json:"estimate"`
+	Reply             string            `json:"reply"`
+	Estimate          *EstimateResponse `json:"estimate"`
+	InvariantConflict []string          `json:"invariant_conflict"`
 }
 
 // interviewModeSystemPrompt is injected, turn-only, when the frontend flags
@@ -251,7 +258,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
-		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage},
+		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict},
 	)
 	if turn.Estimate != nil {
 		chat.setBranchEstimate(branchID, turn.Estimate)
@@ -279,6 +286,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 
 	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
+	agentReply.InvariantConflict = turn.InvariantConflict
 	a.mu.Unlock()
 
 	// Runs its own (possibly slow) LLM calls outside the lock just released,
@@ -324,6 +332,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		var updatedTask *TaskMemory
 		var updatedProject *Project
 		var updatedProfile *UserProfile
+		var invariantDiff *InvariantDiff
 
 		memCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -339,6 +348,18 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 				defer wg.Done()
 				updatedProject = a.updateProjectMemoryAfterTurn(memCtx, chatID, projectID, userMessage, turn.Reply)
 			}()
+			// Day 14: a separate side-call from KnownStack/Notes above, with
+			// its own much stricter extraction prompt — mixing the two
+			// thresholds into one call would blur "reference memory" with
+			// "hard rule". Both mutate the same *Project but disjoint fields
+			// (Invariants vs KnownStack/Notes) under a.mu each, so running
+			// them concurrently is safe; see the re-fetch below for why
+			// agentReply.Project can't just take either call's own copy.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, invariantDiff = a.updateInvariantsAfterTurn(memCtx, chatID, projectID, userMessage, turn.Reply)
+			}()
 		}
 		wg.Add(1)
 		go func() {
@@ -347,7 +368,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		}()
 		wg.Wait()
 
-		if updatedTask != nil || updatedProject != nil || updatedProfile != nil {
+		if updatedTask != nil || updatedProject != nil || updatedProfile != nil || invariantDiff != nil {
 			a.mu.Lock()
 			if c, ok := a.chats[chatID]; ok {
 				if updatedTask != nil {
@@ -355,9 +376,23 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 				}
 				agentReply.CumulativeTotalTokens = c.CumulativeTotalTokens
 				agentReply.CumulativeCostUsd = c.CumulativeCostUsd
+				if invariantDiff != nil {
+					c.setLastMessageInvariantDiff(branchID, *invariantDiff)
+					agentReply.InvariantDiff = invariantDiff
+					if err := a.store.Save(c); err != nil {
+						log.Printf("agent: failed to persist chat %s after invariants update: %v", c.ID, err)
+					}
+				}
 			}
-			if updatedProject != nil {
-				agentReply.Project = updatedProject
+			// KnownStack/Notes and Invariants can both have just mutated the
+			// same Project concurrently (see the goroutines above) — re-read
+			// it fresh here rather than trusting whichever call's own
+			// returned copy, or the reply could show only one of the two
+			// changes depending on which goroutine happened to finish last.
+			if (updatedProject != nil || invariantDiff != nil) && projectID != "" {
+				if p, ok := a.projects[projectID]; ok {
+					agentReply.Project = projectCopy(p)
+				}
 			}
 			if updatedProfile != nil {
 				agentReply.Profile = updatedProfile
@@ -467,7 +502,27 @@ func buildMemorySystemMessages(task *TaskMemory, project *Project, profile *User
 			messages = append(messages, chatMessage{
 				Role: "system",
 				Content: "Долговременная память проекта «" + project.Name + "» (JSON; известна из других чатов этого же проекта — " +
-					"используй как контекст, не переспрашивай то, что уже есть): " + string(encoded),
+					"используй как контекст, не переспрашивай то, что уже есть). Это СПРАВОЧНАЯ память, а не жёсткое " +
+					"ограничение — сама по себе она не основание для отказа в предложении решения; если ниже отдельным " +
+					"сообщением даны жёсткие инварианты проекта, для отказов руководствуйся ИМЕННО ими, а не этими заметками: " +
+					string(encoded),
+			})
+		}
+	}
+	if project != nil && len(project.Invariants) > 0 {
+		if encoded, err := json.Marshal(project.Invariants); err == nil {
+			messages = append(messages, chatMessage{
+				Role: "system",
+				Content: "Жёсткие инварианты проекта «" + project.Name + "» (JSON-массив) — правила, которые НЕЛЬЗЯ нарушать " +
+					"НИ ПРИ КАКИХ ОБСТОЯТЕЛЬСТВАХ, даже если пользователь прямо просит: " + string(encoded) + ". " +
+					"Перед тем как предложить решение или оценку, проверь его на соответствие каждому инварианту. " +
+					"Если запрос пользователя противоречит одному или нескольким — НЕ предлагай это решение и не включай " +
+					"его в оценку; вместо этого в \"reply\" явно откажись, назови нарушенный инвариант дословно, объясни " +
+					"противоречие и предложи альтернативу, если она есть. Перечисли в \"invariant_conflict\" точный текст " +
+					"каждого нарушенного инварианта (пустой массив, если конфликта нет). ЭТОТ СПИСОК — ЕДИНСТВЕННОЕ " +
+					"основание для отказа: если что-то раньше обсуждалось в переписке или упомянуто в долговременной " +
+					"памяти проекта как решение/ограничение, но не входит в список выше — оно БОЛЬШЕ НЕ действует, " +
+					"отказывать на этом основании нельзя.",
 			})
 		}
 	}

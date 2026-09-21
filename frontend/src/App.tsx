@@ -412,6 +412,8 @@ function App() {
             created_at: reply.assistant_message_created_at,
             usage: reply.usage ?? undefined,
             task_state: reply.task_state,
+            invariant_conflict: reply.invariant_conflict,
+            invariant_diff: reply.invariant_diff,
           },
         ]
         return {
@@ -853,6 +855,11 @@ function App() {
               }}
               taskState={activeChat?.task_state ?? FALLBACK_TASK_STATE}
               onSetTaskDone={handleSetTaskDone}
+              onOpenProjectMemory={
+                activeChat?.project_id
+                  ? () => setProjectMemoryPopupId(activeChat.project_id!)
+                  : undefined
+              }
             />
           </main>
         ) : (
