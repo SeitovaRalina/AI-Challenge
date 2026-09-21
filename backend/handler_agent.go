@@ -35,6 +35,8 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "проект не найден")
 	case errors.Is(err, ErrNoEstimateYet):
 		writeError(w, http.StatusBadRequest, "оценка ещё не сформирована")
+	case errors.Is(err, ErrTaskNotAccepted):
+		writeError(w, http.StatusBadRequest, "задача ещё не принята — нечего возобновлять")
 	default:
 		writeLLMError(w, err)
 	}

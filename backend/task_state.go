@@ -76,9 +76,48 @@ func taskStateSystemPrompt(ts TaskState) string {
 	)
 }
 
+// allowedTaskTransitions (day 15) is the explicit, declared graph of every
+// transition computeTaskState can produce — most of it automatic (derived
+// from Messages/Estimate/EstimateRevisions changing), not something any
+// caller requests directly. Written down here for traceability even though
+// computeTaskState's own switch is what actually enforces it (the stage is
+// computed, never stored, so it structurally cannot skip a node this graph
+// doesn't have an edge for). The one node actors can request directly is
+// done — see canManuallySetDone, which is a separate, stricter guard for
+// that one manual action, not a lookup into this map.
+var allowedTaskTransitions = map[TaskStage][]TaskStage{
+	TaskStageIntake:     {TaskStageClarifying, TaskStageEstimated},
+	TaskStageClarifying: {TaskStageEstimated},
+	TaskStageEstimated:  {TaskStageEstimated, TaskStageDone},
+	TaskStageDone:       {TaskStageEstimated},
+}
+
 // ErrNoEstimateYet is returned by SetTaskDone when the caller tries to
-// accept a task before any estimate exists.
+// accept a task before any estimate exists — "нельзя финал без валидации".
 var ErrNoEstimateYet = fmt.Errorf("agent: cannot accept a task with no estimate yet")
+
+// ErrTaskNotAccepted is returned by SetTaskDone(false) when the task isn't
+// currently accepted — reopening only makes sense from "done".
+var ErrTaskNotAccepted = fmt.Errorf("agent: cannot reopen a task that was not accepted")
+
+// canManuallySetDone guards the one actor-initiated transition in this FSM
+// — SetTaskDone — against both directions: done=true is refused before any
+// estimate exists (current is then intake/clarifying), done=false is
+// refused unless current is already done (reopening a task that was never
+// accepted is not a real transition, so it's rejected rather than silently
+// treated as a no-op).
+func canManuallySetDone(current TaskStage, done bool) error {
+	if done {
+		if current != TaskStageEstimated && current != TaskStageDone {
+			return ErrNoEstimateYet
+		}
+		return nil
+	}
+	if current != TaskStageDone {
+		return ErrTaskNotAccepted
+	}
+	return nil
+}
 
 // SetTaskDone is the manual accept/reopen action — the explicit counterpart
 // to the automatic estimated→done transition being denied to the model
@@ -92,8 +131,8 @@ func (a *Agent) SetTaskDone(chatID string, done bool) (TaskState, error) {
 	if !ok {
 		return TaskState{}, ErrChatNotFound
 	}
-	if done && chat.activeEstimate() == nil {
-		return TaskState{}, ErrNoEstimateYet
+	if err := canManuallySetDone(computeTaskState(chat).Stage, done); err != nil {
+		return TaskState{}, err
 	}
 	chat.TaskDone = done
 	if err := a.store.Save(chat); err != nil {
