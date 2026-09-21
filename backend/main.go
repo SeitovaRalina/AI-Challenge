@@ -131,6 +131,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/projects/{id}", deleteProjectHandler(agent))
 	mux.HandleFunc("PATCH /api/projects/{id}/memory", updateProjectMemoryHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/task", updateChatTaskHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/task-state", updateTaskStateHandler(agent))
 	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
 	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
 

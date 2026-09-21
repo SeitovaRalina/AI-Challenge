@@ -223,6 +223,19 @@ export interface ChatSummary {
   project_id?: string
   context_strategy: ContextStrategy
   is_lab_coordinator?: boolean
+  task_state: TaskState
+}
+
+// TaskState is day 13's task state machine: the process a chat's task is
+// going through (not what the agent knows about it — that's TaskMemory).
+// Stage is always server-computed, never user-set directly — done is the
+// one exception, via setTaskDone.
+export type TaskStage = 'intake' | 'clarifying' | 'estimated' | 'done'
+
+export interface TaskState {
+  stage: TaskStage
+  step: string
+  expected_action: string
 }
 
 // TaskMemory is day 11's working-memory layer: this one chat's own task
@@ -258,6 +271,9 @@ export interface AgentMessage {
   created_at: string
   usage?: TokenUsage
   is_lab_analysis?: boolean
+  // Set only on assistant messages from a real turn — the stage as of
+  // right after that reply, durable across reload (see task_state.go).
+  task_state?: TaskState
 }
 
 export interface CompressionEvent {
@@ -324,6 +340,7 @@ interface StrategyState {
   project?: Project
   task?: TaskMemory
   profile?: UserProfile
+  task_state: TaskState
 }
 
 export interface ChatDetail extends StrategyState {
@@ -521,5 +538,14 @@ export function updateProfile(profile: UserProfile): Promise<UserProfile> {
   return request<UserProfile>('/api/profile', {
     method: 'PATCH',
     body: { ...profile },
+  })
+}
+
+// setTaskDone is day 13's manual accept/reopen action — the only way a chat
+// moves between "estimated" and "done" (the model never decides this).
+export function setTaskDone(chatId: string, done: boolean): Promise<TaskState> {
+  return request<TaskState>(`/api/agent/chats/${chatId}/task-state`, {
+    method: 'PATCH',
+    body: { done },
   })
 }

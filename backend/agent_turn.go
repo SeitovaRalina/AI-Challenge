@@ -106,6 +106,11 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	summary := chat.Summary
 	summarizedThrough := chat.SummarizedThrough
 	task := chat.Task
+	// Snapshot BEFORE this turn runs — the stage as the conversation stood
+	// when the user sent this message, used only for prompt injection below.
+	// buildAgentReplyLocked recomputes it fresh AFTER the turn mutates chat,
+	// for what the reply/UI reports.
+	taskStateBefore := computeTaskState(chat)
 	labID := chat.LabID
 	projectID := chat.ProjectID
 	var project *Project
@@ -175,6 +180,12 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		injectedProfile = nil
 	}
 	messages = append(messages, buildMemorySystemMessages(task, project, injectedProfile)...)
+	// Task state (day 13) is withheld for lab chats for the same reason
+	// profile is: day 10's strategy comparison must stay free of anything
+	// beyond the ContextStrategy actually being tested.
+	if labID == "" {
+		messages = append(messages, chatMessage{Role: "system", Content: taskStateSystemPrompt(taskStateBefore)})
+	}
 	extra, raw := buildContextMessages(strategy, a.historyKeepLastN, history, facts, summary, summarizedThrough)
 	messages = append(messages, extra...)
 	for _, m := range raw {
@@ -246,7 +257,15 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		chat.setBranchEstimate(branchID, turn.Estimate)
 		log.Printf("agent: chat %s: estimate updated, %.1f-%.1fh, %d subtask(s)",
 			chatID, turn.Estimate.EstimatedHoursMin, turn.Estimate.EstimatedHoursMax, len(turn.Estimate.Subtasks))
+		// A new or changed estimate always un-accepts a prior acceptance —
+		// see task_state.go's estimated<->done transition.
+		chat.EstimateRevisions++
+		chat.TaskDone = false
 	}
+	// Stamped after the estimate mutation above (and after appendToBranch),
+	// so it reflects this turn's actual outcome, not the pre-turn snapshot
+	// (taskStateBefore) used for prompt injection.
+	chat.setLastMessageTaskState(branchID, computeTaskState(chat))
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
 	}
@@ -407,6 +426,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 		Project:                   project,
 		Task:                      chat.Task,
 		Profile:                   a.profile,
+		TaskState:                 computeTaskState(chat),
 	}
 }
 
@@ -499,6 +519,11 @@ func (a *Agent) finishGracefulTurn(ctx context.Context, chat *Chat, branchID, us
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
 		AgentMessage{Role: "assistant", Content: reply, CreatedAt: assistantSentAt, Usage: usage},
 	)
+	// A graceful turn never touches the estimate, so the stage can only have
+	// moved by message count alone (e.g. intake -> clarifying on the very
+	// first message) — still worth stamping for the same reason every real
+	// turn is.
+	chat.setLastMessageTaskState(branchID, computeTaskState(chat))
 	if chat.Title == "Новый чат" {
 		chat.Title = chatTitleFrom(userMessage)
 	}

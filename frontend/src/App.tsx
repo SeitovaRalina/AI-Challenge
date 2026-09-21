@@ -43,6 +43,7 @@ import {
   renameChat,
   setActiveBranch,
   setContextStrategy,
+  setTaskDone,
   type ChatDetail,
   type ChatSummary,
   type Comparison,
@@ -53,6 +54,7 @@ import {
   type Project,
   type RawResult,
   type TaskMemory,
+  type TaskState,
   type UserProfile,
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
@@ -66,6 +68,15 @@ type Mode = 'chat' | DemoMode
 // branches share a chat id, so the id alone can't tell two of them apart.
 function chatKey(chatId: string, branchId?: string): string {
   return `${chatId}:${branchId ?? ''}`
+}
+
+// activeChat is briefly null while a newly created chat's detail is still
+// loading — the panel needs some stage to show in that window rather than
+// nothing, so it starts from the same state a real empty chat would report.
+const FALLBACK_TASK_STATE: TaskState = {
+  stage: 'intake',
+  step: 'Ожидание описания задачи',
+  expected_action: 'Опишите задачу, которую нужно оценить',
 }
 
 const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
@@ -400,6 +411,7 @@ function App() {
             content: reply.reply,
             created_at: reply.assistant_message_created_at,
             usage: reply.usage ?? undefined,
+            task_state: reply.task_state,
           },
         ]
         return {
@@ -425,10 +437,13 @@ function App() {
           compression_events: reply.new_compression_event
             ? [...prev.compression_events, reply.new_compression_event]
             : prev.compression_events,
+          task_state: reply.task_state,
         }
       })
       setChats((prev) =>
-        prev.map((chat) => (chat.id === chatId ? { ...chat, title: reply.title } : chat)),
+        prev.map((chat) =>
+          chat.id === chatId ? { ...chat, title: reply.title, task_state: reply.task_state } : chat,
+        ),
       )
       if (reply.project) upsertProject(reply.project)
       if (reply.profile) setProfile(reply.profile)
@@ -484,6 +499,20 @@ function App() {
   // activeChat, same as every other "server told us the fresh state" path.
   function handleUpdateTask(task: TaskMemory) {
     setActiveChat((prev) => (prev ? { ...prev, task } : prev))
+  }
+
+  async function handleSetTaskDone(done: boolean) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const taskState = await setTaskDone(chatId, done)
+      setActiveChat((prev) => (prev && prev.id === chatId ? { ...prev, task_state: taskState } : prev))
+      setChats((prev) =>
+        prev.map((chat) => (chat.id === chatId ? { ...chat, task_state: taskState } : chat)),
+      )
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
   }
 
   async function handleCreateCheckpoint(label: string) {
@@ -822,6 +851,8 @@ function App() {
                 setProfilePopupEditing(true)
                 setProfilePopupOpen(true)
               }}
+              taskState={activeChat?.task_state ?? FALLBACK_TASK_STATE}
+              onSetTaskDone={handleSetTaskDone}
             />
           </main>
         ) : (

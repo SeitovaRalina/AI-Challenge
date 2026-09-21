@@ -18,12 +18,19 @@ import (
 // this field existed, and for the synthetic reply a context-overflow turn
 // returns without ever calling the LLM. IsLabAnalysis marks the one message
 // AnalyzeLab appends — the frontend renders it distinctly from a normal reply.
+// TaskState is set only on the assistant message of a real turn (see
+// PostMessage) — a durable stamp of what stage the task was AT as of that
+// reply, so a reloaded chat can still render each message's stage without
+// the frontend having to recompute history retroactively (which it can't:
+// EstimateRevisions/TaskDone are current-only counters, not a log). It's
+// nil for user messages and for messages from before this field existed.
 type AgentMessage struct {
 	Role          string      `json:"role"`
 	Content       string      `json:"content"`
 	CreatedAt     time.Time   `json:"created_at"`
 	Usage         *TokenUsage `json:"usage,omitempty"`
 	IsLabAnalysis bool        `json:"is_lab_analysis,omitempty"`
+	TaskState     *TaskState  `json:"task_state,omitempty"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
@@ -87,6 +94,15 @@ type Chat struct {
 	// dies with this chat; it is never shared with any other chat, project
 	// or not.
 	Task *TaskMemory `json:"task,omitempty"`
+
+	// TaskDone and EstimateRevisions back day 13's task state machine (see
+	// task_state.go). The stage itself is never stored — always recomputed
+	// by computeTaskState from Messages/Estimate/these two fields — so only
+	// the one genuinely manual bit (has the user accepted the current
+	// estimate) and a revision counter (for the "step" label) need
+	// persisting.
+	TaskDone          bool `json:"task_done,omitempty"`
+	EstimateRevisions int  `json:"estimate_revisions,omitempty"`
 }
 
 // TaskMemory is one chat's working memory: data about the specific task this
@@ -178,6 +194,23 @@ func (c *Chat) setBranchLastContextTokens(branchID string, n int) {
 	c.LastContextTokens = n
 }
 
+// setLastMessageTaskState stamps the most recently appended message (the
+// assistant reply of the turn that just ran) with the chat's stage as of
+// right after that turn's own mutations (estimate/done/revisions) — must be
+// called after those, and after appendToBranch, or it would stamp either
+// the wrong message or the pre-turn stage.
+func (c *Chat) setLastMessageTaskState(branchID string, state TaskState) {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[branchID]; b != nil && len(b.Messages) > 0 {
+			b.Messages[len(b.Messages)-1].TaskState = &state
+		}
+		return
+	}
+	if len(c.Messages) > 0 {
+		c.Messages[len(c.Messages)-1].TaskState = &state
+	}
+}
+
 func (c *Chat) activeMessages() []AgentMessage    { return c.branchMessages(c.ActiveBranchID) }
 func (c *Chat) activeEstimate() *EstimateResponse { return c.branchEstimate(c.ActiveBranchID) }
 func (c *Chat) activeLastContextTokens() int      { return c.branchLastContextTokens(c.ActiveBranchID) }
@@ -213,6 +246,7 @@ type ChatSummary struct {
 	ProjectID        string          `json:"project_id,omitempty"`
 	ContextStrategy  ContextStrategy `json:"context_strategy"`
 	IsLabCoordinator bool            `json:"is_lab_coordinator,omitempty"`
+	TaskState        TaskState       `json:"task_state"`
 }
 
 // Agent is the entity that owns every chat and lab, encapsulating
@@ -497,6 +531,7 @@ type AgentReply struct {
 	Project                   *Project          `json:"project,omitempty"`
 	Task                      *TaskMemory       `json:"task,omitempty"`
 	Profile                   *UserProfile      `json:"profile,omitempty"`
+	TaskState                 TaskState         `json:"task_state"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -552,6 +587,7 @@ func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
 		ProjectID:        c.ProjectID,
 		ContextStrategy:  c.ContextStrategy,
 		IsLabCoordinator: isCoordinator,
+		TaskState:        computeTaskState(c),
 	}
 }
 
@@ -593,6 +629,9 @@ type ChatDetail struct {
 	// Profile is the single global profile (day 12), always populated
 	// regardless of this chat's project/lab — see chatDetailWithLab.
 	Profile *UserProfile `json:"profile,omitempty"`
+	// TaskState is day 13's task state machine — always populated, unlike
+	// Task/Profile which are nil until something exists to report.
+	TaskState TaskState `json:"task_state"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
@@ -622,5 +661,6 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 		LabID:                  c.LabID,
 		ProjectID:              c.ProjectID,
 		Task:                   c.Task,
+		TaskState:              computeTaskState(c),
 	}
 }
