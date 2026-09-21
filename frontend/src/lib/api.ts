@@ -274,6 +274,15 @@ export interface AgentMessage {
   // Set only on assistant messages from a real turn — the stage as of
   // right after that reply, durable across reload (see task_state.go).
   task_state?: TaskState
+  // invariant_conflict (day 14): set straight from this turn's own LLM
+  // call — the project invariants (if any) this reply's proposal would
+  // have violated, verbatim; empty/absent when there was no conflict.
+  invariant_conflict?: string[]
+  // invariant_diff (day 14): set after the turn, once the async
+  // invariants-extraction side-call finishes — new invariants this
+  // exchange caused the agent to record. Distinct from invariant_conflict
+  // (violating EXISTING invariants vs. detecting new ones).
+  invariant_diff?: InvariantDiff
 }
 
 export interface CompressionEvent {
@@ -369,6 +378,10 @@ export interface AgentReply extends StrategyState {
   cumulative_cost_usd?: number
   context_token_limit: number
   new_compression_event?: CompressionEvent | null
+  // Mirror what got stamped onto this turn's own assistant message — see
+  // AgentMessage's own doc comments.
+  invariant_conflict?: string[]
+  invariant_diff?: InvariantDiff
 }
 
 export interface ForceCompressResult {
@@ -391,7 +404,18 @@ export interface Project {
   name: string
   known_stack?: string[]
   notes?: string[]
+  // invariants (day 14) — hard constraints the assistant must never
+  // violate, extracted automatically with a much stricter bar than
+  // known_stack/notes, and only ever shrunk through updateProjectInvariants.
+  invariants?: string[]
   created_at: string
+}
+
+// InvariantDiff describes how a project's invariants changed as a result of
+// one turn (day 14) — stamped onto the assistant message that caused it.
+export interface InvariantDiff {
+  added?: string[]
+  removed?: string[]
 }
 
 export function listChats(): Promise<ChatSummary[]> {
@@ -514,6 +538,19 @@ export function updateProjectMemory(
   return request<Project>(`/api/projects/${projectId}/memory`, {
     method: 'PATCH',
     body: { known_stack: knownStack, notes },
+  })
+}
+
+// updateProjectInvariants lets the user manually add, edit, or remove a
+// project's invariants (day 14) — the only way to shrink the list, since the
+// automatic per-turn extraction never removes an entry itself.
+export function updateProjectInvariants(
+  projectId: string,
+  invariants: string[],
+): Promise<Project> {
+  return request<Project>(`/api/projects/${projectId}/invariants`, {
+    method: 'PATCH',
+    body: { invariants },
   })
 }
 
