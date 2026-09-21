@@ -15,11 +15,12 @@ import (
 // entry instead of appending a near-duplicate.
 const projectMemorySystemPrompt = `You maintain the long-term memory of a software project, shared across every task-estimation conversation ("chat") that belongs to it.
 
-Given the project's current known facts (a JSON object, possibly with empty fields) and the latest exchange from ONE of its chats (one user message and the assistant's reply), return the UPDATED complete set of facts as a single JSON object: {"known_stack": ["..."], "notes": ["..."]}.
+Given the project's current known facts (a JSON object, possibly with empty fields), its current hard invariants (a separate JSON array, tracked elsewhere — see below), and the latest exchange from ONE of its chats (one user message and the assistant's reply), return the UPDATED complete set of facts as a single JSON object: {"known_stack": ["..."], "notes": ["..."]}.
 
 Rules:
 - "known_stack": short technology names (e.g. "Flutter", "Python", "PostgreSQL") the user has confirmed this project actually uses. No duplicates, no near-duplicates (update the existing entry instead of adding a slightly different phrasing of the same thing). NEVER also restate a stack item as a note ("uses MongoDB" is redundant with known_stack containing "MongoDB" — leave it out of notes entirely).
 - "notes": SETTLED facts about the project that matter across MULTIPLE future tasks in it — team roles, business rules, architectural decisions actually made. NOT: small talk; anything specific to only the one task this exchange discussed (that belongs in that chat's own working memory, not here); open questions, unknowns, or missing information ("data structure is not yet defined", "current state is unknown" are NOT facts — never write them as notes, drop them instead).
+- NEVER add a note that restates or overlaps what an existing invariant (given below) already says, even in different words — invariants are tracked separately and are already enforced; a duplicate note would keep looking "true" even after that invariant is later removed, which is exactly the stale-fact problem this rule prevents.
 - Be extremely conservative about adding a note at all: most exchanges reveal nothing project-wide and should leave "notes" completely unchanged. A note describes a standing decision someone could rely on next month in a different chat — not a restatement of what this one message said.
 - Merge, don't accumulate: before adding a note, check whether an existing one already covers it (even loosely) — update that one instead of adding a near-duplicate. Keep existing entries that are still valid, drop one the user explicitly retracted. Never invent a fact the exchange didn't actually establish.
 - All text values (known_stack items, notes) are in Russian, regardless of what language the exchange itself was in.
@@ -27,9 +28,13 @@ Rules:
 Output ONLY that JSON object: no markdown fences, no commentary before or after it.`
 
 // updateProjectMemory asks the LLM to fold one exchange into the project's
-// prior known_stack/notes. It never mutates state itself — the caller
-// (updateProjectMemoryAfterTurn) commits the result under the lock.
-func (a *Agent) updateProjectMemory(ctx context.Context, priorStack, priorNotes []string, userMessage, assistantReply string) (knownStack, notes []string, usage *TokenUsage, err error) {
+// prior known_stack/notes. currentInvariants is given as read-only context
+// (never returned/modified here — see memory_invariants.go's own call) so
+// this prompt can avoid restating something already tracked as a hard
+// invariant, which would otherwise keep looking true in Notes even after
+// that invariant is later removed. It never mutates state itself — the
+// caller (updateProjectMemoryAfterTurn) commits the result under the lock.
+func (a *Agent) updateProjectMemory(ctx context.Context, priorStack, priorNotes, currentInvariants []string, userMessage, assistantReply string) (knownStack, notes []string, usage *TokenUsage, err error) {
 	prior := struct {
 		KnownStack []string `json:"known_stack"`
 		Notes      []string `json:"notes"`
@@ -38,10 +43,15 @@ func (a *Agent) updateProjectMemory(ctx context.Context, priorStack, priorNotes 
 	if encoded, encodeErr := json.Marshal(prior); encodeErr == nil {
 		encodedPrior = string(encoded)
 	}
+	encodedInvariants := "[]"
+	if encoded, encodeErr := json.Marshal(currentInvariants); encodeErr == nil {
+		encodedInvariants = string(encoded)
+	}
 
 	messages := []chatMessage{
 		{Role: "system", Content: projectMemorySystemPrompt},
 		{Role: "system", Content: "Текущая память проекта: " + encodedPrior},
+		{Role: "system", Content: "Текущие инварианты проекта (не трогай их, только не дублируй в notes): " + encodedInvariants},
 		{Role: "user", Content: userMessage},
 		{Role: "assistant", Content: assistantReply},
 		{Role: "user", Content: "Обнови память проекта по правилам выше и верни JSON-объект целиком."},
@@ -80,9 +90,10 @@ func (a *Agent) updateProjectMemoryAfterTurn(ctx context.Context, chatID, projec
 	}
 	priorStack := project.KnownStack
 	priorNotes := project.Notes
+	currentInvariants := project.Invariants
 	a.mu.Unlock()
 
-	knownStack, notes, usage, err := a.updateProjectMemory(ctx, priorStack, priorNotes, userMessage, assistantReply)
+	knownStack, notes, usage, err := a.updateProjectMemory(ctx, priorStack, priorNotes, currentInvariants, userMessage, assistantReply)
 	if err != nil {
 		log.Printf("agent: project %s: memory update failed, keeping previous: %v", projectID, err)
 		return nil
