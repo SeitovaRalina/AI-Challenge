@@ -24,13 +24,22 @@ import (
 // the frontend having to recompute history retroactively (which it can't:
 // EstimateRevisions/TaskDone are current-only counters, not a log). It's
 // nil for user messages and for messages from before this field existed.
+// InvariantConflict (day 14) is set at construction time, straight from
+// that turn's own LLM call — the invariants (if any) this reply's proposal
+// would have violated, verbatim, or nil/empty when there was no conflict.
+// InvariantDiff is set AFTER the turn, once the async invariants side-call
+// (memory_invariants.go) finishes — new project invariants this exchange
+// caused the agent to record, distinct from InvariantConflict (which is
+// about violating EXISTING invariants, not detecting new ones).
 type AgentMessage struct {
-	Role          string      `json:"role"`
-	Content       string      `json:"content"`
-	CreatedAt     time.Time   `json:"created_at"`
-	Usage         *TokenUsage `json:"usage,omitempty"`
-	IsLabAnalysis bool        `json:"is_lab_analysis,omitempty"`
-	TaskState     *TaskState  `json:"task_state,omitempty"`
+	Role              string         `json:"role"`
+	Content           string         `json:"content"`
+	CreatedAt         time.Time      `json:"created_at"`
+	Usage             *TokenUsage    `json:"usage,omitempty"`
+	IsLabAnalysis     bool           `json:"is_lab_analysis,omitempty"`
+	TaskState         *TaskState     `json:"task_state,omitempty"`
+	InvariantConflict []string       `json:"invariant_conflict,omitempty"`
+	InvariantDiff     *InvariantDiff `json:"invariant_diff,omitempty"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
@@ -208,6 +217,22 @@ func (c *Chat) setLastMessageTaskState(branchID string, state TaskState) {
 	}
 	if len(c.Messages) > 0 {
 		c.Messages[len(c.Messages)-1].TaskState = &state
+	}
+}
+
+// setLastMessageInvariantDiff stamps the most recently appended message with
+// what the day-14 invariants side-call (memory_invariants.go) found — called
+// once that async call finishes, well after appendToBranch, same reasoning
+// as setLastMessageTaskState.
+func (c *Chat) setLastMessageInvariantDiff(branchID string, diff InvariantDiff) {
+	if c.ContextStrategy == StrategyBranching {
+		if b := c.Branches[branchID]; b != nil && len(b.Messages) > 0 {
+			b.Messages[len(b.Messages)-1].InvariantDiff = &diff
+		}
+		return
+	}
+	if len(c.Messages) > 0 {
+		c.Messages[len(c.Messages)-1].InvariantDiff = &diff
 	}
 }
 
@@ -532,6 +557,13 @@ type AgentReply struct {
 	Task                      *TaskMemory       `json:"task,omitempty"`
 	Profile                   *UserProfile      `json:"profile,omitempty"`
 	TaskState                 TaskState         `json:"task_state"`
+	// InvariantConflict/InvariantDiff (day 14) mirror what got stamped onto
+	// this turn's own assistant message (see AgentMessage) — not repeated on
+	// ChatDetail, since a full chat reload already carries them per-message
+	// via Messages, and there is no single "current" value to summarize the
+	// way TaskState summarizes one.
+	InvariantConflict []string       `json:"invariant_conflict,omitempty"`
+	InvariantDiff     *InvariantDiff `json:"invariant_diff,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
