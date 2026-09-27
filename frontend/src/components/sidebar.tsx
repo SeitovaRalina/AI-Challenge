@@ -8,6 +8,7 @@ import {
   FolderPlus,
   PanelLeftClose,
   Pencil,
+  Plug,
   Plus,
   Target,
   Trash2,
@@ -59,6 +60,8 @@ interface SidebarProps {
   onNewChatInProject: (projectId: string) => void
   onSelectChat: (id: string) => void
   onSelectDemo: (mode: DemoMode) => void
+  sourcesActive: boolean
+  onOpenSources: () => void
   onCollapse: () => void
   onRenameChat: (id: string, title: string) => void
   onDeleteChat: (id: string) => void
@@ -107,6 +110,8 @@ export function Sidebar({
   onNewChatInProject,
   onSelectChat,
   onSelectDemo,
+  sourcesActive,
+  onOpenSources,
   onCollapse,
   onRenameChat,
   onDeleteChat,
@@ -315,6 +320,22 @@ export function Sidebar({
           })}
         </ul>
       </nav>
+
+      <div className="border-t border-border px-2 py-2">
+        <button
+          type="button"
+          onClick={onOpenSources}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+            sourcesActive
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <Plug className="h-4 w-4" />
+          Источники
+        </button>
+      </div>
 
       <div className="border-t border-border px-2 py-2">
         <button

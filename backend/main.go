@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"aiwork/backend/internal/mcpclient"
 )
 
 // defaultContextTokenLimit is a realistic context-window size to measure the
@@ -135,6 +137,10 @@ func main() {
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/task-state", updateTaskStateHandler(agent))
 	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
 	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
+
+	mcpRegistry := NewMCPRegistry(mcpclient.DefaultServers())
+	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
+	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 
 	port := os.Getenv("PORT")
 	if port == "" {

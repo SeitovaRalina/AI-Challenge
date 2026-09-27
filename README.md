@@ -51,6 +51,13 @@ short-term (this chat), working (this chat's own task state), and long-term
 [`docs/concept.md`](docs/concept.md) for the overall product vision, and
 [`days/`](days/) for each day's exact assignment scope as the product grows.
 
+Week 4 starts connecting real work-activity sources over MCP (Model Context
+Protocol). Day 16 adds the first step: the «Источники» screen (and a
+`cmd/mcp-tools` CLI sharing the same client code) connects to GitHub's
+official remote MCP server over streamable HTTP, performs the `initialize`
+handshake, and lists the tools it exposes — no tool is called yet. See
+[`days/w04-d16-mcp-connection.md`](days/w04-d16-mcp-connection.md).
+
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
 sidebar, collapsed under "День 1–5 (демо)" — the chat agent is now the
@@ -95,6 +102,13 @@ go run .
 
 The API listens on `http://localhost:8080` (override via `PORT`). The LiteLLM
 key is used server-side only and never reaches the browser.
+
+For the «Источники» screen, also set `GITHUB_TOKEN` in `backend/.env` — a
+fine-grained GitHub personal access token with read-only Metadata, Contents,
+Pull requests and Issues permissions. It is sent only to the GitHub MCP
+server (with `X-MCP-Readonly: true`, so only read-only tools are exposed)
+and is never returned to the browser. `GITHUB_MCP_URL` overrides the default
+`https://api.githubcopilot.com/mcp/` endpoint.
 
 ### Frontend
 
@@ -158,4 +172,21 @@ chat_id=$(curl -s -X POST http://localhost:8080/api/agent/chats | jq -r .id)
 curl -s -X POST http://localhost:8080/api/agent/chats/$chat_id/messages \
   -H "Content-Type: application/json" \
   -d '{"message":"Upgrade a legacy Flutter app to the latest Flutter version."}'
+```
+
+MCP sources (day 16) — list the configured servers, then connect to one
+(initialize + tools/list):
+
+```
+curl -s http://localhost:8080/api/mcp/servers
+
+curl -s -X POST http://localhost:8080/api/mcp/servers/github/connect
+```
+
+The same connection from the terminal, without starting the backend:
+
+```
+cd backend
+go run ./cmd/mcp-tools            # server info + tools table
+go run ./cmd/mcp-tools -params    # plus every tool's input parameters
 ```

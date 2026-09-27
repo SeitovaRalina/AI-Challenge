@@ -586,3 +586,62 @@ export function setTaskDone(chatId: string, done: boolean): Promise<TaskState> {
     body: { done },
   })
 }
+
+export interface McpToolParam {
+  name: string
+  type?: string
+  description?: string
+  required: boolean
+}
+
+export interface McpTool {
+  name: string
+  title?: string
+  description?: string
+  read_only: boolean
+  params: McpToolParam[]
+}
+
+export interface McpListResult {
+  protocol_version: string
+  server_name: string
+  server_version?: string
+  instructions?: string
+  tools: McpTool[]
+  duration_ms: number
+}
+
+export type McpErrorKind = 'no_token' | 'unauthorized' | 'unreachable' | 'timeout' | 'protocol'
+
+export interface McpConnection {
+  status: 'connected' | 'error'
+  checked_at: string
+  result?: McpListResult
+  error_kind?: McpErrorKind
+  error_status?: number
+  error?: string
+}
+
+// McpServer is day 16's public MCP server as the backend reports it —
+// whether a token is configured (never the token itself), and the outcome
+// of the last connect attempt, if any.
+export interface McpServer {
+  id: string
+  name: string
+  url: string
+  token_env?: string
+  read_only: boolean
+  token_set: boolean
+  last_connection?: McpConnection
+}
+
+export function listMcpServers(): Promise<McpServer[]> {
+  return request<McpServer[]>('/api/mcp/servers')
+}
+
+// connectMcpServer runs initialize + tools/list on the backend. A server-side
+// failure (bad token, unreachable) still resolves — it comes back as
+// last_connection.status === 'error', not as a rejected promise.
+export function connectMcpServer(id: string): Promise<McpServer> {
+  return request<McpServer>(`/api/mcp/servers/${id}/connect`, { method: 'POST' })
+}

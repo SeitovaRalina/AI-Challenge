@@ -15,6 +15,7 @@ import {
 } from '@/components/reasoning-comparison'
 import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
 import { Sidebar, type DemoMode } from '@/components/sidebar'
+import { SourcesPanel } from '@/components/sources-panel'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
@@ -61,7 +62,7 @@ import {
 } from '@/lib/api'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'chat' | DemoMode
+type Mode = 'chat' | 'sources' | DemoMode
 
 // Identifies one send-like operation's target for the pendingKeys set below:
 // a chat by itself, or (for a branching chat) one specific branch within it —
@@ -87,6 +88,11 @@ const DEFAULT_COMPARE_OPTIONS: CompareOptions = {
 }
 
 const MODE_COPY: Record<Mode, { title: string; description: string }> = {
+  sources: {
+    title: 'Источники',
+    description:
+      'Внешние MCP-серверы, из которых ассистент со временем будет получать данные о вашей рабочей активности. Сейчас — только подключение и список доступных инструментов, без их вызова.',
+  },
   chat: {
     title: 'Ассистент по оценке задач',
     description:
@@ -740,7 +746,7 @@ function App() {
     }
   }
 
-  const activeDemo = mode === 'chat' ? null : mode
+  const activeDemo = mode === 'chat' || mode === 'sources' ? null : mode
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -776,6 +782,8 @@ function App() {
             onNewChatInProject={handleNewChat}
             onSelectChat={handleSelectChat}
             onSelectDemo={(demo) => setMode(demo)}
+            sourcesActive={mode === 'sources'}
+            onOpenSources={() => setMode('sources')}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
@@ -872,6 +880,8 @@ function App() {
                 {MODE_COPY[mode].description}
               </p>
             </div>
+
+          {mode === 'sources' && <SourcesPanel />}
 
           {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
