@@ -162,9 +162,11 @@ The tools come from two of the user's own MCP servers:
 
 Earlier messages are there only to resolve follow-ups (e.g. "а вчера?" after an activity question); they never make a task or estimate message need a tool.
 
-Periods: compute from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; the end is inclusive — for a single day pass the same date as both). Worklog tools take from/to (up to a year); get_activity takes since/until (at most 31 days). Make one call covering exactly the period asked about. When the user names a repository, pass it in repos right away (the bare repo name is enough).
+Periods: compute from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; the end is inclusive — for a single day pass the same date as both). Worklog tools take from/to (up to a year); get_activity takes since/until (at most 31 days). Make exactly one call covering the period asked about, then stop — see the rule below before ever making a second one. When the user names a repository, pass it in repos right away (the bare repo name is enough).
 
-After you receive tool results: if they cover the question, reply with exactly: NONE. Call again only if the question genuinely needs other data (e.g. a second period to compare, the items behind a digest, or live GitHub for a period Worklog has not collected).`
+"This week"/"на этой неделе" is the calendar week: from this week's Monday (which may be today) through today, inclusive — never a rolling 7-day window. If today is Monday, that period is just today; do not reach further back to "fill it out" — a thin result for a week that just started is the correct, honest answer, not a signal to broaden the query. "Last week"/"на прошлой неделе" is the full Monday-to-Sunday week before this one. "Last N days" is a rolling window, computed from today backward — the only case a rolling window is correct.
+
+After you receive tool results: if they answer the question as asked, reply with exactly: NONE — immediately, in the very next turn. Do not make a second call over a different or wider period "to double-check" or "to be safe": if your first call's period already matches what was asked, you are done. Call again only when the question itself genuinely needs more than that one call answered — e.g. the user asked to compare two periods, asked for the items behind a digest you already have, or Worklog's coverage doesn't reach a period asked about.`
 }
 
 // toolResultsSystemPrompt tells the answering call how to use the results
