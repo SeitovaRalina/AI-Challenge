@@ -20,25 +20,32 @@ import (
 // handlers to an HTTP status and Russian message, on top of writeLLMError's
 // upstream-LLM cases.
 func writeAgentError(w http.ResponseWriter, err error) {
+	status, message := agentErrorResponse(err)
+	writeError(w, status, message)
+}
+
+// agentErrorResponse is writeAgentError's mapping on its own, for callers
+// that deliver the message some other way (the streaming endpoint).
+func agentErrorResponse(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrChatNotFound):
-		writeError(w, http.StatusNotFound, "чат не найден")
+		return http.StatusNotFound, "чат не найден"
 	case errors.Is(err, ErrLabNotFound):
-		writeError(w, http.StatusNotFound, "лаборатория не найдена")
+		return http.StatusNotFound, "лаборатория не найдена"
 	case errors.Is(err, ErrBranchNotFound):
-		writeError(w, http.StatusNotFound, "ветка не найдена")
+		return http.StatusNotFound, "ветка не найдена"
 	case errors.Is(err, ErrWrongStrategy):
-		writeError(w, http.StatusBadRequest, "недоступно для текущей стратегии контекста")
+		return http.StatusBadRequest, "недоступно для текущей стратегии контекста"
 	case errors.Is(err, ErrFanOutInProgress):
-		writeError(w, http.StatusConflict, "предыдущий фан-аут ещё выполняется, подождите")
+		return http.StatusConflict, "предыдущий фан-аут ещё выполняется, подождите"
 	case errors.Is(err, ErrProjectNotFound):
-		writeError(w, http.StatusNotFound, "проект не найден")
+		return http.StatusNotFound, "проект не найден"
 	case errors.Is(err, ErrNoEstimateYet):
-		writeError(w, http.StatusBadRequest, "оценка ещё не сформирована")
+		return http.StatusBadRequest, "оценка ещё не сформирована"
 	case errors.Is(err, ErrTaskNotAccepted):
-		writeError(w, http.StatusBadRequest, "задача ещё не принята — нечего возобновлять")
+		return http.StatusBadRequest, "задача ещё не принята — нечего возобновлять"
 	default:
-		writeLLMError(w, err)
+		return llmErrorResponse(err)
 	}
 }
 
@@ -180,7 +187,9 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		// 120s, not 60s: since day 17 a turn may include MCP tool calls, each
+		// adding a GitHub fetch plus another model round.
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
 
 		reply, err := agent.PostChatMessage(ctx, chatID, message, req.Interview)

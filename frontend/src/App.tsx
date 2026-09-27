@@ -40,7 +40,7 @@ import {
   getProfile,
   listChats,
   listProjects,
-  postAgentMessage,
+  streamAgentMessage,
   renameChat,
   setActiveBranch,
   setContextStrategy,
@@ -60,6 +60,7 @@ import {
   type ReasoningComparison as ReasoningComparisonData,
   type TemperatureComparison as TemperatureComparisonData,
 } from '@/lib/api'
+import { applyTurnEvent, EMPTY_TURN_PROGRESS, type TurnProgress } from '@/lib/turn-progress'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
 type Mode = 'chat' | 'sources' | DemoMode
@@ -91,7 +92,7 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
   sources: {
     title: 'Источники',
     description:
-      'Внешние MCP-серверы, из которых ассистент со временем будет получать данные о вашей рабочей активности. Сейчас — только подключение и список доступных инструментов, без их вызова.',
+      'MCP-серверы — источники данных о вашей рабочей активности. Инструменты собственного сервера GitHub Activity ассистент вызывает в чате, когда вы спрашиваете о своей работе; публичный сервер GitHub — только для просмотра его инструментов.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -166,6 +167,9 @@ function App() {
   const [pendingSends, setPendingSends] = useState<Map<string, { content: string; sentAt: string }>>(
     new Map(),
   )
+  // Live progress of each in-flight streamed turn, per chat/branch key —
+  // what TypingIndicator shows instead of a bare "…" (day 17).
+  const [turnProgress, setTurnProgress] = useState<Map<string, TurnProgress>>(new Map())
   const [chatError, setChatError] = useState<string | null>(null)
 
   function beginPending(key: string) {
@@ -391,8 +395,16 @@ function App() {
     setPendingSends((prev) => new Map(prev).set(key, { content: message, sentAt: optimisticSentAt }))
     setChatError(null)
 
+    setTurnProgress((prev) => new Map(prev).set(key, EMPTY_TURN_PROGRESS))
+
     try {
-      const reply = await postAgentMessage(chatId, message, interview)
+      const reply = await streamAgentMessage(chatId, message, interview, (event) =>
+        setTurnProgress((prev) => {
+          const current = prev.get(key)
+          if (!current) return prev
+          return new Map(prev).set(key, applyTurnEvent(current, event))
+        }),
+      )
       setActiveChat((prev) => {
         // The user may have switched chats or branches while this was in
         // flight — prev is now a different conversation's state, fetched
@@ -420,6 +432,7 @@ function App() {
             task_state: reply.task_state,
             invariant_conflict: reply.invariant_conflict,
             invariant_diff: reply.invariant_diff,
+            tool_calls: reply.tool_calls,
           },
         ]
         return {
@@ -462,6 +475,12 @@ function App() {
     } finally {
       endPending(key)
       setPendingSends((prev) => {
+        if (!prev.has(key)) return prev
+        const next = new Map(prev)
+        next.delete(key)
+        return next
+      })
+      setTurnProgress((prev) => {
         if (!prev.has(key)) return prev
         const next = new Map(prev)
         next.delete(key)
@@ -821,6 +840,7 @@ function App() {
               messages={activeChat?.messages ?? []}
               estimate={activeChat?.estimate ?? null}
               isSending={pendingKeys.has(chatKey(activeChatId ?? '', activeChat?.active_branch_id))}
+              turnProgress={turnProgress.get(chatKey(activeChatId ?? '', activeChat?.active_branch_id))}
               error={chatError}
               onSend={handleSendMessage}
               onForceCompress={handleForceCompress}

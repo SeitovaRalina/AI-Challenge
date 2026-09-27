@@ -119,6 +119,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/agent/chats/{id}", deleteChatHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}", renameChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/messages/stream", streamAgentMessageHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/strategy", setStrategyHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/checkpoints", createCheckpointHandler(agent))
@@ -138,7 +139,15 @@ func main() {
 	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
 	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
 
-	mcpRegistry := NewMCPRegistry(mcpclient.DefaultServers())
+	// Day 17: the product's own GitHub Activity MCP server. It's listed on
+	// «Источники» next to the public one, and the chat agent holds a
+	// long-lived session to it for tool calls.
+	activityServer := githubActivityServerConfig()
+	activityConn := mcpclient.NewConn(activityServer)
+	defer activityConn.Close()
+	agent.SetActivityTools(activityConn)
+
+	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer}, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 
@@ -173,6 +182,12 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer — the
+// streaming endpoint needs its Flush.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // withCORS allows the local Vite dev server to call the API directly.

@@ -97,8 +97,21 @@ function ServerCard({
             <h2 className="text-sm font-medium text-foreground">{server.name}</h2>
             <StatusBadge conn={conn} isConnecting={isConnecting} />
             {server.read_only && <Badge variant="outline">только чтение</Badge>}
+            <Badge variant="outline">{server.transport}</Badge>
+            {server.own ? (
+              <Badge variant="secondary">свой сервер</Badge>
+            ) : (
+              <Badge variant="secondary">публичный</Badge>
+            )}
           </div>
-          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{server.url}</p>
+          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
+            {server.transport === 'stdio' ? server.command : server.url}
+          </p>
+          {server.own && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Его инструменты вызывает ассистент в чате.
+            </p>
+          )}
           {server.token_env && (
             <p className="mt-1 text-xs text-muted-foreground">
               Токен <span className="font-mono">{server.token_env}</span>:{' '}

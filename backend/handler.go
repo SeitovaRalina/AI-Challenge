@@ -33,15 +33,20 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // to an HTTP status and Russian message, shared by every handler below that
 // makes a single LLM call.
 func writeLLMError(w http.ResponseWriter, err error) {
+	status, message := llmErrorResponse(err)
+	writeError(w, status, message)
+}
+
+func llmErrorResponse(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrUpstreamAuth):
-		writeError(w, http.StatusBadGateway, "ошибка авторизации LLM")
+		return http.StatusBadGateway, "ошибка авторизации LLM"
 	case errors.Is(err, ErrUpstreamUnavailable):
-		writeError(w, http.StatusBadGateway, "сервис LLM сейчас недоступен")
+		return http.StatusBadGateway, "сервис LLM сейчас недоступен"
 	case errors.Is(err, ErrInvalidOutput):
-		writeError(w, http.StatusBadGateway, "LLM вернул некорректную оценку")
+		return http.StatusBadGateway, "LLM вернул некорректную оценку"
 	default:
-		writeError(w, http.StatusInternalServerError, "внутренняя ошибка")
+		return http.StatusInternalServerError, "внутренняя ошибка"
 	}
 }
 

@@ -1,3 +1,5 @@
+import type { TurnStreamEvent } from '@/lib/turn-progress'
+
 export type Complexity = 'low' | 'medium' | 'high'
 
 export interface Subtask {
@@ -283,6 +285,45 @@ export interface AgentMessage {
   // exchange caused the agent to record. Distinct from invariant_conflict
   // (violating EXISTING invariants vs. detecting new ones).
   invariant_diff?: InvariantDiff
+  // tool_calls (day 17): MCP tool calls the agent made while producing
+  // this assistant message, in order.
+  tool_calls?: ToolCallRecord[]
+}
+
+export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment'
+
+// ActivityEvent is the GitHub Activity MCP server's normalized unit of work.
+export interface ActivityEvent {
+  id: string
+  source: string
+  kind: ActivityKind
+  repo: string
+  title: string
+  url: string
+  occurred_at: string
+  author: string
+  ref?: string
+}
+
+// ToolCallRecord is one MCP tool call as stored on an assistant message.
+// result is the tool's structured output — for get_activity, events trimmed
+// to 50 (events_omitted counts the rest).
+export interface ToolCallRecord {
+  server: string
+  server_name: string
+  tool: string
+  arguments: Record<string, unknown>
+  ok: boolean
+  error?: string
+  duration_ms: number
+  result?: {
+    events?: ActivityEvent[]
+    events_omitted?: number
+    counts?: Partial<Record<ActivityKind, number>>
+    repos?: unknown[]
+    warnings?: string[]
+    [key: string]: unknown
+  }
 }
 
 export interface CompressionEvent {
@@ -382,6 +423,7 @@ export interface AgentReply extends StrategyState {
   // AgentMessage's own doc comments.
   invariant_conflict?: string[]
   invariant_diff?: InvariantDiff
+  tool_calls?: ToolCallRecord[]
 }
 
 export interface ForceCompressResult {
@@ -441,19 +483,72 @@ export function renameChat(chatId: string, title: string): Promise<ChatSummary> 
   })
 }
 
-// interview flags this turn as part of day 12's onboarding interview — the
-// backend injects a turn-only system message steering the reply away from
-// task estimation, invisible to task/profile extraction (see
-// interviewModeSystemPrompt in backend/agent_turn.go).
-export function postAgentMessage(
+// streamAgentMessage sends one chat message over the streaming endpoint
+// (day 17): the final AgentReply resolves the promise, and onEvent is called
+// while the turn runs — tool routing, MCP tool calls, the reply as soon as
+// it's ready (see backend/turn_stream.go). Errors reject with the backend's
+// Russian messages. interview flags this turn as part of day 12's
+// onboarding interview — the backend injects a turn-only system message
+// steering the reply away from task estimation, invisible to task/profile
+// extraction (see interviewModeSystemPrompt in backend/agent_turn.go).
+export async function streamAgentMessage(
   chatId: string,
   message: string,
-  interview?: boolean,
+  interview: boolean | undefined,
+  onEvent: (event: TurnStreamEvent) => void,
 ): Promise<AgentReply> {
-  return postJson<AgentReply>(`/api/agent/chats/${chatId}/messages`, {
-    message,
-    ...(interview ? { interview: true } : {}),
+  const response = await fetch(`/api/agent/chats/${chatId}/messages/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ message, ...(interview ? { interview: true } : {}) }),
   })
+  // Validation failures (unknown chat, empty message) come back before the
+  // stream starts, as an ordinary JSON error.
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => null)
+    throw new ApiError(
+      body && typeof body.error === 'string'
+        ? body.error
+        : `Запрос завершился с ошибкой ${response.status}`,
+    )
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value
+    let boundary: number
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+      }
+      if (dataLines.length === 0) continue
+      const data = JSON.parse(dataLines.join('\n'))
+      switch (event) {
+        case 'done':
+          return data as AgentReply
+        case 'error':
+          throw new ApiError(typeof data.error === 'string' ? data.error : 'Непредвиденная ошибка.')
+        case 'answer':
+          onEvent({ type: 'answer', reply: data as AgentReply })
+          break
+        case 'routing':
+        case 'answering':
+        case 'tool_call_started':
+        case 'tool_call_finished':
+          onEvent({ type: event, ...data } as TurnStreamEvent)
+          break
+      }
+    }
+  }
+  throw new ApiError('Соединение прервалось до получения ответа — обновите чат, ответ мог сохраниться.')
 }
 
 export function forceCompress(chatId: string): Promise<ForceCompressResult> {
@@ -628,7 +723,13 @@ export interface McpConnection {
 export interface McpServer {
   id: string
   name: string
-  url: string
+  // http: remote server at url; stdio: local subprocess started by the
+  // backend (command is display-only).
+  transport: 'http' | 'stdio'
+  url?: string
+  command?: string
+  // own: implemented by this product (day 17+), vs a public third-party one.
+  own: boolean
   token_env?: string
   read_only: boolean
   token_set: boolean

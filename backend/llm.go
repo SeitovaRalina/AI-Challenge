@@ -93,6 +93,30 @@ func NewLiteLLMClient(baseURL, apiKey, model string) *LiteLLMClient {
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls is set on an assistant message that asks for tool calls
+	// (day 17); ToolCallID on the "tool" message answering one of them.
+	ToolCalls  []llmToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+}
+
+// llmToolCall is one OpenAI-format function call the model asked for.
+type llmToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// llmTool is one OpenAI-format function definition offered to the model.
+type llmTool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+		Parameters  any    `json:"parameters"`
+	} `json:"function"`
 }
 
 type chatCompletionRequest struct {
@@ -101,6 +125,8 @@ type chatCompletionRequest struct {
 	Temperature float64       `json:"temperature"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 	Stop        []string      `json:"stop,omitempty"`
+	Tools       []llmTool     `json:"tools,omitempty"`
+	ToolChoice  string        `json:"tool_choice,omitempty"`
 }
 
 // chatCompletionUsage is the token/cost accounting the LiteLLM gateway
@@ -127,13 +153,36 @@ type chatCompletionResponse struct {
 // callers that also need usage (the day-5 model comparison) share one
 // request/response implementation.
 func (c *LiteLLMClient) doChatCompletion(ctx context.Context, model string, messages []chatMessage, temperature float64, maxTokens int, stop []string) (*chatCompletionResponse, error) {
-	reqBody, err := json.Marshal(chatCompletionRequest{
+	return c.complete(ctx, chatCompletionRequest{
 		Model:       model,
 		Messages:    messages,
 		Temperature: temperature,
 		MaxTokens:   maxTokens,
 		Stop:        stop,
 	})
+}
+
+// doChatCompletionWithTools is doChatCompletion with function tools offered
+// to the model — the response may then carry tool_calls instead of a final
+// answer (finish_reason "tool_calls").
+// toolChoice "none" still describes the tools (required once the history
+// contains tool calls) but forbids calling them; "" leaves it to the model.
+func (c *LiteLLMClient) doChatCompletionWithTools(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, tools []llmTool, toolChoice string) (*chatCompletionResponse, error) {
+	req := chatCompletionRequest{
+		Model:       c.model,
+		Messages:    messages,
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
+		Tools:       tools,
+	}
+	if len(tools) > 0 && toolChoice != "" {
+		req.ToolChoice = toolChoice
+	}
+	return c.complete(ctx, req)
+}
+
+func (c *LiteLLMClient) complete(ctx context.Context, req chatCompletionRequest) (*chatCompletionResponse, error) {
+	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
