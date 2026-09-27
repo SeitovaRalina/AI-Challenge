@@ -37,7 +37,7 @@ type TaskState struct {
 // here instead: the model is told the stage, it never decides it.
 func computeTaskState(c *Chat) TaskState {
 	switch {
-	case len(c.activeMessages()) == 0:
+	case c.activeEstimate() == nil && !hasTaskExchange(c.activeMessages()):
 		return TaskState{
 			Stage:          TaskStageIntake,
 			Step:           "Ожидание описания задачи",
@@ -62,6 +62,27 @@ func computeTaskState(c *Chat) TaskState {
 			ExpectedAction: "Проверьте оценку: уточните детали или подтвердите её",
 		}
 	}
+}
+
+// hasTaskExchange reports whether messages contain anything about the task
+// being estimated. Since day 17 a chat can also answer questions about the
+// user's own activity via MCP tools ("что я делала вчера?"); such an
+// exchange — an assistant reply built on tool calls, plus the user message
+// it answers — is a side question, not a task description, so it must not
+// move the chat from "waiting for a task" into "clarifying the task".
+func hasTaskExchange(messages []AgentMessage) bool {
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
+		if m.Role == "user" && i+1 < len(messages) && len(messages[i+1].ToolCalls) > 0 {
+			i++ // skip the tool-answered pair
+			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // taskStateSystemPrompt tells the model where the conversation stands right
