@@ -116,6 +116,7 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 		if round == maxToolRounds {
 			toolChoice = "none"
 		}
+		emitTurnEvent(ctx, "round", map[string]int{"round": round + 1})
 		completion, err = a.client.doChatCompletionWithTools(ctx, messages, 0.2, maxTokens, tools, toolChoice)
 		if err != nil {
 			return nil, records, usage, contextTokens, err
@@ -135,9 +136,19 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 		for _, call := range msg.ToolCalls {
 			key := call.Function.Name + "\x00" + canonicalArgs(call.Function.Arguments)
 			content, seen := answered[key]
-			if !seen {
+			if seen {
+				// Seen live: after an empty result the model re-issued the
+				// same call round after round. Saying so explicitly stops it.
+				content = "This exact call was already made in this turn and its result will not change — do not repeat it; answer from it. The result was:\n" + content
+			} else {
+				cfg := a.activityTools.Config()
+				emitTurnEvent(ctx, "tool_call_started", toolCallStartedEvent{
+					ID: call.ID, Server: cfg.ID, ServerName: cfg.Name, Tool: call.Function.Name,
+					Arguments: argumentsForDisplay(call.Function.Arguments),
+				})
 				var record ToolCallRecord
 				record, content = a.runToolCall(ctx, chatID, call)
+				emitTurnEvent(ctx, "tool_call_finished", toolCallFinishedEvent{ID: call.ID, Record: record})
 				records = append(records, record)
 				answered[key] = content
 			}
@@ -159,6 +170,15 @@ func canonicalArgs(raw string) string {
 		return raw
 	}
 	return string(out)
+}
+
+// argumentsForDisplay is the call's arguments as JSON for the progress
+// event, or an empty object when the model sent something unparseable.
+func argumentsForDisplay(raw string) json.RawMessage {
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(raw)
 }
 
 // runToolCall forwards one model-requested call to the MCP server. It never

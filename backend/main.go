@@ -119,6 +119,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/agent/chats/{id}", deleteChatHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}", renameChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
+	mux.HandleFunc("POST /api/agent/chats/{id}/messages/stream", streamAgentMessageHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/strategy", setStrategyHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/checkpoints", createCheckpointHandler(agent))
@@ -181,6 +182,12 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer — the
+// streaming endpoint needs its Flush.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // withCORS allows the local Vite dev server to call the API directly.

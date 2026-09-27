@@ -299,7 +299,12 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
 	agentReply.InvariantConflict = turn.InvariantConflict
 	agentReply.ToolCalls = toolCalls
+	// The reply is final from here on; what follows only refreshes memory
+	// (and can take a while). Streaming clients can show it right away. A
+	// copy, since agentReply keeps being updated below.
+	answer := *agentReply
 	a.mu.Unlock()
+	emitTurnEvent(ctx, "answer", &answer)
 
 	// Runs its own (possibly slow) LLM calls outside the lock just released,
 	// so a strategy side-call for this chat never blocks any other chat.
