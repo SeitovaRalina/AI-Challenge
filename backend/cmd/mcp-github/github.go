@@ -24,7 +24,16 @@ type githubAPI struct {
 	loginOnce sync.Once
 	login     string
 	loginErr  error
+
+	// The repo list changes rarely but is needed on every call — cache it
+	// briefly rather than re-listing on each get_activity.
+	reposMu       sync.Mutex
+	reposCached   []ghRepo
+	reposWarnings []string
+	reposAt       time.Time
 }
+
+const reposCacheTTL = 5 * time.Minute
 
 func newGitHubAPI(token string) *githubAPI {
 	return &githubAPI{token: token, base: "https://api.github.com", http: &http.Client{Timeout: 20 * time.Second}}
@@ -78,6 +87,19 @@ type ghRepo struct {
 // Repos returns the configured repos (GITHUB_REPOS), or — when none are
 // configured — every repo the token can see, most recently pushed first.
 func (g *githubAPI) Repos(ctx context.Context, configured []string) ([]ghRepo, []string) {
+	g.reposMu.Lock()
+	defer g.reposMu.Unlock()
+	if g.reposCached != nil && time.Since(g.reposAt) < reposCacheTTL {
+		return append([]ghRepo(nil), g.reposCached...), append([]string(nil), g.reposWarnings...)
+	}
+	repos, warnings := g.listRepos(ctx, configured)
+	if len(repos) > 0 {
+		g.reposCached, g.reposWarnings, g.reposAt = repos, warnings, time.Now()
+	}
+	return append([]ghRepo(nil), repos...), warnings
+}
+
+func (g *githubAPI) listRepos(ctx context.Context, configured []string) ([]ghRepo, []string) {
 	var warnings []string
 	if len(configured) > 0 {
 		repos := make([]ghRepo, 0, len(configured))
@@ -186,25 +208,32 @@ func (g *githubAPI) commits(ctx context.Context, repo ghRepo, login string, sinc
 		} `json:"parents"`
 	}
 
-	seen := map[string]bool{}
-	var events []ActivityEvent
-	var firstErr error
-	for _, b := range branches {
-		var commits []ghCommit
+	// One request per branch, fetched concurrently; results are then merged
+	// in branch order (default branch first) so dedup stays deterministic.
+	perBranch := make([][]ghCommit, len(branches))
+	errs := make([]error, len(branches))
+	forEachLimited(len(branches), branchConcurrency, func(i int) {
 		q := url.Values{
-			"sha":      {b.Name},
+			"sha":      {branches[i].Name},
 			"author":   {login},
 			"since":    {since.UTC().Format(time.RFC3339)},
 			"until":    {until.UTC().Format(time.RFC3339)},
 			"per_page": {"100"},
 		}
-		if err := g.get(ctx, "/repos/"+repo.FullName+"/commits", q, &commits); err != nil {
+		errs[i] = g.get(ctx, "/repos/"+repo.FullName+"/commits", q, &perBranch[i])
+	})
+
+	seen := map[string]bool{}
+	var events []ActivityEvent
+	var firstErr error
+	for i, b := range branches {
+		if errs[i] != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = errs[i]
 			}
 			continue
 		}
-		for _, c := range commits {
+		for _, c := range perBranch[i] {
 			if seen[c.SHA] {
 				continue
 			}
@@ -293,27 +322,33 @@ func (g *githubAPI) pullRequests(ctx context.Context, repo ghRepo, login string,
 		}
 	}
 
+	type ghReview struct {
+		ID          int64     `json:"id"`
+		State       string    `json:"state"`
+		HTMLURL     string    `json:"html_url"`
+		SubmittedAt time.Time `json:"submitted_at"`
+		User        struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	lookups := min(len(inWindow), maxReviewLookups)
+	perPull := make([][]ghReview, lookups)
+	errs := make([]error, lookups)
+	forEachLimited(lookups, branchConcurrency, func(i int) {
+		path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo.FullName, inWindow[i].Number)
+		errs[i] = g.get(ctx, path, url.Values{"per_page": {"100"}}, &perPull[i])
+	})
+
 	var firstErr error
-	for i, p := range inWindow {
-		if i >= maxReviewLookups {
-			break
-		}
-		var reviews []struct {
-			ID          int64     `json:"id"`
-			State       string    `json:"state"`
-			HTMLURL     string    `json:"html_url"`
-			SubmittedAt time.Time `json:"submitted_at"`
-			User        struct {
-				Login string `json:"login"`
-			} `json:"user"`
-		}
-		if err := g.get(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo.FullName, p.Number), url.Values{"per_page": {"100"}}, &reviews); err != nil {
+	for i := range lookups {
+		p := inWindow[i]
+		if errs[i] != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = errs[i]
 			}
 			continue
 		}
-		for _, r := range reviews {
+		for _, r := range perPull[i] {
 			if r.User.Login != login || !inRange(r.SubmittedAt) {
 				continue
 			}
@@ -371,4 +406,24 @@ func truncate(s string, max int) string {
 		return string(r[:max-1]) + "…"
 	}
 	return s
+}
+
+// branchConcurrency bounds parallel requests within one repository (per
+// branch, per PR); repositories themselves run in parallel on top of this.
+const branchConcurrency = 6
+
+// forEachLimited runs fn(0..n-1) with at most limit calls in flight.
+func forEachLimited(n, limit int, fn func(i int)) {
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(i)
+		}()
+	}
+	wg.Wait()
 }

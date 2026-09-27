@@ -180,29 +180,17 @@ func (s *server) getActivity(ctx context.Context, _ *mcp.CallToolRequest, in Get
 
 	repos, warnings := s.api.Repos(ctx, s.configured)
 	if len(in.Repos) > 0 {
-		want := map[string]bool{}
-		for _, r := range in.Repos {
-			want[strings.ToLower(strings.TrimSpace(r))] = true
-		}
-		filtered := repos[:0]
-		for _, r := range repos {
-			if want[strings.ToLower(r.FullName)] {
-				filtered = append(filtered, r)
-				delete(want, strings.ToLower(r.FullName))
-			}
-		}
-		repos = filtered
-		for name := range want {
-			warnings = append(warnings, fmt.Sprintf("%s: не входит в отслеживаемые репозитории", name))
-		}
+		var unmatched []string
+		repos, unmatched = filterRepos(repos, in.Repos)
+		warnings = append(warnings, unmatched...)
 	}
 
-	// Repos are independent — fetch a few at a time rather than one by one.
+	// Repos are independent — fetch several at a time rather than one by one.
 	var (
 		mu     sync.Mutex
 		wg     sync.WaitGroup
 		events []ActivityEvent
-		sem    = make(chan struct{}, 4)
+		sem    = make(chan struct{}, 8)
 	)
 	for _, repo := range repos {
 		wg.Add(1)
@@ -219,6 +207,13 @@ func (s *server) getActivity(ctx context.Context, _ *mcp.CallToolRequest, in Get
 	}
 	wg.Wait()
 
+	// Report times in the server's local timezone (the user's), with the
+	// offset, rather than GitHub's UTC: the model otherwise converts them
+	// itself and was observed putting a just-after-midnight merge on the
+	// previous day.
+	for i := range events {
+		events[i].OccurredAt = events[i].OccurredAt.In(time.Local)
+	}
 	sort.Slice(events, func(i, j int) bool { return events[i].OccurredAt.Before(events[j].OccurredAt) })
 	out := GetActivityOutput{
 		Login:    login,
@@ -289,4 +284,31 @@ func splitRepos(s string) []string {
 		}
 	}
 	return repos
+}
+
+// filterRepos keeps the tracked repos the caller asked for. A name may be
+// the full owner/repo or — since people (and models) often say just
+// "AI-Challenge" — the bare repo name, as long as it's unambiguous.
+func filterRepos(repos []ghRepo, names []string) (matched []ghRepo, warnings []string) {
+	picked := map[string]bool{}
+	for _, raw := range names {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		var hits []ghRepo
+		for _, r := range repos {
+			full := strings.ToLower(r.FullName)
+			if full == name || (!strings.Contains(name, "/") && strings.HasSuffix(full, "/"+name)) {
+				hits = append(hits, r)
+			}
+		}
+		switch {
+		case len(hits) == 0:
+			warnings = append(warnings, fmt.Sprintf("%s: не входит в отслеживаемые репозитории", raw))
+		case len(hits) > 1:
+			warnings = append(warnings, fmt.Sprintf("%s: неоднозначно, укажите owner/repo", raw))
+		case !picked[hits[0].FullName]:
+			picked[hits[0].FullName] = true
+			matched = append(matched, hits[0])
+		}
+	}
+	return matched, warnings
 }
