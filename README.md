@@ -58,6 +58,18 @@ official remote MCP server over streamable HTTP, performs the `initialize`
 handshake, and lists the tools it exposes — no tool is called yet. See
 [`days/w04-d16-mcp-connection.md`](days/w04-d16-mcp-connection.md).
 
+Day 17 adds the product's own MCP server, `backend/cmd/mcp-github` — a
+thin, stateless stdio adapter over the GitHub REST API with two read-only
+tools: `list_repos` and `get_activity(since, until?, repos?)`, which returns
+the user's own commits (on every branch pushed in the period), PRs opened and
+merged, reviews and comments as normalized `ActivityEvent` records in local
+time. The chat agent is given these tools (OpenAI function calling via
+LiteLLM): when the user asks about their own work ("что я делала вчера?"),
+the model calls `get_activity`, the backend forwards the call over MCP and
+feeds the result back, and the reply is written strictly from the returned
+events. Each call is shown above the reply and stored with the chat. See
+[`days/w04-d17-github-mcp-tool.md`](days/w04-d17-github-mcp-tool.md).
+
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
 sidebar, collapsed under "День 1–5 (демо)" — the chat agent is now the
@@ -109,6 +121,14 @@ Pull requests and Issues permissions. It is sent only to the GitHub MCP
 server (with `X-MCP-Readonly: true`, so only read-only tools are exposed)
 and is never returned to the browser. `GITHUB_MCP_URL` overrides the default
 `https://api.githubcopilot.com/mcp/` endpoint.
+
+The same token powers the product's own GitHub Activity MCP server
+(day 17). The backend starts it as a stdio subprocess with
+`go run ./cmd/mcp-github` — so run the backend from `backend/` — or with
+`MCP_GITHUB_COMMAND` pointing at a prebuilt binary. It reads every repository
+the token can see, or only those listed in `GITHUB_REPOS` (comma-separated
+`owner/repo`); for "every repository", give the fine-grained token
+**Repository access → All repositories**.
 
 ### Frontend
 
@@ -189,4 +209,20 @@ The same connection from the terminal, without starting the backend:
 cd backend
 go run ./cmd/mcp-tools            # server info + tools table
 go run ./cmd/mcp-tools -params    # plus every tool's input parameters
+```
+
+The own GitHub Activity MCP server (day 17) is also listed there, with id
+`github-activity`:
+
+```
+curl -s -X POST http://localhost:8080/api/mcp/servers/github-activity/connect
+```
+
+Ask the agent about your own activity — the reply carries the tool calls it
+made in `tool_calls`:
+
+```
+curl -s -X POST http://localhost:8080/api/agent/chats/$chat_id/messages \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Какие PR я смёржила на этой неделе?"}'
 ```
