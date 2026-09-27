@@ -91,7 +91,7 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
   sources: {
     title: 'Источники',
     description:
-      'Внешние MCP-серверы, из которых ассистент со временем будет получать данные о вашей рабочей активности. Сейчас — только подключение и список доступных инструментов, без их вызова.',
+      'MCP-серверы — источники данных о вашей рабочей активности. Инструменты собственного сервера GitHub Activity ассистент вызывает в чате, когда вы спрашиваете о своей работе; публичный сервер GitHub — только для просмотра его инструментов.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -420,6 +420,7 @@ function App() {
             task_state: reply.task_state,
             invariant_conflict: reply.invariant_conflict,
             invariant_diff: reply.invariant_diff,
+            tool_calls: reply.tool_calls,
           },
         ]
         return {

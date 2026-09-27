@@ -283,6 +283,45 @@ export interface AgentMessage {
   // exchange caused the agent to record. Distinct from invariant_conflict
   // (violating EXISTING invariants vs. detecting new ones).
   invariant_diff?: InvariantDiff
+  // tool_calls (day 17): MCP tool calls the agent made while producing
+  // this assistant message, in order.
+  tool_calls?: ToolCallRecord[]
+}
+
+export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment'
+
+// ActivityEvent is the GitHub Activity MCP server's normalized unit of work.
+export interface ActivityEvent {
+  id: string
+  source: string
+  kind: ActivityKind
+  repo: string
+  title: string
+  url: string
+  occurred_at: string
+  author: string
+  ref?: string
+}
+
+// ToolCallRecord is one MCP tool call as stored on an assistant message.
+// result is the tool's structured output — for get_activity, events trimmed
+// to 50 (events_omitted counts the rest).
+export interface ToolCallRecord {
+  server: string
+  server_name: string
+  tool: string
+  arguments: Record<string, unknown>
+  ok: boolean
+  error?: string
+  duration_ms: number
+  result?: {
+    events?: ActivityEvent[]
+    events_omitted?: number
+    counts?: Partial<Record<ActivityKind, number>>
+    repos?: unknown[]
+    warnings?: string[]
+    [key: string]: unknown
+  }
 }
 
 export interface CompressionEvent {
@@ -382,6 +421,7 @@ export interface AgentReply extends StrategyState {
   // AgentMessage's own doc comments.
   invariant_conflict?: string[]
   invariant_diff?: InvariantDiff
+  tool_calls?: ToolCallRecord[]
 }
 
 export interface ForceCompressResult {
@@ -628,7 +668,13 @@ export interface McpConnection {
 export interface McpServer {
   id: string
   name: string
-  url: string
+  // http: remote server at url; stdio: local subprocess started by the
+  // backend (command is display-only).
+  transport: 'http' | 'stdio'
+  url?: string
+  command?: string
+  // own: implemented by this product (day 17+), vs a public third-party one.
+  own: boolean
   token_env?: string
   read_only: boolean
   token_set: boolean

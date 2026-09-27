@@ -17,6 +17,7 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
+import { ToolCallList } from '@/components/tool-call-card'
 import { TaskStageHeader, TaskStateBadge } from '@/components/task-state-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -732,6 +733,9 @@ function MessageBubble({
               </button>
             )}
           </div>
+        )}
+        {!isUser && message.tool_calls && message.tool_calls.length > 0 && (
+          <ToolCallList calls={message.tool_calls} />
         )}
         {isUser ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap">
