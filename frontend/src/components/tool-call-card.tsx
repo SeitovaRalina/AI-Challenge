@@ -5,6 +5,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
+  Loader2,
   MessageSquare,
   ScanEye,
   Wrench,
@@ -34,7 +35,7 @@ export function ToolCallList({ calls }: { calls: ToolCallRecord[] }) {
   )
 }
 
-function ToolCallCard({ call }: { call: ToolCallRecord }) {
+export function ToolCallCard({ call }: { call: ToolCallRecord }) {
   const [open, setOpen] = useState(false)
   const events = call.result?.events
   const summary = resultSummary(call)
@@ -91,6 +92,35 @@ function ToolCallCard({ call }: { call: ToolCallRecord }) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// RunningToolCall is a call the agent is making right now (streamed turn):
+// what was asked, with a spinner, until its record arrives and the regular
+// ToolCallCard takes its place.
+export function RunningToolCall({
+  server,
+  tool,
+  args,
+}: {
+  server: string
+  tool: string
+  args: Record<string, unknown>
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2 text-xs">
+      <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span className="text-muted-foreground">Вызываю инструмент</span>
+          <span className="font-mono text-foreground">
+            {server} › {tool}
+          </span>
+        </div>
+        <ArgChips args={args} />
+        <div className="mt-1 text-muted-foreground">Жду ответа сервера…</div>
+      </div>
     </div>
   )
 }

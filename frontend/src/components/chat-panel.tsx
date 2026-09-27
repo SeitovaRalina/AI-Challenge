@@ -17,7 +17,8 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
-import { ToolCallList } from '@/components/tool-call-card'
+import { RunningToolCall, ToolCallCard, ToolCallList } from '@/components/tool-call-card'
+import type { TurnProgress } from '@/lib/turn-progress'
 import { TaskStageHeader, TaskStateBadge } from '@/components/task-state-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -100,6 +101,9 @@ interface ChatPanelProps {
   messages: AgentMessage[]
   estimate: Estimate | null
   isSending: boolean
+  // Live progress of the turn in flight (day 17 streaming): tool calls as
+  // they happen, then the reply while memory is still being updated.
+  turnProgress?: TurnProgress
   error: string | null
   onSend: (message: string, interview?: boolean) => void
   onForceCompress: () => Promise<boolean>
@@ -145,6 +149,7 @@ export function ChatPanel({
   messages,
   estimate,
   isSending,
+  turnProgress,
   error,
   onSend,
   onForceCompress,
@@ -233,7 +238,7 @@ export function ChatPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages, isSending, fanOut])
+  }, [messages, isSending, fanOut, turnProgress])
 
   // Grows the composer with the draft up to COMPOSER_MAX_HEIGHT, so a long
   // message stays visible while typing instead of scrolling inside a
@@ -451,7 +456,12 @@ export function ChatPanel({
               {isLabCoordinator && fanOut && fanOut.length > 0 && (
                 <FanOutPanel fanOut={fanOut} onJumpToChat={onJumpToChat} />
               )}
-              {isSending && <TypingIndicator taskState={isLabChat ? undefined : taskState} />}
+              {isSending && (
+                <TypingIndicator
+                  taskState={isLabChat ? undefined : taskState}
+                  progress={turnProgress}
+                />
+              )}
             </div>
           )}
         </div>
@@ -709,7 +719,10 @@ function MessageBubble({
             : 'border border-border bg-card',
         )}
       >
-        {!isUser && showTaskStage && message.task_state && (
+        {/* A reply built on tool calls answers a question about the user's
+            own activity, not the task being estimated — its stage would
+            only mislead ("Уточнение деталей задачи" under a list of commits). */}
+        {!isUser && showTaskStage && message.task_state && !message.tool_calls?.length && (
           <TaskStageHeader stage={message.task_state.stage} step={message.task_state.step} />
         )}
         {!isUser && message.invariant_conflict && message.invariant_conflict.length > 0 && (
@@ -994,15 +1007,69 @@ function formatTime(iso: string): string {
 // task_state, so this shows the stage as of right before this turn (the
 // chat's current taskState) — the best available answer to "what stage is
 // this reply about to land in", one turn behind at most.
-function TypingIndicator({ taskState }: { taskState?: TaskState }) {
-  return (
-    <div className="flex w-fit max-w-[85%] flex-col self-start rounded-xl border border-border bg-card px-4 py-3">
-      {taskState && <TaskStageHeader stage={taskState.stage} step={taskState.step} />}
-      <div className="flex items-center gap-1">
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+//
+// With a streamed turn (progress), it also shows what the agent is doing:
+// each MCP tool call as it starts (spinner) and returns (its regular card),
+// then the reply itself as soon as it's ready, while memory — the slow tail
+// of a turn — is still being updated. Once the turn calls a tool it's about
+// the user's activity, not the task, so the stage header is dropped.
+function TypingIndicator({ taskState, progress }: { taskState?: TaskState; progress?: TurnProgress }) {
+  const calls = progress?.calls ?? []
+  const answer = progress?.answer
+  const usesTools = calls.length > 0 || Boolean(answer?.tool_calls?.length)
+
+  if (answer) {
+    return (
+      <div className="flex max-w-[85%] flex-col gap-1 self-start">
+        <div className="rounded-xl border border-border bg-card px-4 py-2.5">
+          {answer.tool_calls && answer.tool_calls.length > 0 && <ToolCallList calls={answer.tool_calls} />}
+          <Markdown>{answer.reply}</Markdown>
+        </div>
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Ответ готов, обновляю память ассистента…
+        </span>
       </div>
+    )
+  }
+
+  const running = calls.some((call) => !call.record)
+
+  return (
+    <div
+      className={cn(
+        'flex flex-col self-start rounded-xl border border-border bg-card px-4 py-3',
+        usesTools ? 'w-full max-w-[85%]' : 'w-fit max-w-[85%]',
+      )}
+    >
+      {taskState && !usesTools && <TaskStageHeader stage={taskState.stage} step={taskState.step} />}
+      {calls.length > 0 && (
+        <div className="mb-2 flex flex-col gap-1.5">
+          {calls.map((call) =>
+            call.record ? (
+              <ToolCallCard key={call.id} call={call.record} />
+            ) : (
+              <RunningToolCall key={call.id} server={call.server} tool={call.tool} args={call.arguments} />
+            ),
+          )}
+        </div>
+      )}
+      {!running && (
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground" />
+          </div>
+          {calls.length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {progress?.phase === 'answering'
+                ? 'Формирую ответ по результатам…'
+                : 'Проверяю, хватает ли данных…'}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
