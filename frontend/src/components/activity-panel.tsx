@@ -496,9 +496,18 @@ function formatDate(iso: string): string {
 function formatRelativeFuture(iso: string): string {
   const ms = new Date(iso).getTime() - Date.now()
   if (ms <= 0) return 'сейчас'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `через ${seconds} ${pluralRu(seconds, 'секунду', 'секунды', 'секунд')}`
   const minutes = Math.round(ms / 60000)
-  if (minutes < 1) return 'меньше чем через минуту'
   if (minutes < 60) return `через ${minutes} мин`
   const hours = Math.round(minutes / 60)
   return `через ${hours} ч`
+}
+
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few
+  return many
 }
