@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, ChevronRight, Clock, Loader2 } from 'lucide-react'
 import { cn } from 'cn'
 
@@ -25,6 +25,11 @@ import {
 // has stored so far — a digest and the event feed, both read straight from
 // the Worklog MCP server, the same tools the chat agent calls. No charts
 // here (day 19); the digest is counts, not a picture of them.
+
+// ACTIVITY_STATUS_POLL_MS: the collector runs unattended, so this is how
+// often the open screen checks on it without the person reloading the page.
+const ACTIVITY_STATUS_POLL_MS = 4000
+
 export function ActivityPanel() {
   const [status, setStatus] = useState<CollectorStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -36,15 +41,6 @@ export function ActivityPanel() {
   const [eventsError, setEventsError] = useState<string | null>(null)
   const [repoFilter, setRepoFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<ActivityKind | ''>('')
-
-  const loadStatus = useCallback(() => {
-    getActivityStatus()
-      .then((s) => {
-        setStatus(s)
-        setStatusError(null)
-      })
-      .catch((err) => setStatusError(err instanceof ApiError ? err.message : 'Не удалось загрузить статус сборщика'))
-  }, [])
 
   const loadData = useCallback(() => {
     getActivityDigest(period)
@@ -61,27 +57,49 @@ export function ActivityPanel() {
       .catch((err) => setEventsError(err instanceof ApiError ? err.message : 'Не удалось загрузить события'))
   }, [period, repoFilter, kindFilter])
 
-  useEffect(loadStatus, [loadStatus])
   useEffect(loadData, [loadData])
 
-  // While a run is in progress (just started ourselves, or the schedule
-  // fired), poll until it finishes — then refresh the data it produced.
+  // The collector runs on its own, unattended, so the screen polls its
+  // status rather than waiting for a click — a run started by the schedule
+  // (or, in another tab, another click of "Собрать сейчас") is otherwise
+  // invisible until the page happens to be reloaded. lastRunKeyRef tracks
+  // the most recent run seen (running or finished); when it changes to a
+  // finished run, the digest and event feed that run produced are reloaded
+  // too. The very first poll only seeds the ref — it must not immediately
+  // refetch data that useEffect(loadData) above just fetched.
+  const lastRunKeyRef = useRef<string | null>(null)
+  const seenFirstPollRef = useRef(false)
   useEffect(() => {
-    if (!status?.current) return
-    const timer = setInterval(() => {
+    let cancelled = false
+    const poll = () => {
       getActivityStatus()
         .then((s) => {
+          if (cancelled) return
           setStatus(s)
-          if (!s.current) {
-            // The run that was in progress just finished — its digest and
-            // events are ready to show.
-            loadData()
+          setStatusError(null)
+          const latest = s.current ?? s.runs[0] ?? null
+          const key = latest ? `${latest.trigger}:${latest.started_at}:${latest.status}` : null
+          if (!seenFirstPollRef.current) {
+            seenFirstPollRef.current = true
+            lastRunKeyRef.current = key
+            return
+          }
+          if (key !== lastRunKeyRef.current) {
+            lastRunKeyRef.current = key
+            if (!s.current) loadData()
           }
         })
-        .catch(() => {})
-    }, 2000)
-    return () => clearInterval(timer)
-  }, [status, loadData])
+        .catch((err) => {
+          if (!cancelled) setStatusError(err instanceof ApiError ? err.message : 'Не удалось загрузить статус сборщика')
+        })
+    }
+    poll()
+    const timer = setInterval(poll, ACTIVITY_STATUS_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [loadData])
 
   async function handleCollectNow() {
     setTriggering(true)
