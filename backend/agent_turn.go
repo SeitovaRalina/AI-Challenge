@@ -198,6 +198,16 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	for _, m := range raw {
 		messages = append(messages, chatMessage{Role: m.Role, Content: m.Content})
 	}
+	// Day 17: activity tools are offered to every non-lab chat — withheld
+	// from lab chats for the same reason profile/task state are (day 10's
+	// strategy comparison must stay free of anything else).
+	var tools []llmTool
+	if labID == "" {
+		tools = a.availableTools(ctx)
+	}
+	if len(tools) > 0 {
+		messages = append(messages, chatMessage{Role: "system", Content: toolUseSystemPrompt(time.Now())})
+	}
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
 	maxTokens := 0
@@ -206,7 +216,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 
 	callStart := time.Now()
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, maxTokens, nil)
+	completion, toolCalls, usage, contextTokens, err := a.completeWithTools(ctx, chatID, messages, maxTokens, tools)
 	if err != nil {
 		// A real upstream context-length rejection is handled the same
 		// gracefully-in-chat way as the pre-call guard above, instead of
@@ -239,7 +249,6 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 			// The call genuinely happened and cost real tokens — usage is
 			// still populated even though the content came out unusable, so
 			// the chat's running totals must reflect it.
-			usage := tokenUsageFrom(completion.Usage)
 			reply := truncatedReplyText(maxTokens)
 			return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, usage)
 		}
@@ -248,17 +257,16 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 	assistantSentAt := time.Now()
 
-	usage := tokenUsageFrom(completion.Usage)
 	if usage != nil {
-		log.Printf("agent: chat %s: usage prompt=%d completion=%d total=%d",
-			chatID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+		log.Printf("agent: chat %s: usage prompt=%d completion=%d total=%d (%d tool call(s))",
+			chatID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, len(toolCalls))
 	}
 
 	a.mu.Lock()
 
 	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
-		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict},
+		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict, ToolCalls: toolCalls},
 	)
 	if turn.Estimate != nil {
 		chat.setBranchEstimate(branchID, turn.Estimate)
@@ -277,7 +285,10 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		chat.Title = chatTitleFrom(userMessage)
 	}
 	if usage != nil {
-		chat.setBranchLastContextTokens(branchID, usage.TotalTokens)
+		// The final round's total, not the turn's summed usage: with tool
+		// rounds, usage counts the same prompt several times over, while
+		// contextTokens is how big the conversation actually got.
+		chat.setBranchLastContextTokens(branchID, contextTokens)
 		chat.addUsage(usage)
 	}
 
@@ -287,6 +298,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
 	agentReply.InvariantConflict = turn.InvariantConflict
+	agentReply.ToolCalls = toolCalls
 	a.mu.Unlock()
 
 	// Runs its own (possibly slow) LLM calls outside the lock just released,

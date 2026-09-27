@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +23,24 @@ import (
 // trip, so a hung server can't block an HTTP handler indefinitely.
 const ConnectTimeout = 15 * time.Second
 
-// ServerConfig describes one remote MCP server. The token itself is never
-// stored here — only the name of the env var holding it — so a config can
-// be serialized to the frontend without leaking a secret.
+// ServerConfig describes one MCP server — either remote (streamable HTTP at
+// URL) or local (a subprocess speaking MCP over stdio, built by
+// NewCommand). The token itself is never stored here — only the name of
+// the env var holding it — so a config can be serialized to the frontend
+// without leaking a secret.
 type ServerConfig struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	URL      string `json:"url"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Transport string `json:"transport"` // TransportHTTP | TransportStdio
+	URL       string `json:"url,omitempty"`
+	// Command is a display-only description of a stdio server's process.
+	Command string `json:"command,omitempty"`
+	// NewCommand builds a stdio server's subprocess. It's called on every
+	// (re)connect, since an *exec.Cmd can only be started once.
+	NewCommand func() (*exec.Cmd, error) `json:"-"`
+	// Own marks a server this product implements itself, as opposed to a
+	// third-party public one.
+	Own      bool   `json:"own"`
 	TokenEnv string `json:"token_env,omitempty"`
 	// ReadOnly asks the server to expose only read-only tools. GitHub's
 	// remote MCP honors this via the X-MCP-Readonly header; the product
@@ -140,17 +152,80 @@ func (t *headerTransport) failure() (status int, authRejected bool) {
 	return t.lastFail, t.authRejected
 }
 
+const (
+	TransportHTTP  = "http"
+	TransportStdio = "stdio"
+)
+
 // ListTools opens a session to cfg's server, performs the initialize
 // handshake, collects every page of tools/list, and closes the session.
 // A failure is always returned as *Error.
 func ListTools(ctx context.Context, cfg ServerConfig) (*Result, error) {
-	token := cfg.Token()
-	if cfg.TokenEnv != "" && token == "" {
-		return nil, &Error{Kind: ErrNoToken, Err: fmt.Errorf("%s is not set", cfg.TokenEnv)}
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, ConnectTimeout)
 	defer cancel()
+
+	started := time.Now()
+	session, rt, err := connect(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	result, err := describe(ctx, session, rt)
+	if err != nil {
+		return nil, err
+	}
+	result.DurationMs = time.Since(started).Milliseconds()
+	return result, nil
+}
+
+// describe reads the session's initialize result and every page of
+// tools/list.
+func describe(ctx context.Context, session *mcp.ClientSession, rt *headerTransport) (*Result, error) {
+	init := session.InitializeResult()
+	result := &Result{Tools: []ToolInfo{}}
+	if init != nil {
+		result.ProtocolVersion = init.ProtocolVersion
+		result.Instructions = init.Instructions
+		if init.ServerInfo != nil {
+			result.ServerName = init.ServerInfo.Name
+			result.ServerVersion = init.ServerInfo.Version
+		}
+	}
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, classify(ctx, err, rt)
+		}
+		result.Tools = append(result.Tools, toolInfo(tool))
+	}
+	return result, nil
+}
+
+// connect opens a session over cfg's transport and runs initialize. rt is
+// nil for stdio servers (there's no HTTP status to inspect).
+func connect(ctx context.Context, cfg ServerConfig) (*mcp.ClientSession, *headerTransport, error) {
+	token := cfg.Token()
+	if cfg.TokenEnv != "" && token == "" {
+		return nil, nil, &Error{Kind: ErrNoToken, Err: fmt.Errorf("%s is not set", cfg.TokenEnv)}
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "aiwork-backend", Version: "0.1.0"}, nil)
+
+	if cfg.Transport == TransportStdio {
+		if cfg.NewCommand == nil {
+			return nil, nil, &Error{Kind: ErrUnreachable, Err: errors.New("no command configured")}
+		}
+		cmd, err := cfg.NewCommand()
+		if err != nil {
+			return nil, nil, &Error{Kind: ErrUnreachable, Err: err}
+		}
+		// The subprocess inherits this process's environment (GITHUB_TOKEN
+		// included), so the secret is never put on a command line.
+		session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+		if err != nil {
+			return nil, nil, classify(ctx, err, nil)
+		}
+		return session, nil, nil
+	}
 
 	headers := map[string]string{}
 	if token != "" {
@@ -170,38 +245,19 @@ func ListTools(ctx context.Context, cfg ServerConfig) (*Result, error) {
 		DisableStandaloneSSE: true,
 		MaxRetries:           -1,
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "aiwork-backend", Version: "0.1.0"}, nil)
-
-	started := time.Now()
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, classify(ctx, err, rt)
+		return nil, nil, classify(ctx, err, rt)
 	}
-	defer session.Close()
-
-	init := session.InitializeResult()
-	result := &Result{Tools: []ToolInfo{}}
-	if init != nil {
-		result.ProtocolVersion = init.ProtocolVersion
-		result.Instructions = init.Instructions
-		if init.ServerInfo != nil {
-			result.ServerName = init.ServerInfo.Name
-			result.ServerVersion = init.ServerInfo.Version
-		}
-	}
-
-	for tool, err := range session.Tools(ctx, nil) {
-		if err != nil {
-			return nil, classify(ctx, err, rt)
-		}
-		result.Tools = append(result.Tools, toolInfo(tool))
-	}
-	result.DurationMs = time.Since(started).Milliseconds()
-	return result, nil
+	return session, rt, nil
 }
 
 func classify(ctx context.Context, err error, rt *headerTransport) *Error {
-	status, authRejected := rt.failure()
+	var status int
+	var authRejected bool
+	if rt != nil {
+		status, authRejected = rt.failure()
+	}
 	switch {
 	case authRejected || status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return &Error{Kind: ErrUnauthorized, Status: status, Err: err}
@@ -333,10 +389,11 @@ func DefaultServers() []ServerConfig {
 		url = DefaultGitHubURL
 	}
 	return []ServerConfig{{
-		ID:       "github",
-		Name:     "GitHub MCP (официальный)",
-		URL:      url,
-		TokenEnv: "GITHUB_TOKEN",
-		ReadOnly: true,
+		ID:        "github",
+		Name:      "GitHub MCP (официальный)",
+		Transport: TransportHTTP,
+		URL:       url,
+		TokenEnv:  "GITHUB_TOKEN",
+		ReadOnly:  true,
 	}}
 }

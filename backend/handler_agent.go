@@ -180,7 +180,9 @@ func postAgentMessageHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		// 120s, not 60s: since day 17 a turn may include MCP tool calls, each
+		// adding a GitHub fetch plus another model round.
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
 
 		reply, err := agent.PostChatMessage(ctx, chatID, message, req.Interview)

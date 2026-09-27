@@ -1,0 +1,218 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"aiwork/backend/internal/mcpclient"
+)
+
+// Day 17: the chat agent can call tools from the product's own GitHub
+// Activity MCP server (cmd/mcp-github). The model sees them as ordinary
+// OpenAI function tools; the host runs a small loop — model asks for a
+// call, host forwards it over MCP, feeds the result back — until the model
+// produces its usual JSON envelope.
+
+// maxToolRounds bounds how many times one turn may go back to the model
+// with tool results. The final round offers the tools with tool_choice
+// "none", forcing an answer from what has been gathered so far.
+const maxToolRounds = 4
+
+// maxStoredEvents caps how many events a stored tool-call record keeps for
+// the UI; the model itself always sees the full result.
+const maxStoredEvents = 50
+
+// ToolCallRecord is one MCP tool call made during a turn, stored on that
+// turn's assistant message so the UI can show what the agent called, with
+// which arguments, and what came back — and so it survives a reload.
+type ToolCallRecord struct {
+	Server     string          `json:"server"`
+	ServerName string          `json:"server_name"`
+	Tool       string          `json:"tool"`
+	Arguments  json.RawMessage `json:"arguments"`
+	OK         bool            `json:"ok"`
+	Error      string          `json:"error,omitempty"`
+	DurationMs int64           `json:"duration_ms"`
+	Result     json.RawMessage `json:"result,omitempty"`
+}
+
+// SetActivityTools attaches the GitHub Activity MCP server connection whose
+// tools every non-lab chat turn may call. nil disables tool use.
+func (a *Agent) SetActivityTools(conn *mcpclient.Conn) {
+	a.activityTools = conn
+}
+
+// availableTools lists the MCP server's tools in OpenAI function format.
+// A server that can't be reached right now just means no tools for this
+// turn — the chat still works, it only loses the activity lookup.
+func (a *Agent) availableTools(ctx context.Context) []llmTool {
+	if a.activityTools == nil {
+		return nil
+	}
+	tools, err := a.activityTools.Tools(ctx)
+	if err != nil {
+		log.Printf("agent: activity MCP server unavailable, continuing without tools: %v", err)
+		return nil
+	}
+	out := make([]llmTool, 0, len(tools))
+	for _, t := range tools {
+		var lt llmTool
+		lt.Type = "function"
+		lt.Function.Name = t.Name
+		lt.Function.Description = t.Description
+		lt.Function.Parameters = t.InputSchema
+		out = append(out, lt)
+	}
+	return out
+}
+
+// toolUseSystemPrompt tells the model when to use the activity tools and
+// anchors relative dates ("вчера", "на этой неделе"): the model has no
+// clock of its own and otherwise guesses the date.
+func toolUseSystemPrompt(now time.Time) string {
+	zone, offset := now.Zone()
+	return fmt.Sprintf(`Current local date and time: %s (%s), timezone %s (UTC%+03d:%02d). Weeks start on Monday.
+
+You have read-only tools from the user's own GitHub Activity MCP server. Call get_activity whenever the user asks about their own work: what they did, committed, merged, reviewed or commented on in some period or repository. Call list_repos when they ask which repositories are tracked. Do NOT call any tool for estimating a new task — estimates don't use activity data yet.
+
+When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (interpreted in the same local timezone). The period must not exceed 31 days.
+
+Answer strictly from what the tool returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls. Convert times to the local timezone. If the tool returned no events, say plainly that no activity was found for that period (and which repositories were checked). If it returned warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
+
+After using tools, still answer in the same JSON envelope as always, with "estimate": null.`,
+		now.Format("2006-01-02 15:04"), russianWeekday(now.Weekday()), zone, offset/3600, abs(offset%3600)/60)
+}
+
+func russianWeekday(d time.Weekday) string {
+	return [...]string{"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"}[d]
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// completeWithTools runs the model, executing any tool calls it asks for and
+// feeding their results back, until it produces a final answer. usage sums
+// every round (what the turn cost); contextTokens is the final round's
+// total (how big the prompt actually got).
+func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages []chatMessage, maxTokens int, tools []llmTool) (completion *chatCompletionResponse, records []ToolCallRecord, usage *TokenUsage, contextTokens int, err error) {
+	for round := 0; ; round++ {
+		toolChoice := ""
+		if round == maxToolRounds {
+			toolChoice = "none"
+		}
+		completion, err = a.client.doChatCompletionWithTools(ctx, messages, 0.2, maxTokens, tools, toolChoice)
+		if err != nil {
+			return nil, records, usage, contextTokens, err
+		}
+		roundUsage := tokenUsageFrom(completion.Usage)
+		usage = addTokenUsage(usage, roundUsage)
+		if roundUsage != nil {
+			contextTokens = roundUsage.TotalTokens
+		}
+
+		msg := completion.Choices[0].Message
+		if len(msg.ToolCalls) == 0 || toolChoice == "none" {
+			return completion, records, usage, contextTokens, nil
+		}
+
+		messages = append(messages, chatMessage{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls})
+		for _, call := range msg.ToolCalls {
+			record, content := a.runToolCall(ctx, chatID, call)
+			records = append(records, record)
+			messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+		}
+	}
+}
+
+// runToolCall forwards one model-requested call to the MCP server. It never
+// fails the turn: a bad call becomes a failed record plus an error text the
+// model can explain to the user.
+func (a *Agent) runToolCall(ctx context.Context, chatID string, call llmToolCall) (ToolCallRecord, string) {
+	cfg := a.activityTools.Config()
+	record := ToolCallRecord{Server: cfg.ID, ServerName: cfg.Name, Tool: call.Function.Name, Arguments: json.RawMessage("{}")}
+
+	args := map[string]any{}
+	if call.Function.Arguments != "" {
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+			record.Error = "некорректные аргументы: " + err.Error()
+			return record, "Tool call failed: arguments are not a valid JSON object: " + err.Error()
+		}
+		record.Arguments = json.RawMessage(call.Function.Arguments)
+	}
+
+	started := time.Now()
+	result, err := a.activityTools.Call(ctx, call.Function.Name, args)
+	record.DurationMs = time.Since(started).Milliseconds()
+	if err != nil {
+		log.Printf("agent: chat %s: tool %s failed: %v", chatID, call.Function.Name, err)
+		record.Error = err.Error()
+		return record, "Tool call failed: " + err.Error()
+	}
+	if result.IsError {
+		log.Printf("agent: chat %s: tool %s returned an error: %s", chatID, call.Function.Name, truncateForLog(result.Text))
+		record.Error = result.Text
+		return record, "Tool returned an error: " + result.Text
+	}
+
+	record.OK = true
+	record.Result = compactToolResult(result)
+	log.Printf("agent: chat %s: tool %s(%s) ok in %dms", chatID, call.Function.Name, call.Function.Arguments, record.DurationMs)
+	return record, result.Text
+}
+
+// compactToolResult is the structured result as stored for display, with an
+// "events" array trimmed to maxStoredEvents (the count of dropped ones kept
+// as "events_omitted") so one wide query can't bloat the chat file.
+func compactToolResult(result *mcpclient.CallResult) json.RawMessage {
+	raw := result.Structured
+	if len(raw) == 0 {
+		raw = json.RawMessage(result.Text)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	if events, ok := obj["events"].([]any); ok && len(events) > maxStoredEvents {
+		obj["events"] = events[:maxStoredEvents]
+		obj["events_omitted"] = len(events) - maxStoredEvents
+	}
+	compact, err := json.Marshal(obj)
+	if err != nil {
+		return nil
+	}
+	return compact
+}
+
+// addTokenUsage sums two usages; either may be nil.
+func addTokenUsage(sum, u *TokenUsage) *TokenUsage {
+	if u == nil {
+		return sum
+	}
+	if sum == nil {
+		c := *u
+		if u.CostUsd != nil {
+			cost := *u.CostUsd
+			c.CostUsd = &cost
+		}
+		return &c
+	}
+	sum.PromptTokens += u.PromptTokens
+	sum.CompletionTokens += u.CompletionTokens
+	sum.TotalTokens += u.TotalTokens
+	if u.CostUsd != nil {
+		if sum.CostUsd == nil {
+			cost := *u.CostUsd
+			sum.CostUsd = &cost
+		} else {
+			*sum.CostUsd += *u.CostUsd
+		}
+	}
+	return sum
+}

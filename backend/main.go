@@ -138,7 +138,15 @@ func main() {
 	mux.HandleFunc("GET /api/profile", getProfileHandler(agent))
 	mux.HandleFunc("PATCH /api/profile", updateProfileHandler(agent))
 
-	mcpRegistry := NewMCPRegistry(mcpclient.DefaultServers())
+	// Day 17: the product's own GitHub Activity MCP server. It's listed on
+	// «Источники» next to the public one, and the chat agent holds a
+	// long-lived session to it for tool calls.
+	activityServer := githubActivityServerConfig()
+	activityConn := mcpclient.NewConn(activityServer)
+	defer activityConn.Close()
+	agent.SetActivityTools(activityConn)
+
+	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer}, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 

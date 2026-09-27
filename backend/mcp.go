@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,34 @@ import (
 // Day 16: the first external MCP connection. The backend only performs the
 // initialize handshake and tools/list against a public MCP server and shows
 // the result on the «Источники» screen — no tool is called yet.
+
+// githubActivityServerConfig describes the product's own GitHub Activity MCP
+// server (cmd/mcp-github), started as a stdio subprocess. By default it runs
+// through `go run` from the backend module (cached after the first build);
+// MCP_GITHUB_COMMAND overrides that with a prebuilt binary's command line.
+// The subprocess inherits this process's environment, GITHUB_TOKEN and
+// GITHUB_REPOS included.
+func githubActivityServerConfig() mcpclient.ServerConfig {
+	command := strings.Fields(os.Getenv("MCP_GITHUB_COMMAND"))
+	if len(command) == 0 {
+		command = []string{"go", "run", "./cmd/mcp-github"}
+	}
+	return mcpclient.ServerConfig{
+		ID:        "github-activity",
+		Name:      "GitHub Activity (свой MCP)",
+		Transport: mcpclient.TransportStdio,
+		Command:   strings.Join(command, " "),
+		NewCommand: func() (*exec.Cmd, error) {
+			cmd := exec.Command(command[0], command[1:]...)
+			// Server logs go to stderr; surface them in the backend's own log.
+			cmd.Stderr = os.Stderr
+			return cmd, nil
+		},
+		Own:      true,
+		TokenEnv: "GITHUB_TOKEN",
+		ReadOnly: true,
+	}
+}
 
 // MCPConnection is the outcome of the most recent connect attempt to a
 // server — either the tools it listed, or a classified error.
