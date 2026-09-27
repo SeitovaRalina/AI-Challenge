@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -145,9 +146,36 @@ func main() {
 	activityServer := githubActivityServerConfig()
 	activityConn := mcpclient.NewConn(activityServer)
 	defer activityConn.Close()
-	agent.SetActivityTools(activityConn)
 
-	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer}, mcpclient.DefaultServers()...))
+	// Day 18: the Worklog MCP server stores collected activity in SQLite
+	// next to the rest of this instance's data. One session to it is shared
+	// by the collector and the chat (its calls take milliseconds); the
+	// collector gets its own GitHub session, so a long backfill never
+	// blocks a chat turn's live GitHub call.
+	worklogPath, err := filepath.Abs(filepath.Join(filepath.Dir(dataDir), "worklog.db"))
+	if err != nil {
+		log.Fatalf("worklog path: %v", err)
+	}
+	if v := os.Getenv("WORKLOG_DB"); v != "" {
+		worklogPath = v
+	}
+	log.Printf("worklog database: %s", worklogPath)
+	worklogServer := worklogServerConfig(worklogPath)
+	worklogConn := mcpclient.NewConn(worklogServer)
+	defer worklogConn.Close()
+	agent.AddToolSource(worklogConn, "get_activity_digest", "list_events")
+	agent.AddToolSource(activityConn)
+
+	collectorGitHub := mcpclient.NewConn(activityServer)
+	defer collectorGitHub.Close()
+	collector := NewCollector(collectorGitHub, worklogConn, collectInterval(), filepath.Join(filepath.Dir(dataDir), "collector_runs.json"))
+	collector.Start(context.Background())
+	mux.HandleFunc("GET /api/activity/status", activityStatusHandler(collector))
+	mux.HandleFunc("POST /api/activity/collect", activityCollectHandler(collector))
+	mux.HandleFunc("GET /api/activity/digest", activityDigestHandler(worklogConn))
+	mux.HandleFunc("GET /api/activity/events", activityEventsHandler(worklogConn))
+
+	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer, worklogServer}, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 

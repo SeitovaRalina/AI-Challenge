@@ -46,6 +46,30 @@ func githubActivityServerConfig() mcpclient.ServerConfig {
 	}
 }
 
+// worklogServerConfig describes the product's own Worklog MCP server
+// (cmd/mcp-worklog, day 18): the SQLite store of collected work activity at
+// dbPath. MCP_WORKLOG_COMMAND overrides the default `go run` the same way
+// MCP_GITHUB_COMMAND does.
+func worklogServerConfig(dbPath string) mcpclient.ServerConfig {
+	command := strings.Fields(os.Getenv("MCP_WORKLOG_COMMAND"))
+	if len(command) == 0 {
+		command = []string{"go", "run", "./cmd/mcp-worklog"}
+	}
+	return mcpclient.ServerConfig{
+		ID:        "worklog",
+		Name:      "Worklog (свой MCP)",
+		Transport: mcpclient.TransportStdio,
+		Command:   strings.Join(command, " "),
+		NewCommand: func() (*exec.Cmd, error) {
+			cmd := exec.Command(command[0], command[1:]...)
+			cmd.Env = append(os.Environ(), "WORKLOG_DB="+dbPath)
+			cmd.Stderr = os.Stderr
+			return cmd, nil
+		},
+		Own: true,
+	}
+}
+
 // MCPConnection is the outcome of the most recent connect attempt to a
 // server — either the tools it listed, or a classified error.
 type MCPConnection struct {

@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"aiwork/backend/internal/mcpclient"
 )
 
 // AgentMessage is one chat message as returned to the frontend. Role is
@@ -302,9 +300,10 @@ type Agent struct {
 	profile  *UserProfile               // day 12: single global profile, never nil after NewAgent
 	fanOut   map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
 
-	// activityTools (day 17) is the GitHub Activity MCP server whose tools
-	// non-lab chat turns may call; nil when it isn't configured.
-	activityTools *mcpclient.Conn
+	// toolSources are the MCP servers whose tools non-lab chat turns may
+	// call: GitHub Activity (day 17) and Worklog (day 18). Empty disables
+	// tool use.
+	toolSources []toolSource
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each
