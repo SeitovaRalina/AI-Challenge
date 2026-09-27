@@ -126,7 +126,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_activity",
 		Title:       "Активность в GitHub за период",
-		Description: "Get the authenticated user's own GitHub activity for a period of at most 31 days: commits (on every branch pushed in the period), pull requests opened and merged, reviews submitted and issue/PR comments. Returns normalized events, oldest first, with per-kind counts. Use it to answer questions about what the user worked on.",
+		Description: "Get the authenticated user's own GitHub activity for a period of at most 31 days: commits (on every branch pushed in the period), pull requests opened and merged, reviews submitted and issue/PR comments. Returns normalized events, oldest first, with per-kind counts. Use it only to answer questions about what the user worked on — never to estimate a new task: estimates do not use activity data.",
 		Annotations: readOnly,
 	}, s.getActivity)
 

@@ -205,9 +205,6 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	if labID == "" {
 		tools = a.availableTools(ctx)
 	}
-	if len(tools) > 0 {
-		messages = append(messages, chatMessage{Role: "system", Content: toolUseSystemPrompt(time.Now())})
-	}
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
 	maxTokens := 0

@@ -16,9 +16,10 @@ import (
 // the turn's progress as it happens, as server-sent events, so the UI can
 // show which tool is being called right now instead of a bare "…":
 //
-//	round              {round}                  a model call started (1 = first look, 2+ = after tool results)
+//	routing            {round}                  the tool-routing step is deciding (see completeWithTools)
 //	tool_call_started  {id, server, server_name, tool, arguments}
 //	tool_call_finished {id, record}             record is the ToolCallRecord stored on the message
+//	answering          {}                       the answering call started
 //	answer             AgentReply               the reply is ready; memory updates still running
 //	done               AgentReply               final result, same shape as the plain endpoint's
 //	error              {error}                  Russian message, same as the plain endpoint's
