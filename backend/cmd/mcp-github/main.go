@@ -42,7 +42,7 @@ const (
 type ActivityEvent struct {
 	ID         string    `json:"id" jsonschema:"stable unique id, e.g. github:commit:<sha>"`
 	Source     string    `json:"source" jsonschema:"always github for this server"`
-	Kind       Kind      `json:"kind" jsonschema:"commit, pr_opened, pr_merged, review or issue_comment"`
+	Kind       Kind      `json:"kind" jsonschema:"what happened in the period: commit, pr_opened (PR created — says nothing about whether it is still open), pr_merged, review or issue_comment"`
 	Repo       string    `json:"repo" jsonschema:"owner/repo"`
 	Title      string    `json:"title" jsonschema:"commit subject, PR title or comment excerpt"`
 	URL        string    `json:"url" jsonschema:"link to the event on github.com"`

@@ -234,10 +234,16 @@ func (g *githubAPI) commits(ctx context.Context, repo ghRepo, login string, sinc
 			continue
 		}
 		for _, c := range perBranch[i] {
-			if seen[c.SHA] {
+			// A rebased or cherry-picked copy of a commit gets a new sha but
+			// keeps its message and author date — it is the same piece of
+			// work, so it's deduped on those too, not on sha alone (seen
+			// live: pre-rebase copies merged back in doubled a week's count).
+			copyKey := c.Commit.Message + "\x00" + c.Commit.Author.Date.UTC().Format(time.RFC3339)
+			if seen[c.SHA] || seen[copyKey] {
 				continue
 			}
 			seen[c.SHA] = true
+			seen[copyKey] = true
 			title := firstLine(c.Commit.Message)
 			// Merge commits (two parents) and the squash commit GitHub
 			// creates when a PR is merged are not separate work — the
