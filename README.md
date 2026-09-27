@@ -63,11 +63,23 @@ thin, stateless stdio adapter over the GitHub REST API with two read-only
 tools: `list_repos` and `get_activity(since, until?, repos?)`, which returns
 the user's own commits (on every branch pushed in the period), PRs opened and
 merged, reviews and comments as normalized `ActivityEvent` records in local
-time. The chat agent is given these tools (OpenAI function calling via
-LiteLLM): when the user asks about their own work ("что я делала вчера?"),
-the model calls `get_activity`, the backend forwards the call over MCP and
-feeds the result back, and the reply is written strictly from the returned
-events. Each call is shown above the reply and stored with the chat. See
+time. The chat agent uses these tools through OpenAI function calling via
+LiteLLM, in two steps per turn (`backend/agent_tools.go`): a small routing
+call sees the recent conversation plus the tools and either calls them —
+the backend forwards each call over MCP and feeds the result back — or
+answers `NONE`; then the ordinary answering call writes the reply, strictly
+from the returned events when there are any. Keeping the tools away from the
+answering call is deliberate: offered there, the model kept slipping its
+JSON answer into stray tool calls, even on plain estimate requests. So
+"что я делала вчера?" calls `get_activity`, while estimating a task never
+touches GitHub. A question about activity also doesn't move the chat's task
+stage (it isn't a task description).
+
+Messages are sent over `POST /api/agent/chats/{id}/messages/stream`, which
+reports the turn as server-sent events (`backend/turn_stream.go`): each
+tool call as it starts and returns, then the reply as soon as it's ready
+while memory updates finish. The chat shows these live, and each call stays
+above its reply, stored with the chat. See
 [`days/w04-d17-github-mcp-tool.md`](days/w04-d17-github-mcp-tool.md).
 
 The original day-1 through day-5 one-shot demos (structured output, reasoning
@@ -225,4 +237,14 @@ made in `tool_calls`:
 curl -s -X POST http://localhost:8080/api/agent/chats/$chat_id/messages \
   -H "Content-Type: application/json" \
   -d '{"message":"Какие PR я смёржила на этой неделе?"}'
+```
+
+The same turn with live progress, as server-sent events (`routing`,
+`tool_call_started`, `tool_call_finished`, `answering`, `answer`, then
+`done` with the same reply, or `error`):
+
+```
+curl -sN -X POST http://localhost:8080/api/agent/chats/$chat_id/messages/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Что я делала вчера?"}'
 ```
