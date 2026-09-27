@@ -15,7 +15,7 @@ import type { ActivityEvent, ActivityKind, ToolCallRecord } from '@/lib/api'
 
 const KIND_META: Record<ActivityKind, { label: string; icon: typeof GitCommitHorizontal }> = {
   commit: { label: 'коммит', icon: GitCommitHorizontal },
-  pr_opened: { label: 'PR открыт', icon: GitPullRequest },
+  pr_opened: { label: 'PR создан', icon: GitPullRequest },
   pr_merged: { label: 'PR смёржен', icon: GitMerge },
   review: { label: 'ревью', icon: ScanEye },
   issue_comment: { label: 'комментарий', icon: MessageSquare },

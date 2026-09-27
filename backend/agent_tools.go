@@ -81,7 +81,9 @@ You have read-only tools from the user's own GitHub Activity MCP server. Decide 
 - It asks which repositories are tracked → call list_repos.
 - Anything else — above all describing a task or asking to estimate one, or refining an existing estimate → call NO tools, even if activity was discussed earlier in this chat. Estimates do not use activity data yet.
 
-When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (interpreted in the same local timezone, until is inclusive — for a single day pass the same date as both since and until). The period must not exceed 31 days. Make one call covering exactly the period asked about — don't widen it or split it into several calls.
+When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (interpreted in the same local timezone, until is inclusive — for a single day pass the same date as both since and until). The period must not exceed 31 days. Make one call covering exactly the period asked about — don't widen it or split it into several calls. When the user names a repository, pass it in repos right away (the bare repo name is enough) — no need to call list_repos first or to fetch every repository.
+
+Event kinds describe what happened in the period, not current state: pr_opened means the user created that PR during the period (it may well be merged or closed by now) — say "создала PR", never call such PRs "открытые"; pr_merged means it was merged during the period. The tool knows nothing about a PR's current state beyond these events.
 
 Answer strictly from what the tool returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls. Convert times to the local timezone. If the tool returned no events, say plainly that no activity was found for that period (and which repositories were checked). If it returned warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
 
@@ -131,7 +133,7 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 
 		messages = append(messages, chatMessage{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls})
 		for _, call := range msg.ToolCalls {
-			key := call.Function.Name + "\x00" + call.Function.Arguments
+			key := call.Function.Name + "\x00" + canonicalArgs(call.Function.Arguments)
 			content, seen := answered[key]
 			if !seen {
 				var record ToolCallRecord
@@ -142,6 +144,21 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 			messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
 		}
 	}
+}
+
+// canonicalArgs re-encodes a JSON arguments object with sorted keys, so two
+// calls differing only in key order (seen live: {"since",…,"repos"} then
+// {"repos",…,"since"}) count as the same call. Invalid JSON is returned as is.
+func canonicalArgs(raw string) string {
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(v) // map keys are marshaled in sorted order
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // runToolCall forwards one model-requested call to the MCP server. It never
