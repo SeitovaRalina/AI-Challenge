@@ -76,9 +76,12 @@ func toolUseSystemPrompt(now time.Time) string {
 	zone, offset := now.Zone()
 	return fmt.Sprintf(`Current local date and time: %s (%s), timezone %s (UTC%+03d:%02d). Weeks start on Monday.
 
-You have read-only tools from the user's own GitHub Activity MCP server. Call get_activity whenever the user asks about their own work: what they did, committed, merged, reviewed or commented on in some period or repository. Call list_repos when they ask which repositories are tracked. Do NOT call any tool for estimating a new task — estimates don't use activity data yet.
+You have read-only tools from the user's own GitHub Activity MCP server. Decide from the CURRENT user message alone:
+- It asks about the user's own past work (what they did, committed, merged, reviewed or commented on in some period or repository) → call get_activity.
+- It asks which repositories are tracked → call list_repos.
+- Anything else — above all describing a task or asking to estimate one, or refining an existing estimate → call NO tools, even if activity was discussed earlier in this chat. Estimates do not use activity data yet.
 
-When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (interpreted in the same local timezone). The period must not exceed 31 days.
+When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (interpreted in the same local timezone, until is inclusive — for a single day pass the same date as both since and until). The period must not exceed 31 days. Make one call covering exactly the period asked about — don't widen it or split it into several calls.
 
 Answer strictly from what the tool returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls. Convert times to the local timezone. If the tool returned no events, say plainly that no activity was found for that period (and which repositories were checked). If it returned warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
 
@@ -102,6 +105,10 @@ func abs(n int) int {
 // every round (what the turn cost); contextTokens is the final round's
 // total (how big the prompt actually got).
 func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages []chatMessage, maxTokens int, tools []llmTool) (completion *chatCompletionResponse, records []ToolCallRecord, usage *TokenUsage, contextTokens int, err error) {
+	// The model was observed issuing the very same call twice in one
+	// response; within a turn, an identical call (same tool, same raw
+	// arguments) reuses the first result instead of hitting GitHub again.
+	answered := map[string]string{}
 	for round := 0; ; round++ {
 		toolChoice := ""
 		if round == maxToolRounds {
@@ -124,8 +131,14 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 
 		messages = append(messages, chatMessage{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls})
 		for _, call := range msg.ToolCalls {
-			record, content := a.runToolCall(ctx, chatID, call)
-			records = append(records, record)
+			key := call.Function.Name + "\x00" + call.Function.Arguments
+			content, seen := answered[key]
+			if !seen {
+				var record ToolCallRecord
+				record, content = a.runToolCall(ctx, chatID, call)
+				records = append(records, record)
+				answered[key] = content
+			}
 			messages = append(messages, chatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
 		}
 	}

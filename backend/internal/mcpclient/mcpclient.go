@@ -334,11 +334,16 @@ func schemaType(prop map[string]any) string {
 		}
 		return t
 	case []any:
+		// A nullable field (Go slices/pointers) comes as ["null", "array"];
+		// "null" says nothing useful about the parameter, so drop it and
+		// describe the rest the same way as a single type.
 		parts := make([]string, 0, len(t))
 		for _, v := range t {
-			if s, ok := v.(string); ok {
-				parts = append(parts, s)
+			s, ok := v.(string)
+			if !ok || s == "null" {
+				continue
 			}
+			parts = append(parts, schemaType(map[string]any{"type": s, "items": prop["items"]}))
 		}
 		return strings.Join(parts, " | ")
 	}
