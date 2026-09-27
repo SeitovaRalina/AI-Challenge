@@ -14,7 +14,7 @@ import { cn } from 'cn'
 
 import type { ActivityEvent, ActivityKind, ToolCallRecord } from '@/lib/api'
 
-const KIND_META: Record<ActivityKind, { label: string; icon: typeof GitCommitHorizontal }> = {
+export const KIND_META: Record<ActivityKind, { label: string; icon: typeof GitCommitHorizontal }> = {
   commit: { label: 'коммит', icon: GitCommitHorizontal },
   pr_opened: { label: 'PR создан', icon: GitPullRequest },
   pr_merged: { label: 'PR смёржен', icon: GitMerge },
