@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"aiwork/backend/internal/mcpclient"
@@ -128,6 +129,8 @@ For the user's latest message, data was fetched from the user's own GitHub Activ
 
 Event kinds describe what happened in the period, not current state: pr_opened means the user created that PR during the period (it may well be merged or closed by now) — say "создала PR", never call such PRs "открытые"; pr_merged means it was merged during the period. The tool knows nothing about a PR's current state beyond these events.
 
+This data is final: you cannot call tools or fetch anything else in this step. If the period looks narrow or came back empty — e.g. "на этой неделе" asked on a Monday covers only today — still answer from it, say exactly which period it covers, and if useful suggest asking about a wider one (e.g. the previous week).
+
 Answer strictly from what the tools returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls. Times are already in the local timezone. If no events were found, say plainly that no activity was found for that period (and which repositories were checked). If there were warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
 
 Answer in the same JSON envelope as always, with "estimate": null.`
@@ -171,16 +174,31 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 	}
 
 	emitTurnEvent(ctx, "answering", struct{}{})
-	completion, err = a.client.doChatCompletionWithTools(ctx, answerMessages, 0.2, maxTokens, answerTools, toolChoice)
-	if err != nil {
-		return nil, records, usage, contextTokens, err
+	for attempt := 0; ; attempt++ {
+		completion, err = a.client.doChatCompletionWithTools(ctx, answerMessages, 0.2, maxTokens, answerTools, toolChoice)
+		if err != nil {
+			return nil, records, usage, contextTokens, err
+		}
+		answerUsage := tokenUsageFrom(completion.Usage)
+		usage = addTokenUsage(usage, answerUsage)
+		if answerUsage != nil {
+			contextTokens = answerUsage.TotalTokens
+		}
+		// Seen live: on a Monday, "на этой неделе" covered only that day and
+		// came back empty; the answering call decided it wanted a wider
+		// period, couldn't call a tool (tool_choice "none") and returned no
+		// content at all. One retry with an explicit nudge; a finish_reason
+		// "length" is left to PostMessage's own truncation handling.
+		if attempt > 0 || len(transcript) == 0 || completion.Choices[0].FinishReason == "length" ||
+			strings.TrimSpace(completion.Choices[0].Message.Content) != "" {
+			return completion, records, usage, contextTokens, nil
+		}
+		log.Printf("agent: chat %s: answer after tool calls came back empty, retrying once", chatID)
+		answerMessages = append(answerMessages, chatMessage{
+			Role:    "system",
+			Content: "You returned no answer. You cannot fetch more data in this step. Answer now, in the JSON envelope, from the tool results above — if they are empty or narrower than asked, say which period they cover.",
+		})
 	}
-	answerUsage := tokenUsageFrom(completion.Usage)
-	usage = addTokenUsage(usage, answerUsage)
-	if answerUsage != nil {
-		contextTokens = answerUsage.TotalTokens
-	}
-	return completion, records, usage, contextTokens, nil
 }
 
 // routeTools runs the routing step and executes the tool calls it asks for.
