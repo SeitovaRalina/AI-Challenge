@@ -59,10 +59,10 @@ type DayHours struct {
 }
 
 type HeatmapCell struct {
-	Weekday      int    `json:"weekday" jsonschema:"day of week, 0 is Sunday and 6 is Saturday (Go's time.Weekday)"`
-	WeekdayLabel string `json:"weekday_label"`
-	Hour         int    `json:"hour" jsonschema:"0-23, local time"`
-	Minutes      int    `json:"minutes"`
+	Weekday      int     `json:"weekday" jsonschema:"day of week, 0 is Sunday and 6 is Saturday (Go's time.Weekday)"`
+	WeekdayLabel string  `json:"weekday_label"`
+	Hour         int     `json:"hour" jsonschema:"0-23, local time"`
+	AvgMinutes   float64 `json:"avg_minutes" jsonschema:"average minutes worked in this hour, on this weekday, per such day in the period — e.g. 12 for a Monday 09:00 cell means 12 minutes on average across every Monday in the period; always between 0 and 60, unlike a raw sum across weeks"`
 }
 
 type WeekTrend struct {
@@ -88,7 +88,7 @@ type AnalyticsOutput struct {
 	TimeByProject []ProjectHours    `json:"time_by_project" jsonschema:"most active project first; a repository with no explicit mapping is its own project (its bare name)"`
 	ByDay         []DayHours        `json:"by_day"`
 	CommitTypes   []CommitTypeCount `json:"commit_types" jsonschema:"commits in the period by conventional-commit type (feat/fix/chore/...), most frequent first; counts, not hours — an individual commit has no duration"`
-	Heatmap       []HeatmapCell     `json:"heatmap" jsonschema:"all 168 weekday×hour cells, zero-filled"`
+	Heatmap       []HeatmapCell     `json:"heatmap" jsonschema:"all 168 weekday×hour cells, zero-filled; each cell is an average, not a sum — see HeatmapCell"`
 	WeeklyTrend   []WeekTrend       `json:"weekly_trend" jsonschema:"the last 8 ISO weeks ending with the current one, regardless of the requested period"`
 	Warnings      []string          `json:"warnings,omitempty"`
 }
@@ -152,10 +152,20 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 	}
 	out.CommitTypes = commitTypes
 
+	// A raw sum across every week in the period grows with the period's
+	// length and can exceed 60 minutes for one hour — e.g. 4 Mondays each
+	// contributing time to the same cell. Dividing by how many times that
+	// weekday actually occurred in the period turns it into an average,
+	// naturally bounded to [0, 60] and comparable across period lengths.
+	weekdayOccurrences := countWeekdayOccurrences(f.from, f.to)
 	out.Heatmap = make([]HeatmapCell, 0, 168)
 	for wd := 0; wd < 7; wd++ {
 		for h := 0; h < 24; h++ {
-			out.Heatmap = append(out.Heatmap, HeatmapCell{Weekday: wd, WeekdayLabel: weekdays[wd], Hour: h, Minutes: int(heatmapMinutes[wd][h] + 0.5)})
+			var avg float64
+			if weekdayOccurrences[wd] > 0 {
+				avg = heatmapMinutes[wd][h] / float64(weekdayOccurrences[wd])
+			}
+			out.Heatmap = append(out.Heatmap, HeatmapCell{Weekday: wd, WeekdayLabel: weekdays[wd], Hour: h, AvgMinutes: round1(avg)})
 		}
 	}
 
@@ -230,6 +240,22 @@ func clipInterval(start, end, from, to time.Time) (clippedStart, clippedEnd time
 
 func round2(f float64) float64 {
 	return float64(int(f*100+0.5)) / 100
+}
+
+func round1(f float64) float64 {
+	return float64(int(f*10+0.5)) / 10
+}
+
+// countWeekdayOccurrences counts how many times each weekday's calendar date
+// falls within [from,to] — e.g. how many Mondays a 30-day period contains —
+// for turning a heatmap cell's summed minutes into a per-occurrence average.
+func countWeekdayOccurrences(from, to time.Time) [7]int {
+	var counts [7]int
+	dayStart := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.Local)
+	for d := dayStart; !d.After(to); d = d.AddDate(0, 0, 1) {
+		counts[int(d.Weekday())]++
+	}
+	return counts
 }
 
 // distributeDayHours splits [start,end] across the local calendar days it

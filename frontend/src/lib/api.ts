@@ -915,7 +915,10 @@ export interface HeatmapCell {
   weekday: number // 0 = Sunday .. 6 = Saturday (JS Date convention too)
   weekday_label: string
   hour: number
-  minutes: number
+  // Average minutes worked in this hour, on this weekday, per such day in
+  // the period (0-60) — not a sum across every week, which would grow with
+  // the period's length and could exceed 60.
+  avg_minutes: number
 }
 
 export interface WeekTrend {

@@ -32,25 +32,6 @@ function colorFor(index: number): string {
   return PALETTE[index % PALETTE.length]
 }
 
-const COMMIT_TYPE_LABELS: Record<string, string> = {
-  feat: 'Фичи',
-  fix: 'Фиксы',
-  docs: 'Доки',
-  style: 'Стиль',
-  refactor: 'Рефакторинг',
-  perf: 'Перф',
-  test: 'Тесты',
-  build: 'Билд',
-  ci: 'CI',
-  chore: 'Хозяйство',
-  revert: 'Ревёрты',
-  other: 'Другое',
-}
-
-function commitTypeLabel(type: string): string {
-  return COMMIT_TYPE_LABELS[type] ?? type
-}
-
 const CHART_CONFIG: ChartConfig = {
   hours: { label: 'Часы', color: HOURS_COLOR },
   count: { label: 'Коммитов', color: HOURS_COLOR },
@@ -61,6 +42,10 @@ const PERIODS: { value: AnalyticsPeriod; label: string }[] = [
   { value: '30d', label: '30 дней' },
   { value: '90d', label: '90 дней' },
 ]
+
+function periodLabel(period: AnalyticsPeriod): string {
+  return PERIODS.find((p) => p.value === period)?.label ?? period
+}
 
 export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
@@ -145,17 +130,8 @@ export function AnalyticsPanel() {
                 <BarChart data={data.commit_types} layout="vertical" margin={{ left: 8 }}>
                   <CartesianGrid horizontal={false} />
                   <XAxis type="number" dataKey="count" hide />
-                  <YAxis
-                    type="category"
-                    dataKey="type"
-                    width={100}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={commitTypeLabel}
-                  />
-                  <ChartTooltip
-                    content={<ChartTooltipContent hideLabel formatter={(v) => `${v}`} labelFormatter={(v) => commitTypeLabel(String(v))} />}
-                  />
+                  <YAxis type="category" dataKey="type" width={100} tickLine={false} axisLine={false} />
+                  <ChartTooltip content={<ChartTooltipContent hideLabel formatter={(v) => `${v}`} />} />
                   <Bar dataKey="count" radius={4}>
                     {data.commit_types.map((c, i) => (
                       <Cell key={c.type} fill={colorFor(i)} />
@@ -163,9 +139,6 @@ export function AnalyticsPanel() {
                   </Bar>
                 </BarChart>
               </ChartContainer>
-              <p className="mt-1 text-center text-xs text-muted-foreground">
-                По префиксу коммита: <code>type(scope): описание</code> — берётся только type
-              </p>
             </ChartCard>
           </div>
 
@@ -198,6 +171,9 @@ export function AnalyticsPanel() {
 
           <ChartCard title="Активность по часам и дням недели">
             <Heatmap heatmap={data.heatmap} />
+            <p className="mt-1 text-center text-xs text-muted-foreground">
+              Среднее число минут работы в этот час — по всем таким дням недели за период ({periodLabel(period)})
+            </p>
           </ChartCard>
 
           <p className="text-xs text-muted-foreground">
@@ -270,13 +246,18 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
 const WEEKDAY_DISPLAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
 const HOURS = Array.from({ length: 24 }, (_, h) => h)
 
+// A cell is an average per occurrence of that weekday (see Analytics['heatmap']
+// doc), so it's naturally bounded to [0, 60] — the intensity scale can be
+// fixed against that ceiling instead of the current view's own max, which
+// keeps the same color meaning the same across different periods.
+const HEATMAP_MAX_MINUTES = 60
+
 function Heatmap({ heatmap }: { heatmap: Analytics['heatmap'] }) {
   const byCell = useMemo(() => {
     const m = new Map<string, number>()
-    for (const cell of heatmap) m.set(`${cell.weekday}-${cell.hour}`, cell.minutes)
+    for (const cell of heatmap) m.set(`${cell.weekday}-${cell.hour}`, cell.avg_minutes)
     return m
   }, [heatmap])
-  const maxMinutes = useMemo(() => Math.max(1, ...heatmap.map((c) => c.minutes)), [heatmap])
   const labelByWeekday = useMemo(() => {
     const m = new Map<number, string>()
     for (const cell of heatmap) m.set(cell.weekday, cell.weekday_label)
@@ -296,12 +277,12 @@ function Heatmap({ heatmap }: { heatmap: Analytics['heatmap'] }) {
           <div key={wd} className="contents">
             <div className="flex items-center text-xs text-muted-foreground">{labelByWeekday.get(wd) ?? ''}</div>
             {HOURS.map((h) => {
-              const minutes = byCell.get(`${wd}-${h}`) ?? 0
-              const intensity = minutes / maxMinutes
+              const avgMinutes = byCell.get(`${wd}-${h}`) ?? 0
+              const intensity = avgMinutes / HEATMAP_MAX_MINUTES
               return (
                 <div
                   key={h}
-                  title={`${labelByWeekday.get(wd) ?? ''} ${h}:00 — ${minutes} мин`}
+                  title={`${labelByWeekday.get(wd) ?? ''} ${h}:00 — в среднем ${avgMinutes} мин`}
                   className="aspect-square rounded-sm"
                   style={{
                     backgroundColor:
