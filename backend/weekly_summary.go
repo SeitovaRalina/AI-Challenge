@@ -110,7 +110,11 @@ func weekBounds(t time.Time) (monday, nextMonday time.Time) {
 // exclusive; both calls are capped at "now" by the tools themselves for the
 // current, still-open week.
 func (g *WeeklySummaryGenerator) factsFor(ctx context.Context, from, to time.Time) (WeeklyPeriodFacts, error) {
-	facts := WeeklyPeriodFacts{From: from.Format("2006-01-02"), To: to.AddDate(0, 0, -1).Format("2006-01-02")}
+	displayTo := to.AddDate(0, 0, -1)
+	if now := time.Now(); displayTo.After(now) {
+		displayTo = now
+	}
+	facts := WeeklyPeriodFacts{From: from.Format("2006-01-02"), To: displayTo.Format("2006-01-02")}
 
 	var analytics struct {
 		KPI struct {
@@ -186,10 +190,15 @@ func (g *WeeklySummaryGenerator) Generate(ctx context.Context) (*WeeklySummary, 
 	if err != nil {
 		return nil, err
 	}
+	// maxTokens 0 (no cap), matching every other single-shot chatComplete
+	// call in this codebase: the gateway's model reasons before answering
+	// (see completeWithTools' own note on this), and a low cap here was
+	// observed swallowing the whole budget in reasoning, leaving an empty
+	// answer.
 	text, err := g.client.chatComplete(ctx, []chatMessage{
 		{Role: "system", Content: weeklySummarySystemPrompt(profile)},
 		{Role: "user", Content: string(factsJSON)},
-	}, 0.6, 400, nil)
+	}, 0.6, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("llm: %w", err)
 	}
