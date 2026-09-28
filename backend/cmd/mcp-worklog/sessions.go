@@ -26,6 +26,13 @@ import (
 // type prefix (feat/fix/chore/...) — is a real signal instead, surfaced by
 // get_analytics as a commit-type breakdown (analytics.go), not baked into
 // the session model here.
+//
+// Day 20 adds a second session kind: a calendar meeting (mcp-calendar) is
+// already an exact interval, so it needs no gap-merging — one calendar
+// event becomes one session, kind=meeting, with no repository.
+// get_analytics gives meetings priority when a work and a meeting session
+// overlap (see resolveIntervals), so the same minute is never counted
+// twice.
 
 const (
 	// sessionGap: events more than this far apart start a new session.
@@ -35,28 +42,43 @@ const (
 	sessionLeadIn = 30 * time.Minute
 )
 
-// WorkSession is one contiguous block of work in a single repository,
-// reconstructed from that repository's events that are all within
-// sessionGap of their neighbor. A session never spans more than one
-// repository — working in two repos in the same 45-minute window produces
-// two overlapping sessions, one per repo, each counted in full, rather than
-// one session that silently drops whichever repo had fewer events.
+const (
+	SessionKindWork    = "work"
+	SessionKindMeeting = "meeting"
+)
+
+// WorkSession is one contiguous block of time: either work in a single
+// repository, reconstructed from that repository's events that are all
+// within sessionGap of their neighbor, or a single calendar meeting. A work
+// session never spans more than one repository — working in two repos in
+// the same 45-minute window produces two overlapping sessions, one per
+// repo, each counted in full, rather than one session that silently drops
+// whichever repo had fewer events.
 type WorkSession struct {
 	Start        time.Time `json:"start"`
 	End          time.Time `json:"end"`
-	Repo         string    `json:"repo"`
+	Kind         string    `json:"kind" jsonschema:"work or meeting"`
+	Repo         string    `json:"repo,omitempty" jsonschema:"empty for kind=meeting"`
+	Title        string    `json:"title,omitempty" jsonschema:"meeting title; empty for kind=work"`
 	EventCount   int       `json:"event_count"`
 	FirstEventID string    `json:"first_event_id"`
 	LastEventID  string    `json:"last_event_id"`
 }
 
-// buildSessions groups events (any order) into WorkSessions, independently
-// per repository (see WorkSession's doc for why). Pure: same input always
-// yields the same output, no clock, no I/O — the property that makes it
-// safe to call as its own MCP tool ahead of save_sessions.
+// buildSessions groups events (any order) into WorkSessions: work events
+// (commits, PRs, reviews, comments), independently per repository (see
+// WorkSession's doc for why), and meeting events, one session per calendar
+// occurrence. Pure: same input always yields the same output, no clock, no
+// I/O — the property that makes it safe to call as its own MCP tool ahead
+// of save_sessions.
 func buildSessions(events []activity.Event) []WorkSession {
 	byRepo := map[string][]activity.Event{}
+	var meetings []activity.Event
 	for _, e := range events {
+		if e.Kind == activity.KindMeeting {
+			meetings = append(meetings, e)
+			continue
+		}
 		byRepo[e.Repo] = append(byRepo[e.Repo], e)
 	}
 	repos := make([]string, 0, len(byRepo))
@@ -69,9 +91,29 @@ func buildSessions(events []activity.Event) []WorkSession {
 	for _, repo := range repos {
 		sessions = append(sessions, buildSessionsForRepo(repo, byRepo[repo])...)
 	}
+	sessions = append(sessions, buildMeetingSessions(meetings)...)
 	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].Start.Before(sessions[j].Start) })
 	if sessions == nil {
 		sessions = []WorkSession{}
+	}
+	return sessions
+}
+
+// buildMeetingSessions turns each meeting event into its own session — a
+// calendar event already has exact bounds (OccurredAt..EndsAt), unlike raw
+// GitHub events, so there is nothing to gap-merge. An event with no usable
+// end (EndsAt missing or not after its start) is dropped rather than given
+// a fabricated duration.
+func buildMeetingSessions(events []activity.Event) []WorkSession {
+	sessions := make([]WorkSession, 0, len(events))
+	for _, e := range events {
+		if !e.EndsAt.After(e.OccurredAt) {
+			continue
+		}
+		sessions = append(sessions, WorkSession{
+			Start: e.OccurredAt, End: e.EndsAt, Kind: SessionKindMeeting, Title: e.Title,
+			EventCount: 1, FirstEventID: e.ID, LastEventID: e.ID,
+		})
 	}
 	return sessions
 }
@@ -119,7 +161,7 @@ func (b *sessionBuilder) add(e activity.Event) {
 func (b *sessionBuilder) finish() WorkSession {
 	return WorkSession{
 		Start: b.firstAt.Add(-sessionLeadIn), End: b.lastAt,
-		Repo: b.repo, EventCount: b.eventCount,
+		Kind: SessionKindWork, Repo: b.repo, EventCount: b.eventCount,
 		FirstEventID: b.firstEventID, LastEventID: b.lastEventID,
 	}
 }
@@ -158,9 +200,13 @@ func (s *server) saveSessionsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 		if !sess.End.After(sess.Start) {
 			return nil, SaveSessionsOutput{}, fmt.Errorf("sessions[%d]: end must be after start", i)
 		}
+		kind := sess.Kind
+		if kind == "" {
+			kind = SessionKindWork
+		}
 		rows[i] = storedSession{
 			startAt: sess.Start.Unix(), endAt: sess.End.Unix(),
-			repo: sess.Repo, eventCount: sess.EventCount,
+			kind: kind, repo: sess.Repo, title: sess.Title, eventCount: sess.EventCount,
 			firstEventID: sess.FirstEventID, lastEventID: sess.LastEventID,
 		}
 	}
@@ -214,7 +260,7 @@ func sessionViewFrom(row storedSessionRow) SessionView {
 	return SessionView{
 		WorkSession: WorkSession{
 			Start: time.Unix(row.startAt, 0).In(time.Local), End: time.Unix(row.endAt, 0).In(time.Local),
-			Repo: row.repo, EventCount: row.eventCount,
+			Kind: row.kind, Repo: row.repo, Title: row.title, EventCount: row.eventCount,
 			FirstEventID: row.firstEventID, LastEventID: row.lastEventID,
 		},
 		Project: row.project,

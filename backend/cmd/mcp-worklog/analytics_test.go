@@ -53,6 +53,65 @@ func TestCountWeekdayOccurrences_HeatmapAverageStaysUnder61Minutes(t *testing.T)
 	}
 }
 
+func workRow(repo, project string, start, end time.Time) storedSessionRow {
+	return storedSessionRow{
+		storedSession: storedSession{startAt: start.Unix(), endAt: end.Unix(), kind: SessionKindWork, repo: repo},
+		project:       project,
+	}
+}
+
+func meetingRow(title string, start, end time.Time) storedSessionRow {
+	return storedSessionRow{storedSession: storedSession{startAt: start.Unix(), endAt: end.Unix(), kind: SessionKindMeeting, title: title}}
+}
+
+func sumHours(blocks []block, kind string) float64 {
+	var total float64
+	for _, b := range blocks {
+		if b.Kind == kind {
+			total += b.End.Sub(b.Start).Hours()
+		}
+	}
+	return total
+}
+
+// TestResolveIntervals_MeetingTakesPriorityOverWork is the fix for the
+// double-counting a naive sum would produce: a work session and a meeting
+// that overlap must not both claim the overlapping minutes.
+func TestResolveIntervals_MeetingTakesPriorityOverWork(t *testing.T) {
+	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
+	rows := []storedSessionRow{
+		workRow("org/repo", "repo", base, base.Add(2*time.Hour)),          // 09:00-11:00
+		meetingRow("Sync", base.Add(time.Hour), base.Add(90*time.Minute)), // 10:00-10:30, fully inside the work session
+	}
+	blocks := resolveIntervals(rows, base, base.Add(3*time.Hour))
+
+	work, meeting := sumHours(blocks, SessionKindWork), sumHours(blocks, SessionKindMeeting)
+	if got, want := meeting, 0.5; got != want {
+		t.Errorf("meeting hours: want %v, got %v", want, got)
+	}
+	if got, want := work, 1.5; got != want {
+		t.Errorf("work hours: want %v (2h minus the 30m meeting overlap), got %v", want, got)
+	}
+	if total := work + meeting; total != 2.0 {
+		t.Errorf("total tracked time: want 2h (the work session's own span, not 2.5h double-counted), got %v", total)
+	}
+}
+
+// TestResolveIntervals_OverlappingMeetingsMergeNotDoubleCounted checks the
+// other half of the same bug: two overlapping meetings must count their
+// shared time once, not twice.
+func TestResolveIntervals_OverlappingMeetingsMergeNotDoubleCounted(t *testing.T) {
+	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
+	rows := []storedSessionRow{
+		meetingRow("A", base, base.Add(time.Hour)),                          // 09:00-10:00
+		meetingRow("B", base.Add(30*time.Minute), base.Add(90*time.Minute)), // 09:30-10:30, overlaps A by 30m
+	}
+	blocks := resolveIntervals(rows, base, base.Add(2*time.Hour))
+	if got, want := sumHours(blocks, SessionKindMeeting), 1.5; got != want {
+		t.Errorf("meeting hours: want %v (union of 09:00-10:30, not 2h summed), got %v", want, got)
+	}
+}
+
 func TestCountWeekdayOccurrences_SingleDay(t *testing.T) {
 	day := time.Date(2026, 9, 28, 0, 0, 0, 0, time.Local) // a Monday
 	counts := countWeekdayOccurrences(day, day)

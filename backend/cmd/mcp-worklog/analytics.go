@@ -22,6 +22,12 @@ import (
 // commits, that split was almost always 100% development and told the user
 // nothing. A conventional-commit type prefix (feat/fix/chore/...) in their
 // own commit messages is a real signal instead — see commitTypeBreakdown.
+//
+// Day 20 adds meeting sessions into the same picture: resolveIntervals turns
+// the period's sessions (work and meeting) into non-overlapping, kind-tagged
+// blocks, giving meetings priority over work wherever they overlap, so every
+// chart below (KPI, by-day, heatmap) reads real, deduplicated time — see
+// resolveIntervals' own doc.
 
 // maxAnalyticsByDayDays bounds how long a period may be for by_day to list
 // every day (empty ones included); the screen only ever asks for up to 90
@@ -40,9 +46,11 @@ type AnalyticsInput struct {
 }
 
 type KPI struct {
-	TotalHours    float64 `json:"total_hours"`
+	TotalHours    float64 `json:"total_hours" jsonschema:"work + meeting hours, deduplicated — a minute inside a meeting is never also counted as work"`
+	MeetingHours  float64 `json:"meeting_hours"`
 	ActiveDays    int     `json:"active_days"`
-	SessionsCount int     `json:"sessions_count"`
+	SessionsCount int     `json:"sessions_count" jsonschema:"work sessions only"`
+	MeetingsCount int     `json:"meetings_count"`
 	RepoCount     int     `json:"repo_count"`
 	ProjectCount  int     `json:"project_count"`
 }
@@ -53,9 +61,11 @@ type ProjectHours struct {
 }
 
 type DayHours struct {
-	Date       string  `json:"date" jsonschema:"YYYY-MM-DD, local time"`
-	Weekday    string  `json:"weekday"`
-	TotalHours float64 `json:"total_hours"`
+	Date         string  `json:"date" jsonschema:"YYYY-MM-DD, local time"`
+	Weekday      string  `json:"weekday"`
+	WorkHours    float64 `json:"work_hours" jsonschema:"meeting overlap already subtracted"`
+	MeetingHours float64 `json:"meeting_hours"`
+	TotalHours   float64 `json:"total_hours" jsonschema:"work_hours + meeting_hours"`
 }
 
 type HeatmapCell struct {
@@ -105,7 +115,8 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 
 	out := AnalyticsOutput{From: f.from.In(time.Local), To: f.to.In(time.Local), Timezone: activity.LocalZoneName(), Warnings: warnings}
 	projectHours := map[string]float64{}
-	dayHours := map[string]*DayHours{}
+	workDayHours := map[string]float64{}
+	meetingDayHours := map[string]float64{}
 	activeDays := map[string]bool{}
 	repos := map[string]bool{}
 	projects := map[string]bool{}
@@ -113,25 +124,35 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 
 	for _, row := range rows {
 		sess := sessionViewFrom(row)
-		start, end, ok := clipInterval(sess.Start, sess.End, f.from, f.to)
-		if !ok {
+		if _, _, ok := clipInterval(sess.Start, sess.End, f.from, f.to); !ok {
 			continue
 		}
-		hours := end.Sub(start).Hours()
+		if sess.Kind == SessionKindMeeting {
+			out.KPI.MeetingsCount++
+		} else {
+			out.KPI.SessionsCount++
+		}
+	}
 
-		out.KPI.SessionsCount++
+	for _, b := range resolveIntervals(rows, f.from, f.to) {
+		hours := b.End.Sub(b.Start).Hours()
 		out.KPI.TotalHours += hours
-		projectHours[sess.Project] += hours
-		repos[sess.Repo] = true
-		projects[sess.Project] = true
-
-		distributeDayHours(dayHours, activeDays, start, end)
-		distributeHeatmapMinutes(&heatmapMinutes, start, end)
+		if b.Kind == SessionKindMeeting {
+			out.KPI.MeetingHours += hours
+			addToDayMap(meetingDayHours, activeDays, b.Start, b.End)
+			continue
+		}
+		projectHours[b.Project] += hours
+		repos[b.Repo] = true
+		projects[b.Project] = true
+		addToDayMap(workDayHours, activeDays, b.Start, b.End)
+		distributeHeatmapMinutes(&heatmapMinutes, b.Start, b.End)
 	}
 	out.KPI.ActiveDays = len(activeDays)
 	out.KPI.RepoCount = len(repos)
 	out.KPI.ProjectCount = len(projects)
 	out.KPI.TotalHours = round2(out.KPI.TotalHours)
+	out.KPI.MeetingHours = round2(out.KPI.MeetingHours)
 
 	out.TimeByProject = make([]ProjectHours, 0, len(projectHours))
 	for project, hours := range projectHours {
@@ -144,7 +165,7 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 		return out.TimeByProject[i].Project < out.TimeByProject[j].Project
 	})
 
-	out.ByDay = buildByDay(dayHours, f.from, f.to)
+	out.ByDay = buildByDay(workDayHours, meetingDayHours, f.from, f.to)
 
 	commitTypes, err := s.commitTypeBreakdown(ctx, f.from, f.to)
 	if err != nil {
@@ -258,26 +279,115 @@ func countWeekdayOccurrences(from, to time.Time) [7]int {
 	return counts
 }
 
-// distributeDayHours splits [start,end] across the local calendar days it
-// spans.
-func distributeDayHours(days map[string]*DayHours, activeDays map[string]bool, start, end time.Time) {
+// addToDayMap splits [start,end] across the local calendar days it spans,
+// accumulating hours into m and marking each touched day active.
+func addToDayMap(m map[string]float64, activeDays map[string]bool, start, end time.Time) {
 	cur := start
 	for cur.Before(end) {
 		dayStart := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, time.Local)
 		dayEnd := dayStart.AddDate(0, 0, 1)
 		segEnd := minTime(dayEnd, end)
-		hours := segEnd.Sub(cur).Hours()
-
 		key := dayStart.Format("2006-01-02")
-		d := days[key]
-		if d == nil {
-			d = &DayHours{Date: key, Weekday: weekdays[dayStart.Weekday()]}
-			days[key] = d
-		}
-		d.TotalHours += hours
+		m[key] += segEnd.Sub(cur).Hours()
 		activeDays[key] = true
 		cur = segEnd
 	}
+}
+
+// block is a kind-tagged, non-overlapping span of time — the unit
+// resolveIntervals produces and get_day_timeline exposes directly.
+type block struct {
+	Start, End time.Time
+	Kind       string
+	Repo       string
+	Project    string
+	Titles     []string
+}
+
+// resolveIntervals turns a period's session rows into kind-tagged,
+// non-overlapping blocks clipped to [from,to]: meetings are merged where
+// they themselves overlap (so two overlapping meetings are never counted as
+// two meetings' worth of time), and any work session time that falls inside
+// the resulting meeting union is subtracted — meetings take priority, so the
+// same minute is never counted as both work and meeting.
+func resolveIntervals(rows []storedSessionRow, from, to time.Time) []block {
+	var meetingsRaw, work []block
+	for _, row := range rows {
+		sess := sessionViewFrom(row)
+		start, end, ok := clipInterval(sess.Start, sess.End, from, to)
+		if !ok {
+			continue
+		}
+		b := block{Start: start, End: end, Kind: sess.Kind, Repo: sess.Repo, Project: sess.Project}
+		if sess.Title != "" {
+			b.Titles = []string{sess.Title}
+		}
+		if sess.Kind == SessionKindMeeting {
+			meetingsRaw = append(meetingsRaw, b)
+		} else {
+			work = append(work, b)
+		}
+	}
+	meetings := mergeMeetings(meetingsRaw)
+
+	out := make([]block, 0, len(work)+len(meetings))
+	for _, w := range work {
+		for _, seg := range subtractBlocks(w, meetings) {
+			seg.Kind, seg.Repo, seg.Project = SessionKindWork, w.Repo, w.Project
+			out = append(out, seg)
+		}
+	}
+	out = append(out, meetings...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+	return out
+}
+
+// mergeMeetings sorts and merges overlapping (or touching) meeting blocks
+// into a union, concatenating the titles of whatever merged into each one.
+func mergeMeetings(raw []block) []block {
+	if len(raw) == 0 {
+		return nil
+	}
+	sort.Slice(raw, func(i, j int) bool { return raw[i].Start.Before(raw[j].Start) })
+	merged := []block{raw[0]}
+	for _, b := range raw[1:] {
+		last := &merged[len(merged)-1]
+		if !b.Start.After(last.End) {
+			if b.End.After(last.End) {
+				last.End = b.End
+			}
+			last.Titles = append(last.Titles, b.Titles...)
+			continue
+		}
+		merged = append(merged, b)
+	}
+	for i := range merged {
+		merged[i].Kind = SessionKindMeeting
+	}
+	return merged
+}
+
+// subtractBlocks removes from w whatever time falls inside any of meetings
+// (already sorted, non-overlapping), returning the remaining piece(s).
+func subtractBlocks(w block, meetings []block) []block {
+	segments := []block{w}
+	for _, m := range meetings {
+		var next []block
+		for _, seg := range segments {
+			if !m.Start.Before(seg.End) || !m.End.After(seg.Start) {
+				next = append(next, seg) // no overlap
+				continue
+			}
+			if m.Start.After(seg.Start) {
+				next = append(next, block{Start: seg.Start, End: m.Start})
+			}
+			if m.End.Before(seg.End) {
+				next = append(next, block{Start: m.End, End: seg.End})
+			}
+		}
+		segments = next
+	}
+	return segments
 }
 
 // distributeHeatmapMinutes splits [start,end] across the local weekday×hour
@@ -296,30 +406,41 @@ func distributeHeatmapMinutes(grid *[7][24]float64, start, end time.Time) {
 // buildByDay renders the accumulated per-day totals as a sorted list — every
 // day in [from,to] when the period is short enough to make that useful,
 // otherwise only days with any activity.
-func buildByDay(days map[string]*DayHours, from, to time.Time) []DayHours {
+func buildByDay(workHours, meetingHours map[string]float64, from, to time.Time) []DayHours {
+	dayOf := func(key string) DayHours {
+		w, m := workHours[key], meetingHours[key]
+		return DayHours{WorkHours: round2(w), MeetingHours: round2(m), TotalHours: round2(w + m)}
+	}
+	days := map[string]bool{}
+	for k := range workHours {
+		days[k] = true
+	}
+	for k := range meetingHours {
+		days[k] = true
+	}
+
 	out := []DayHours{}
 	dayStart := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.Local)
 	if to.Sub(dayStart) <= maxAnalyticsByDayDays*24*time.Hour {
 		for d := dayStart; !d.After(to); d = d.AddDate(0, 0, 1) {
 			key := d.Format("2006-01-02")
-			if day := days[key]; day != nil {
-				out = append(out, roundDay(*day))
-			} else {
-				out = append(out, DayHours{Date: key, Weekday: weekdays[d.Weekday()]})
-			}
+			day := dayOf(key)
+			day.Date, day.Weekday = key, weekdays[d.Weekday()]
+			out = append(out, day)
 		}
 		return out
 	}
-	for _, d := range days {
-		out = append(out, roundDay(*d))
+	for key := range days {
+		day := dayOf(key)
+		day.Date = key
+		out = append(out, day)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	for i := range out {
+		t, _ := time.ParseInLocation("2006-01-02", out[i].Date, time.Local)
+		out[i].Weekday = weekdays[t.Weekday()]
+	}
 	return out
-}
-
-func roundDay(d DayHours) DayHours {
-	d.TotalHours = round2(d.TotalHours)
-	return d
 }
 
 // weeklyTrend queries sessions independently of get_analytics' own period —
@@ -335,17 +456,12 @@ func (s *server) weeklyTrend(ctx context.Context) ([]WeekTrend, error) {
 		return nil, err
 	}
 	byWeek := map[string]float64{}
-	for _, row := range rows {
-		sess := sessionViewFrom(row)
-		start, end, ok := clipInterval(sess.Start, sess.End, trendStart, now)
-		if !ok {
-			continue
-		}
-		cur := start
-		for cur.Before(end) {
+	for _, b := range resolveIntervals(rows, trendStart, now) {
+		cur := b.Start
+		for cur.Before(b.End) {
 			weekStart := mondayOf(cur)
 			weekEnd := weekStart.AddDate(0, 0, 7)
-			segEnd := minTime(weekEnd, end)
+			segEnd := minTime(weekEnd, b.End)
 			byWeek[weekStart.Format("2006-01-02")] += segEnd.Sub(cur).Hours()
 			cur = segEnd
 		}

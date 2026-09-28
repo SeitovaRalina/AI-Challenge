@@ -26,6 +26,11 @@
 //   - get_analytics       — KPIs, time by project/day, a commit-type
 //     breakdown, a weekday×hour heatmap, and an 8-week trend
 //
+// Day 20 adds meetings (kind=meeting events, from mcp-calendar) into the
+// same events/sessions tables, and one more read tool:
+//
+//   - get_day_timeline    — one day as non-overlapping work/meeting blocks
+//
 // It speaks MCP over stdio. WORKLOG_DB is the database file path (created if
 // missing). Stdout carries the protocol, so all logging goes to stderr.
 package main
@@ -59,7 +64,7 @@ const (
 
 var validKinds = map[activity.Kind]bool{
 	activity.KindCommit: true, activity.KindPROpened: true, activity.KindPRMerged: true,
-	activity.KindReview: true, activity.KindIssueComment: true,
+	activity.KindReview: true, activity.KindIssueComment: true, activity.KindMeeting: true,
 }
 
 type server struct {
@@ -123,7 +128,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build_sessions",
 		Title:       "Собрать сессии из событий",
-		Description: "Pure computation, no storage: groups activity events into work sessions, independently per repository — contiguous blocks where consecutive events in the same repository are no more than 45 minutes apart, each starting 30 minutes before its first event. A session never spans two repositories, so working in several repos in the same window still counts every one of them in full. Each session reports its category counts (development_events/review_events/other_events) for a proportional hours split, plus a dominant category as a convenience label. Does not read or write the database; pass it save_sessions' input to persist the result.",
+		Description: "Pure computation, no storage: groups activity events into sessions. Commit/PR/review/comment events become work sessions, independently per repository — contiguous blocks where consecutive events in the same repository are no more than 45 minutes apart, each starting 30 minutes before its first event; a session never spans two repositories, so working in several repos in the same window still counts every one of them in full. Meeting events (kind=meeting, from the Calendar server) each become their own meeting session directly, using their own start/end — no gap-merging, since a calendar event already has exact bounds. Does not read or write the database; pass it save_sessions' input to persist the result.",
 		Annotations: readOnly,
 	}, s.buildSessionsTool)
 
@@ -137,7 +142,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_sessions",
 		Title:       "Сессии из журнала",
-		Description: "List the user's stored work sessions for a period, each with its category counts, repository, event count, and project (the repository's own bare name unless explicitly mapped to something else). Answers from the local work history — no call to GitHub.",
+		Description: "List the user's stored sessions for a period: work sessions (repository, event count, project — the repository's own bare name unless explicitly mapped to something else) and meeting sessions (title) side by side, distinguished by kind. Answers from the local work history — no call to GitHub or the calendar.",
 		Annotations: readOnly,
 	}, s.getSessions)
 
@@ -158,9 +163,16 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_analytics",
 		Title:       "Аналитика по сессиям",
-		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total hours, active days, sessions, repos, projects), hours by project (a repository with no explicit project mapping is its own project), hours by day, a commit-type breakdown (feat/fix/chore/... parsed from commit messages, by count), a weekday×hour heatmap, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). No LLM, no productivity score — counts and hours only.",
+		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total and meeting hours, active days, work sessions, meetings, repos, projects), hours by project (a repository with no explicit project mapping is its own project), hours by day (split into work/meeting/total), a commit-type breakdown (feat/fix/chore/... parsed from commit messages, by count), a weekday×hour heatmap of work only, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). Meetings take priority over work wherever they overlap, so time is never double-counted. No LLM, no productivity score — counts and hours only.",
 		Annotations: readOnly,
 	}, s.getAnalytics)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_day_timeline",
+		Title:       "Таймлайн дня",
+		Description: "One day laid out as non-overlapping blocks — work (repository, project) or meeting (title) — ready to draw as a Gantt-style day view, or to answer 'what did I do on <day>' from a single call instead of combining get_sessions results by hand. A meeting always wins any time it shares with work.",
+		Annotations: readOnly,
+	}, s.getDayTimeline)
 
 	log.Printf("database %s", path)
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
