@@ -61,7 +61,7 @@ type CategoryHours struct {
 }
 
 type HeatmapCell struct {
-	Weekday      int    `json:"weekday" jsonschema:"0=Sunday..6=Saturday, matching Go's time.Weekday"`
+	Weekday      int    `json:"weekday" jsonschema:"day of week, 0 is Sunday and 6 is Saturday (Go's time.Weekday)"`
 	WeekdayLabel string `json:"weekday_label"`
 	Hour         int    `json:"hour" jsonschema:"0-23, local time"`
 	Minutes      int    `json:"minutes"`

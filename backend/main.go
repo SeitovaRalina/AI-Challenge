@@ -175,6 +175,12 @@ func main() {
 	mux.HandleFunc("GET /api/activity/digest", activityDigestHandler(worklogConn))
 	mux.HandleFunc("GET /api/activity/events", activityEventsHandler(worklogConn))
 
+	// Day 19: Analytics screen — sessions/KPIs/charts and the repo->project
+	// mapping, both served straight from the Worklog MCP server.
+	mux.HandleFunc("GET /api/analytics", getAnalyticsHandler(worklogConn))
+	mux.HandleFunc("GET /api/analytics/repos", listRepoProjectsHandler(worklogConn))
+	mux.HandleFunc("PATCH /api/analytics/repos/{repo...}", setRepoProjectHandler(worklogConn))
+
 	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer, worklogServer}, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
