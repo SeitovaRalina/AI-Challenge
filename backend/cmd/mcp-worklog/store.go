@@ -43,6 +43,29 @@ CREATE TABLE IF NOT EXISTS sync_state (
 	synced_until INTEGER NOT NULL, -- end of it: the collector's cursor
 	updated_at   INTEGER NOT NULL
 );
+
+-- sessions is derived data (day 19): rebuilt wholesale from events by
+-- save_sessions every pipeline run, never hand-edited, so there's nothing to
+-- migrate or merge — see save_sessions in sessions.go.
+CREATE TABLE IF NOT EXISTS sessions (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	start_at       INTEGER NOT NULL,
+	end_at         INTEGER NOT NULL,
+	category       TEXT    NOT NULL, -- development | review | other
+	repo           TEXT    NOT NULL, -- the session's dominant repository
+	event_count    INTEGER NOT NULL,
+	first_event_id TEXT    NOT NULL,
+	last_event_id  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_start_at ON sessions (start_at);
+
+-- repo_projects maps a repository to a user-chosen project label, purely for
+-- grouping in analytics — resolved at query time (not baked into a session
+-- row), so relabeling a repo never requires rebuilding sessions.
+CREATE TABLE IF NOT EXISTS repo_projects (
+	repo    TEXT PRIMARY KEY,
+	project TEXT NOT NULL
+);
 `
 
 func openStore(path string) (*store, error) {
@@ -249,6 +272,156 @@ func (s *store) repoNames(ctx context.Context) ([]string, error) {
 		repos = append(repos, r)
 	}
 	return repos, rows.Err()
+}
+
+// storedSession mirrors the sessions table row shape (see build_sessions in
+// sessions.go for the WorkSession the tool layer exposes).
+type storedSession struct {
+	startAt, endAt            int64
+	category, repo            string
+	eventCount                int
+	firstEventID, lastEventID string
+}
+
+// replaceSessions swaps the whole sessions table for a new set in one
+// transaction — see the sessions table's comment in schema for why a
+// derived table is replaced wholesale rather than merged.
+func (s *store) replaceSessions(ctx context.Context, sessions []storedSession) (previous int, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&previous); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions`); err != nil {
+		return 0, err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sessions (start_at, end_at, category, repo, event_count, first_event_id, last_event_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, sess := range sessions {
+		if _, err := stmt.ExecContext(ctx, sess.startAt, sess.endAt, sess.category, sess.repo, sess.eventCount, sess.firstEventID, sess.lastEventID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return previous, nil
+}
+
+// sessionFilter selects sessions in [from, to] (inclusive, by start time),
+// optionally narrowed to repositories or — via a join against
+// repo_projects — a project name. "Без проекта" (unmappedProjectLabel)
+// matches any repo absent from repo_projects.
+type sessionFilter struct {
+	from, to time.Time
+	repos    []string
+	project  string // "" means no project filter
+}
+
+const unmappedProjectLabel = "Без проекта"
+
+func (f sessionFilter) where() (string, []any) {
+	clauses := []string{"s.start_at <= ?", "s.end_at >= ?"}
+	args := []any{f.to.Unix(), f.from.Unix()}
+	if len(f.repos) > 0 {
+		clauses = append(clauses, "s.repo IN ("+placeholders(len(f.repos))+")")
+		for _, r := range f.repos {
+			args = append(args, r)
+		}
+	}
+	if f.project == unmappedProjectLabel {
+		clauses = append(clauses, "rp.project IS NULL")
+	} else if f.project != "" {
+		clauses = append(clauses, "rp.project = ?")
+		args = append(args, f.project)
+	}
+	return strings.Join(clauses, " AND "), args
+}
+
+// storedSessionRow is a session as read back, with its project already
+// resolved against the current repo_projects mapping.
+type storedSessionRow struct {
+	storedSession
+	project string
+}
+
+const sessionSelectJoin = `FROM sessions s LEFT JOIN repo_projects rp ON rp.repo = s.repo`
+
+func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionRow, error) {
+	where, args := f.where()
+	query := `SELECT s.start_at, s.end_at, s.category, s.repo, s.event_count, s.first_event_id, s.last_event_id, rp.project ` +
+		sessionSelectJoin + ` WHERE ` + where + ` ORDER BY s.start_at`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []storedSessionRow
+	for rows.Next() {
+		var row storedSessionRow
+		var project sql.NullString
+		if err := rows.Scan(&row.startAt, &row.endAt, &row.category, &row.repo, &row.eventCount, &row.firstEventID, &row.lastEventID, &project); err != nil {
+			return nil, err
+		}
+		row.project = unmappedProjectLabel
+		if project.Valid && project.String != "" {
+			row.project = project.String
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// setRepoProject upserts a repo's project label; an empty project clears the
+// mapping (the repo falls back to "Без проекта").
+func (s *store) setRepoProject(ctx context.Context, repo, project string) error {
+	if project == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM repo_projects WHERE repo = ?`, repo)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repo_projects (repo, project) VALUES (?, ?)
+		ON CONFLICT (repo) DO UPDATE SET project = excluded.project`, repo, project)
+	return err
+}
+
+// repoProjectRow is one repository as known to the worklog, with its
+// project mapping if any.
+type repoProjectRow struct {
+	repo    string
+	project string // "" when unmapped
+}
+
+// repoProjects lists every repository seen in events, left-joined with its
+// project mapping — so the caller can offer every repo for mapping, not
+// just the ones already mapped.
+func (s *store) repoProjects(ctx context.Context) ([]repoProjectRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.repo, rp.project FROM (SELECT DISTINCT repo FROM events) e
+		LEFT JOIN repo_projects rp ON rp.repo = e.repo ORDER BY e.repo`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []repoProjectRow
+	for rows.Next() {
+		var row repoProjectRow
+		var project sql.NullString
+		if err := rows.Scan(&row.repo, &project); err != nil {
+			return nil, err
+		}
+		if project.Valid {
+			row.project = project.String
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 func placeholders(n int) string {

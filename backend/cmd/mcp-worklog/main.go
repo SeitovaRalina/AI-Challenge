@@ -13,6 +13,17 @@
 //   - get_activity_digest — aggregated counts for a period: by kind,
 //     repository and day
 //
+// Day 19 adds the composition pipeline that turns events into work sessions,
+// and the analytics read side over them:
+//
+//   - build_sessions      — pure: groups events into WorkSession blocks
+//   - save_sessions       — replaces the stored sessions with a new set
+//   - get_sessions        — stored sessions for a period
+//   - set_repo_project    — map a repository to a project label
+//   - get_repo_projects   — every known repository and its mapping
+//   - get_analytics       — KPIs, time by project/day, composition, a
+//     weekday×hour heatmap, and an 8-week trend — all from stored sessions
+//
 // It speaks MCP over stdio. WORKLOG_DB is the database file path (created if
 // missing). Stdout carries the protocol, so all logging goes to stderr.
 package main
@@ -106,6 +117,48 @@ func main() {
 		Description: "Aggregated summary of the user's stored work activity for a period: total, counts per kind, per repository and per day, active days, first and last event. Answers from the local work history — fast, no call to GitHub. Use it for 'how much / which repos / which days' questions; use list_events when the actual items are needed.",
 		Annotations: readOnly,
 	}, s.getDigest)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "build_sessions",
+		Title:       "Собрать сессии из событий",
+		Description: "Pure computation, no storage: groups activity events into work sessions — contiguous blocks where consecutive events are no more than 45 minutes apart, each starting 30 minutes before its first event. Each session is tagged with its dominant category (development or review) and repository. Does not read or write the database; pass it save_sessions' input to persist the result.",
+		Annotations: readOnly,
+	}, s.buildSessionsTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "save_sessions",
+		Title:       "Сохранить сессии",
+		Description: "Replaces every stored work session with the given set — sessions are derived from events, not authoritative facts, so a full pipeline run (list_events -> build_sessions -> save_sessions) recomputes and replaces them wholesale rather than merging. Used by the background collector, not for answering questions.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
+	}, s.saveSessionsTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_sessions",
+		Title:       "Сессии из журнала",
+		Description: "List the user's stored work sessions for a period, each with its category (development/review), dominant repository, event count, and mapped project (\"Без проекта\" when the repository has no mapping). Answers from the local work history — no call to GitHub.",
+		Annotations: readOnly,
+	}, s.getSessions)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_repo_project",
+		Title:       "Привязать репозиторий к проекту",
+		Description: "Maps a repository to a project label, purely for grouping in analytics (time by project). Takes effect immediately for every future query — sessions are not recomputed, since the project is resolved at read time, not stored on the session.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
+	}, s.setRepoProjectTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_repo_projects",
+		Title:       "Репозитории и их проекты",
+		Description: "Every repository with at least one stored event, and its project mapping if any (unmapped repositories fall back to \"Без проекта\" everywhere else). Used to build a repo -> project mapping UI.",
+		Annotations: readOnly,
+	}, s.getRepoProjectsTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_analytics",
+		Title:       "Аналитика по сессиям",
+		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total/development/review hours, active days, sessions, repos, projects), hours by project, hours by day (development vs review), a development/review/other composition, a weekday×hour heatmap, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). No LLM, no productivity score — counts and hours only.",
+		Annotations: readOnly,
+	}, s.getAnalytics)
 
 	log.Printf("database %s", path)
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -309,7 +362,8 @@ func matchRepos(known, names []string) (matched, warnings []string) {
 
 type ListEventsInput struct {
 	periodInput
-	Limit int `json:"limit,omitempty" jsonschema:"maximum number of events to return, newest first (default 100, max 500)"`
+	Limit int  `json:"limit,omitempty" jsonschema:"maximum number of events to return, newest first (default 100, max 500); ignored when all is true"`
+	All   bool `json:"all,omitempty" jsonschema:"return every matching event, no limit — for the session-building pipeline, not for answering questions (it can be a lot of text)"`
 }
 
 type ListEventsOutput struct {
@@ -321,15 +375,26 @@ type ListEventsOutput struct {
 }
 
 func (s *server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in ListEventsInput) (*mcp.CallToolResult, ListEventsOutput, error) {
-	f, meta, err := s.resolvePeriod(ctx, in.periodInput, maxDigestWindow)
+	// The window cap protects a chat answer from an accidentally huge
+	// question; the session-building pipeline explicitly wants the entire
+	// history, so all:true also lifts it.
+	windowCap := maxDigestWindow
+	if in.All {
+		windowCap = 100 * 365 * 24 * time.Hour
+	}
+	f, meta, err := s.resolvePeriod(ctx, in.periodInput, windowCap)
 	if err != nil {
 		return nil, ListEventsOutput{}, err
 	}
 	limit := in.Limit
-	if limit <= 0 {
-		limit = defaultListLimit
+	if in.All {
+		limit = 0
+	} else {
+		if limit <= 0 {
+			limit = defaultListLimit
+		}
+		limit = min(limit, maxListLimit)
 	}
-	limit = min(limit, maxListLimit)
 	events, err := s.store.events(ctx, f, limit)
 	if err != nil {
 		return nil, ListEventsOutput{}, err
