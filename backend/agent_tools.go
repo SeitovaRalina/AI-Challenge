@@ -123,8 +123,10 @@ func (a *Agent) toolConn(ctx context.Context, name string) *mcpclient.Conn {
 //     described with tool_choice "none", so it can only answer.
 
 // maxRoutingRounds bounds how many times routing may go back for more tool
-// calls after seeing results.
-const maxRoutingRounds = 3
+// calls after seeing results. Day 20's longer flows (calendar + worklog,
+// possibly two worklog calls) can need a call, a look at its result, then
+// another — one round higher than day 17's single-server flows needed.
+const maxRoutingRounds = 4
 
 // routingHistoryMessages is how much recent conversation routing sees —
 // enough to resolve follow-ups like "а вчера?", far less than the full
@@ -147,26 +149,31 @@ func localTimeLine(now time.Time) string {
 func routingSystemPrompt(now time.Time) string {
 	return localTimeLine(now) + `
 
-You are the tool-routing step of a work assistant. You never answer the user yourself — another step does. Your only job: decide whether the LATEST user message needs data about the user's own work activity, and if so, fetch it.
+You are the tool-routing step of a work assistant. You never answer the user yourself — another step does. Your only job: decide whether the LATEST user message needs data about the user's own work activity or calendar, and if so, fetch it — possibly with more than one call, including calls to different servers, when the question genuinely needs it (e.g. "what did I do yesterday" needs both what was worked on and which meetings happened).
 
-The tools come from two of the user's own MCP servers:
-- Worklog — get_activity_digest and list_events: the user's work history, already collected from GitHub by a background collector every few minutes and stored locally. Fast. This is the default source for any question about past work.
-  - get_activity_digest: "how much / how active / which repositories / which days / summary" questions.
-  - list_events: when the actual items are wanted (which commits, which PRs, links).
+The tools come from three of the user's own MCP servers:
+
+- Worklog — the user's work history AND calendar meetings, already collected in the background and stored locally. Fast. This is the default source for any question about the past, work or meetings alike.
+  - get_activity_digest: "how much / how active / which repositories / which days / summary" questions about GitHub activity.
+  - list_events: when the actual GitHub items are wanted (which commits, which PRs, links).
+  - get_day_timeline(date): the best single call for "what did I do on <day>" / "восстанови, что я делал вчера" — returns that whole day as non-overlapping blocks (work by repo, and meetings by title), already deduplicated where a meeting overlaps work. Prefer this over combining get_activity_digest and a calendar call yourself.
+  - get_sessions: a period's individual sessions (work or meeting), when the day-by-day timeline view is more than what's needed.
+  - get_analytics: KPIs and breakdowns (total/meeting hours, hours by project, commit types, weekly trend) for "how much did I work this week/month", "what did I work on most", "итоги недели"-style comparisons — call it once per period being asked about (e.g. twice to compare this week vs last week).
 - GitHub Activity — get_activity and list_repos: live GitHub, slow.
   - get_activity: only when the user explicitly asks for live/fresh data from GitHub, or when a Worklog result says its coverage does not include the period asked about (covered: false).
   - list_repos: the user asks which repositories are tracked.
+- Calendar — list_calendars and get_events: live CalDAV, slow. Only when the user explicitly asks to check the calendar live/right now, or asks which calendars exist. For anything about past or already-collected meetings, use a Worklog tool instead (get_day_timeline or get_sessions) — meetings are already stored there.
 
-- It asks about the user's own past work (what they did, committed, merged, reviewed or commented on in some period or repository) → call a Worklog tool.
+- It asks about the user's own past work or meetings (what they did, committed, merged, reviewed, commented on, or attended, in some period, repository or day) → call the right tool(s), preferring Worklog.
 - Anything else — describing a task, asking to estimate one, refining an estimate, small talk → reply with exactly: NONE
 
 Earlier messages are there only to resolve follow-ups (e.g. "а вчера?" after an activity question); they never make a task or estimate message need a tool.
 
-Periods: compute from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; the end is inclusive — for a single day pass the same date as both). Worklog tools take from/to (up to a year); get_activity takes since/until (at most 31 days). Make exactly one call covering the period asked about, then stop — see the rule below before ever making a second one. When the user names a repository, pass it in repos right away (the bare repo name is enough).
+Periods: compute from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; the end is inclusive — for a single day pass the same date as both). Worklog tools take from/to (up to a year, get_day_timeline takes a single date); get_activity/get_events take since/until (at most 31/90 days). When the user names a repository, pass it in repos right away (the bare repo name is enough).
 
 "This week"/"на этой неделе" is the calendar week: from this week's Monday (which may be today) through today, inclusive — never a rolling 7-day window. If today is Monday, that period is just today; do not reach further back to "fill it out" — a thin result for a week that just started is the correct, honest answer, not a signal to broaden the query. "Last week"/"на прошлой неделе" is the full Monday-to-Sunday week before this one. "Last N days" is a rolling window, computed from today backward — the only case a rolling window is correct.
 
-After you receive tool results: if they answer the question as asked, reply with exactly: NONE — immediately, in the very next turn. Do not make a second call over a different or wider period "to double-check" or "to be safe": if your first call's period already matches what was asked, you are done. Call again only when the question itself genuinely needs more than that one call answered — e.g. the user asked to compare two periods, asked for the items behind a digest you already have, or Worklog's coverage doesn't reach a period asked about.`
+After you receive tool results: if they answer the question as asked, reply with exactly: NONE — immediately, in the very next turn. Do not make a second call over a different or wider period "to double-check" or "to be safe": if your first round of calls already covers what was asked, you are done. Call again only when the question itself genuinely needs another call — e.g. the user asked to compare two periods (one call per period), asked for the items behind a digest you already have, or Worklog's coverage doesn't reach a period asked about.`
 }
 
 // toolResultsSystemPrompt tells the answering call how to use the results
@@ -174,13 +181,13 @@ After you receive tool results: if they answer the question as asked, reply with
 func toolResultsSystemPrompt(now time.Time) string {
 	return localTimeLine(now) + `
 
-For the user's latest message, data was fetched from the user's own MCP servers — Worklog (the stored work history, collected from GitHub in the background) and/or GitHub Activity (live GitHub); the tool calls and their results follow that message.
+For the user's latest message, data was fetched from the user's own MCP servers — Worklog (stored work history and meetings, collected from GitHub and the calendar in the background), GitHub Activity (live GitHub) and/or Calendar (live CalDAV); the tool calls and their results follow that message.
 
-Event kinds describe what happened in the period, not current state: pr_opened means the user created that PR during the period (it may well be merged or closed by now) — say "создала PR", never call such PRs "открытые"; pr_merged means it was merged during the period. The tool knows nothing about a PR's current state beyond these events.
+Event kinds describe what happened in the period, not current state: pr_opened means the user created that PR during the period (it may well be merged or closed by now) — say "создала PR", never call such PRs "открытые"; pr_merged means it was merged during the period; meeting is a calendar event, with its own start and end (not instantaneous like the others). get_day_timeline's blocks are already deduplicated — when work and a meeting overlapped, that time is attributed to the meeting only, so summing a day's blocks never double-counts.
 
 This data is final: you cannot call tools or fetch anything else in this step. If the period looks narrow or came back empty — e.g. "на этой неделе" asked on a Monday covers only today — still answer from it, say exactly which period it covers, and if useful suggest asking about a wider one (e.g. the previous week).
 
-Answer strictly from what the tools returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls (a digest has no items — do not make any up). Times are already in the local timezone. Worklog data is only as fresh as its coverage (synced_until): when the period reaches today, mention up to what time it is collected. If no events were found, say plainly that no activity was found for that period. If there were warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
+Answer strictly from what the tools returned — never invent commits, PRs, repositories or meetings. Mention counts, group by repository/project when there are several, and link items with markdown links using the returned urls (a digest has no items — do not make any up). Times are already in the local timezone. Worklog data is only as fresh as its coverage (synced_until): when the period reaches today, mention up to what time it is collected. If no events were found, say plainly that no activity was found for that period. If there were warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing. When comparing periods (e.g. this week vs last), state the numbers plainly — never call the result "продуктивно"/"эффективно" or otherwise score it; that judgment is not this product's job.
 
 Answer in the same JSON envelope as always, with "estimate": null.`
 }
