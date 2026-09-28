@@ -163,12 +163,33 @@ func main() {
 	worklogServer := worklogServerConfig(worklogPath)
 	worklogConn := mcpclient.NewConn(worklogServer)
 	defer worklogConn.Close()
-	agent.AddToolSource(worklogConn, "get_activity_digest", "list_events")
+	agent.AddToolSource(worklogConn, "get_activity_digest", "list_events", "get_analytics", "get_sessions", "get_day_timeline")
 	agent.AddToolSource(activityConn)
+
+	// Day 20: the Calendar MCP server, over the user's own CalDAV account.
+	// Only registered once both credentials are filled in backend/.env —
+	// see calendarConfigured's doc for why a half-configured server isn't
+	// even started.
+	var calendarConn *mcpclient.Conn
+	calendarServer := calendarServerConfig()
+	registryServers := []mcpclient.ServerConfig{activityServer, worklogServer}
+	if calendarConfigured() {
+		calendarConn = mcpclient.NewConn(calendarServer)
+		defer calendarConn.Close()
+		agent.AddToolSource(calendarConn)
+		registryServers = append(registryServers, calendarServer)
+	} else {
+		log.Printf("calendar: CALDAV_USERNAME/CALDAV_APP_PASSWORD not set, calendar server disabled")
+	}
 
 	collectorGitHub := mcpclient.NewConn(activityServer)
 	defer collectorGitHub.Close()
-	collector := NewCollector(collectorGitHub, worklogConn, collectInterval(), filepath.Join(filepath.Dir(dataDir), "collector_runs.json"))
+	var collectorCalendar *mcpclient.Conn
+	if calendarConfigured() {
+		collectorCalendar = mcpclient.NewConn(calendarServer)
+		defer collectorCalendar.Close()
+	}
+	collector := NewCollector(collectorGitHub, worklogConn, collectorCalendar, collectInterval(), filepath.Join(filepath.Dir(dataDir), "collector_runs.json"))
 	collector.Start(context.Background())
 	mux.HandleFunc("GET /api/activity/status", activityStatusHandler(collector))
 	mux.HandleFunc("POST /api/activity/collect", activityCollectHandler(collector))
@@ -180,8 +201,18 @@ func main() {
 	mux.HandleFunc("GET /api/analytics", getAnalyticsHandler(worklogConn))
 	mux.HandleFunc("GET /api/analytics/repos", listRepoProjectsHandler(worklogConn))
 	mux.HandleFunc("PATCH /api/analytics/repos/{repo...}", setRepoProjectHandler(worklogConn))
+	mux.HandleFunc("GET /api/analytics/timeline", getDayTimelineHandler(worklogConn))
 
-	mcpRegistry := NewMCPRegistry(append([]mcpclient.ServerConfig{activityServer, worklogServer}, mcpclient.DefaultServers()...))
+	// Day 20: the weekly summary — this week vs last, facts only, written by
+	// the model in the user's profile tone. Generated on demand from the
+	// Analytics card, and once more automatically every Friday evening.
+	weeklySummaries := NewWeeklySummaryStore(filepath.Join(filepath.Dir(dataDir), "weekly_summary.json"))
+	weeklyGen := &WeeklySummaryGenerator{client: client, worklog: worklogConn, profile: agent.profileStore, store: weeklySummaries}
+	mux.HandleFunc("GET /api/analytics/weekly-summary", getWeeklySummaryHandler(weeklySummaries))
+	mux.HandleFunc("POST /api/analytics/weekly-summary", generateWeeklySummaryHandler(weeklyGen))
+	startWeeklySummarySchedule(context.Background(), weeklyGen)
+
+	mcpRegistry := NewMCPRegistry(append(registryServers, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 

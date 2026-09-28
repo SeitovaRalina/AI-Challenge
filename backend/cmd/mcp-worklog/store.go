@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS events (
 	author      TEXT    NOT NULL DEFAULT '',
 	ref         TEXT    NOT NULL DEFAULT '',
 	ingested_at INTEGER NOT NULL,
+	ends_at     INTEGER NOT NULL DEFAULT 0, -- meetings only (day 20); 0 means instantaneous
 	PRIMARY KEY (source, id)
 );
 CREATE INDEX IF NOT EXISTS events_occurred_at ON events (occurred_at);
@@ -51,7 +52,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 	id             INTEGER PRIMARY KEY AUTOINCREMENT,
 	start_at       INTEGER NOT NULL,
 	end_at         INTEGER NOT NULL,
-	repo           TEXT    NOT NULL, -- a session never spans more than one repository
+	kind           TEXT    NOT NULL DEFAULT 'work', -- work | meeting (day 20)
+	repo           TEXT    NOT NULL, -- a session never spans more than one repository; empty for kind=meeting
+	title          TEXT    NOT NULL DEFAULT '', -- meeting title; empty for kind=work
 	event_count    INTEGER NOT NULL,
 	first_event_id TEXT    NOT NULL,
 	last_event_id  TEXT    NOT NULL
@@ -84,44 +87,71 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate sessions table: %w", err)
 	}
+	if err := migrateEventsTable(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate events table: %w", err)
+	}
 	return &store{db: db}, nil
 }
 
-// migrateSessionsTable drops and recreates sessions if it still has the
-// pre-migration "category" column (an earlier iteration of day 19). Safe
-// because sessions is fully derived, rebuilt wholesale by the next pipeline
-// run — there is no data here worth preserving across a shape change.
-func migrateSessionsTable(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+// hasColumn checks PRAGMA table_info(table) for a column by name.
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
-		return err
+		return false, err
 	}
-	hasCategory := false
+	defer rows.Close()
 	for rows.Next() {
 		var cid int
 		var name, colType string
 		var notNull, pk int
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			rows.Close()
-			return err
+			return false, err
 		}
-		if name == "category" {
-			hasCategory = true
+		if name == column {
+			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	if !hasCategory {
-		return nil
-	}
-	_, err = db.Exec(`DROP TABLE sessions`)
+	return false, rows.Err()
+}
+
+// migrateSessionsTable drops and recreates sessions if it still has the
+// pre-migration "category" column (an earlier iteration of day 19) or is
+// missing "kind" (day 20, meeting sessions). Safe because sessions is fully
+// derived, rebuilt wholesale by the next pipeline run — there is no data
+// here worth preserving across a shape change.
+func migrateSessionsTable(db *sql.DB) error {
+	hasCategory, err := hasColumn(db, "sessions", "category")
 	if err != nil {
 		return err
 	}
+	hasKind, err := hasColumn(db, "sessions", "kind")
+	if err != nil {
+		return err
+	}
+	if !hasCategory && hasKind {
+		return nil
+	}
+	if _, err := db.Exec(`DROP TABLE sessions`); err != nil {
+		return err
+	}
 	_, err = db.Exec(schema)
+	return err
+}
+
+// migrateEventsTable adds the ends_at column (day 20, meetings) to an
+// existing events table — unlike sessions, events is real ingested history,
+// so it's altered in place rather than dropped.
+func migrateEventsTable(db *sql.DB) error {
+	hasEndsAt, err := hasColumn(db, "events", "ends_at")
+	if err != nil {
+		return err
+	}
+	if hasEndsAt {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE events ADD COLUMN ends_at INTEGER NOT NULL DEFAULT 0`)
 	return err
 }
 
@@ -136,13 +166,22 @@ type SyncState struct {
 }
 
 type ingestResult struct {
-	inserted, duplicates int
-	state                SyncState
+	inserted, duplicates, deleted int
+	state                         SyncState
 }
 
 // ingest stores events and advances the source's cursor in one transaction,
 // so a crash can never leave the cursor ahead of the data it claims.
-func (s *store) ingest(ctx context.Context, source string, events []activity.Event, since, until time.Time) (ingestResult, error) {
+//
+// replace matters for a source whose events can change after the fact —
+// GitHub commits/PRs are an immutable log (dedup-by-id is enough), but a
+// calendar event can be moved, renamed or deleted, and would otherwise
+// leave a stale row behind forever with no way to remove it (there is no
+// "delete" signal from a source that simply stops returning something).
+// When true, every existing row for this source inside [since, until] is
+// deleted before the batch is inserted, so the window ends up exactly
+// matching what the source just reported for it — see mcp-calendar's use.
+func (s *store) ingest(ctx context.Context, source string, events []activity.Event, since, until time.Time, replace bool) (ingestResult, error) {
 	var res ingestResult
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -150,15 +189,29 @@ func (s *store) ingest(ctx context.Context, source string, events []activity.Eve
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events (source, id, kind, repo, title, url, occurred_at, author, ref, ingested_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (source, id) DO NOTHING`)
+	if replace {
+		result, err := tx.ExecContext(ctx, `DELETE FROM events WHERE source = ? AND occurred_at >= ? AND occurred_at <= ?`,
+			source, since.Unix(), until.Unix())
+		if err != nil {
+			return res, err
+		}
+		deleted, _ := result.RowsAffected()
+		res.deleted = int(deleted)
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events (source, id, kind, repo, title, url, occurred_at, author, ref, ingested_at, ends_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (source, id) DO NOTHING`)
 	if err != nil {
 		return res, err
 	}
 	defer stmt.Close()
 	now := time.Now().Unix()
 	for _, e := range events {
-		r, err := stmt.ExecContext(ctx, source, e.ID, string(e.Kind), e.Repo, e.Title, e.URL, e.OccurredAt.Unix(), e.Author, e.Ref, now)
+		var endsAt int64
+		if !e.EndsAt.IsZero() {
+			endsAt = e.EndsAt.Unix()
+		}
+		r, err := stmt.ExecContext(ctx, source, e.ID, string(e.Kind), e.Repo, e.Title, e.URL, e.OccurredAt.Unix(), e.Author, e.Ref, now, endsAt)
 		if err != nil {
 			return res, fmt.Errorf("event %s: %w", e.ID, err)
 		}
@@ -250,7 +303,7 @@ func (f eventFilter) where() (string, []any) {
 // events returns matching events, newest first; limit <= 0 means all.
 func (s *store) events(ctx context.Context, f eventFilter, limit int) ([]activity.Event, error) {
 	where, args := f.where()
-	query := `SELECT source, id, kind, repo, title, url, occurred_at, author, ref FROM events WHERE ` + where + ` ORDER BY occurred_at DESC, id`
+	query := `SELECT source, id, kind, repo, title, url, occurred_at, author, ref, ends_at FROM events WHERE ` + where + ` ORDER BY occurred_at DESC, id`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -263,12 +316,15 @@ func (s *store) events(ctx context.Context, f eventFilter, limit int) ([]activit
 	for rows.Next() {
 		var e activity.Event
 		var kind string
-		var at int64
-		if err := rows.Scan(&e.Source, &e.ID, &kind, &e.Repo, &e.Title, &e.URL, &at, &e.Author, &e.Ref); err != nil {
+		var at, endsAt int64
+		if err := rows.Scan(&e.Source, &e.ID, &kind, &e.Repo, &e.Title, &e.URL, &at, &e.Author, &e.Ref, &endsAt); err != nil {
 			return nil, err
 		}
 		e.Kind = activity.Kind(kind)
 		e.OccurredAt = time.Unix(at, 0).In(time.Local)
+		if endsAt != 0 {
+			e.EndsAt = time.Unix(endsAt, 0).In(time.Local)
+		}
 		events = append(events, e)
 	}
 	return events, rows.Err()
@@ -319,7 +375,8 @@ func (s *store) repoNames(ctx context.Context) ([]string, error) {
 // sessions.go for the WorkSession the tool layer exposes).
 type storedSession struct {
 	startAt, endAt            int64
-	repo                      string
+	kind                      string
+	repo, title               string
 	eventCount                int
 	firstEventID, lastEventID string
 }
@@ -340,14 +397,14 @@ func (s *store) replaceSessions(ctx context.Context, sessions []storedSession) (
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions`); err != nil {
 		return 0, err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sessions (start_at, end_at, repo, event_count, first_event_id, last_event_id)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sessions (start_at, end_at, kind, repo, title, event_count, first_event_id, last_event_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer stmt.Close()
 	for _, sess := range sessions {
-		if _, err := stmt.ExecContext(ctx, sess.startAt, sess.endAt, sess.repo, sess.eventCount, sess.firstEventID, sess.lastEventID); err != nil {
+		if _, err := stmt.ExecContext(ctx, sess.startAt, sess.endAt, sess.kind, sess.repo, sess.title, sess.eventCount, sess.firstEventID, sess.lastEventID); err != nil {
 			return 0, err
 		}
 	}
@@ -398,7 +455,7 @@ const sessionSelectJoin = `FROM sessions s LEFT JOIN repo_projects rp ON rp.repo
 
 func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionRow, error) {
 	where, args := f.where()
-	query := `SELECT s.start_at, s.end_at, s.repo, s.event_count, s.first_event_id, s.last_event_id, rp.project ` +
+	query := `SELECT s.start_at, s.end_at, s.kind, s.repo, s.title, s.event_count, s.first_event_id, s.last_event_id, rp.project ` +
 		sessionSelectJoin + ` WHERE ` + where + ` ORDER BY s.start_at`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -409,7 +466,7 @@ func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionR
 	for rows.Next() {
 		var row storedSessionRow
 		var project sql.NullString
-		if err := rows.Scan(&row.startAt, &row.endAt, &row.repo, &row.eventCount, &row.firstEventID, &row.lastEventID, &project); err != nil {
+		if err := rows.Scan(&row.startAt, &row.endAt, &row.kind, &row.repo, &row.title, &row.eventCount, &row.firstEventID, &row.lastEventID, &project); err != nil {
 			return nil, err
 		}
 		row.project = bareRepoName(row.repo)

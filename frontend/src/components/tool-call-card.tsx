@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   AlertCircle,
+  CalendarClock,
   ChevronRight,
   GitCommitHorizontal,
   GitMerge,
@@ -20,6 +21,7 @@ export const KIND_META: Record<ActivityKind, { label: string; icon: typeof GitCo
   pr_merged: { label: 'PR смёржен', icon: GitMerge },
   review: { label: 'ревью', icon: ScanEye },
   issue_comment: { label: 'комментарий', icon: MessageSquare },
+  meeting: { label: 'встреча', icon: CalendarClock },
 }
 
 // ToolCallList shows the MCP tool calls an assistant message was built on
@@ -172,19 +174,25 @@ function EventList({ events, omitted }: { events: ActivityEvent[]; omitted?: num
                 {formatEventTime(event.occurred_at)}
               </span>
               <span className="min-w-0">
-                <a
-                  href={event.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-foreground underline-offset-2 hover:underline"
-                >
-                  {event.title}
-                </a>
-                <span className="text-muted-foreground">
-                  {' '}
-                  · {event.repo.split('/').pop()}
-                  {event.kind === 'commit' && event.ref ? ` · ${event.ref}` : ''}
-                </span>
+                {event.url ? (
+                  <a
+                    href={event.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-foreground underline-offset-2 hover:underline"
+                  >
+                    {event.title}
+                  </a>
+                ) : (
+                  <span className="text-foreground">{event.title}</span>
+                )}
+                {event.repo && (
+                  <span className="text-muted-foreground">
+                    {' '}
+                    · {event.repo.split('/').pop()}
+                    {event.kind === 'commit' && event.ref ? ` · ${event.ref}` : ''}
+                  </span>
+                )}
               </span>
             </li>
           )

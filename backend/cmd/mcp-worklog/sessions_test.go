@@ -11,6 +11,10 @@ func ev(id string, kind activity.Kind, repo string, at time.Time) activity.Event
 	return activity.Event{ID: id, Source: "github", Kind: kind, Repo: repo, Title: id, URL: "https://x/" + id, OccurredAt: at, Author: "me"}
 }
 
+func mev(id, title string, start, end time.Time) activity.Event {
+	return activity.Event{ID: id, Source: "calendar", Kind: activity.KindMeeting, Title: title, OccurredAt: start, EndsAt: end}
+}
+
 func TestBuildSessions_Empty(t *testing.T) {
 	sessions := buildSessions(nil)
 	if len(sessions) != 0 {
@@ -102,6 +106,45 @@ func TestBuildSessions_ParallelReposNeverMerge(t *testing.T) {
 	b, ok := byRepo["org/repo-b"]
 	if !ok || b.EventCount != 2 {
 		t.Errorf("want repo-b's session with 2 events, got %+v (present: %v)", b, ok)
+	}
+}
+
+// TestBuildSessions_MeetingsBecomeOwnSessions checks day 20's meeting
+// branch: each calendar event becomes its own kind=meeting session, using
+// its own start/end directly (no gap-merging, no lead-in), independent of
+// whatever work events fall in the same period.
+func TestBuildSessions_MeetingsBecomeOwnSessions(t *testing.T) {
+	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
+	events := []activity.Event{
+		ev("a", activity.KindCommit, "r/1", base),
+		mev("m1", "Standup", base.Add(time.Hour), base.Add(90*time.Minute)),
+	}
+	sessions := buildSessions(events)
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 sessions (1 work, 1 meeting), got %d: %+v", len(sessions), sessions)
+	}
+	var meeting WorkSession
+	for _, s := range sessions {
+		if s.Kind == SessionKindMeeting {
+			meeting = s
+		}
+	}
+	if meeting.Title != "Standup" || meeting.Repo != "" {
+		t.Fatalf("meeting session: want title Standup, no repo, got %+v", meeting)
+	}
+	wantStart, wantEnd := base.Add(time.Hour), base.Add(90*time.Minute)
+	if !meeting.Start.Equal(wantStart) || !meeting.End.Equal(wantEnd) {
+		t.Errorf("meeting session bounds: want %v..%v (no lead-in), got %v..%v", wantStart, wantEnd, meeting.Start, meeting.End)
+	}
+}
+
+// TestBuildSessions_MeetingWithoutEndIsDropped guards against fabricating a
+// duration for malformed calendar data.
+func TestBuildSessions_MeetingWithoutEndIsDropped(t *testing.T) {
+	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
+	sessions := buildSessions([]activity.Event{mev("m1", "Bad", base, time.Time{})})
+	if len(sessions) != 0 {
+		t.Fatalf("want a meeting with no end dropped, got %d session(s): %+v", len(sessions), sessions)
 	}
 }
 

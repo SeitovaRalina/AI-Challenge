@@ -290,7 +290,7 @@ export interface AgentMessage {
   tool_calls?: ToolCallRecord[]
 }
 
-export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment'
+export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment' | 'meeting'
 
 // ActivityEvent is the GitHub Activity MCP server's normalized unit of work.
 export interface ActivityEvent {
@@ -303,6 +303,9 @@ export interface ActivityEvent {
   occurred_at: string
   author: string
   ref?: string
+  // ends_at (day 20): only set for kind "meeting" — every other kind is
+  // instantaneous.
+  ends_at?: string
 }
 
 // ToolCallRecord is one MCP tool call as stored on an assistant message.
@@ -849,6 +852,9 @@ export interface ActivityDigest {
   by_repo: RepoDigest[]
   by_day: DayDigest[]
   active_days: number
+  // meetings_count (day 20): same as counts.meeting, as its own field — a
+  // meeting has no repository, so it's excluded from by_repo.
+  meetings_count: number
   first_event_at?: string
   last_event_at?: string
 }
@@ -885,9 +891,13 @@ export function getActivityEvents(
 export type AnalyticsPeriod = '7d' | '30d' | '90d'
 
 export interface AnalyticsKpi {
+  // total_hours (day 20): work + meeting hours, deduplicated — a minute
+  // inside a meeting is never also counted as work.
   total_hours: number
+  meeting_hours: number
   active_days: number
   sessions_count: number
+  meetings_count: number
   repo_count: number
   project_count: number
 }
@@ -900,6 +910,8 @@ export interface ProjectHours {
 export interface DayHours {
   date: string
   weekday: string
+  work_hours: number
+  meeting_hours: number
   total_hours: number
 }
 
@@ -965,4 +977,68 @@ export function setRepoProject(repo: string, project: string): Promise<RepoProje
     method: 'PATCH',
     body: { project },
   })
+}
+
+// ---- Day 20: meetings, day timeline, weekly summary ----
+
+export type TimelineKind = 'work' | 'meeting'
+
+export interface TimelineBlock {
+  start: string
+  end: string
+  kind: TimelineKind
+  repo?: string
+  project?: string
+  // titles (plural): several when overlapping meetings were merged into one
+  // block.
+  titles?: string[]
+}
+
+export interface DayTimeline {
+  date: string
+  weekday: string
+  timezone: string
+  blocks: TimelineBlock[]
+  warnings?: string[]
+}
+
+// getDayTimeline is the Gantt-style day view's data source: one day as
+// non-overlapping work/meeting blocks, meetings already given priority
+// where they overlapped work. date defaults to today when omitted.
+export function getDayTimeline(date?: string): Promise<DayTimeline> {
+  return request<DayTimeline>(`/api/analytics/timeline${date ? `?date=${date}` : ''}`)
+}
+
+export interface WeeklyPeriodFacts {
+  from: string
+  to: string
+  hours: number
+  meeting_hours: number
+  active_days: number
+  top_project?: string
+  merged_prs: number
+}
+
+export interface WeeklySummary {
+  week_start: string
+  week_end: string
+  generated_at: string
+  text: string
+  facts: {
+    this_week: WeeklyPeriodFacts
+    last_week: WeeklyPeriodFacts
+  }
+}
+
+// getWeeklySummary returns the most recently generated summary, or null if
+// none exists yet (nothing generated on demand, and the Friday-evening
+// schedule hasn't fired yet).
+export function getWeeklySummary(): Promise<WeeklySummary | null> {
+  return request<WeeklySummary | null>('/api/analytics/weekly-summary')
+}
+
+// generateWeeklySummary triggers generation now (the same thing the Friday
+// schedule does automatically) and returns the fresh result.
+export function generateWeeklySummary(): Promise<WeeklySummary> {
+  return postJson<WeeklySummary>('/api/analytics/weekly-summary', {})
 }

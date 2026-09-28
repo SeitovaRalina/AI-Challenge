@@ -70,6 +70,41 @@ func worklogServerConfig(dbPath string) mcpclient.ServerConfig {
 	}
 }
 
+// calendarServerConfig describes the product's own Calendar MCP server
+// (cmd/mcp-calendar, day 20): the user's CalDAV account. Unlike GitHub and
+// Worklog, this one has no fallback — until CALDAV_USERNAME and
+// CALDAV_APP_PASSWORD are filled in backend/.env there is simply no
+// calendar source; callers check calendarConfigured before registering it
+// anywhere a missing server would otherwise be confusing.
+func calendarServerConfig() mcpclient.ServerConfig {
+	command := strings.Fields(os.Getenv("MCP_CALENDAR_COMMAND"))
+	if len(command) == 0 {
+		command = []string{"go", "run", "./cmd/mcp-calendar"}
+	}
+	return mcpclient.ServerConfig{
+		ID:        "calendar",
+		Name:      "Calendar (свой MCP)",
+		Transport: mcpclient.TransportStdio,
+		Command:   strings.Join(command, " "),
+		NewCommand: func() (*exec.Cmd, error) {
+			cmd := exec.Command(command[0], command[1:]...)
+			cmd.Stderr = os.Stderr
+			return cmd, nil
+		},
+		Own:      true,
+		TokenEnv: "CALDAV_APP_PASSWORD",
+		ReadOnly: true,
+	}
+}
+
+// calendarConfigured is true once both CalDAV credentials are set — the
+// backend registers and starts the calendar server (chat tools, collector
+// step) only then, rather than spawning a subprocess doomed to fail its
+// first call.
+func calendarConfigured() bool {
+	return strings.TrimSpace(os.Getenv("CALDAV_USERNAME")) != "" && strings.TrimSpace(os.Getenv("CALDAV_APP_PASSWORD")) != ""
+}
+
 // MCPConnection is the outcome of the most recent connect attempt to a
 // server — either the tools it listed, or a classified error.
 type MCPConnection struct {

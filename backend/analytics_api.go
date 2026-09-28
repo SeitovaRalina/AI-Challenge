@@ -41,6 +41,18 @@ func getAnalyticsHandler(worklog *mcpclient.Conn) http.HandlerFunc {
 	}
 }
 
+// getDayTimelineHandler is day 20's Gantt-style day view: ?date=YYYY-MM-DD,
+// defaulting to today.
+func getDayTimelineHandler(worklog *mcpclient.Conn) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		date := strings.TrimSpace(r.URL.Query().Get("date"))
+		if date == "" {
+			date = time.Now().Format("2006-01-02")
+		}
+		callWorklog(w, r.Context(), worklog, "get_day_timeline", map[string]any{"date": date})
+	}
+}
+
 func listRepoProjectsHandler(worklog *mcpclient.Conn) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		callWorklog(w, r.Context(), worklog, "get_repo_projects", map[string]any{})

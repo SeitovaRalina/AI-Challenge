@@ -43,6 +43,16 @@ import (
 // "Auto after each collect" from the day's plan means exactly this: no
 // separate scheduler, no separate button — every run of this one already
 // ends with sessions rebuilt.
+//
+// Day 20 adds one more source to the same run, right before the pipeline
+// step: calendar.get_events -> worklog.ingest_events (kind=meeting), so
+// build_sessions sees meetings alongside GitHub events in the very same
+// list_events(all=true) call. Optional: if CalDAV isn't configured, this
+// step is skipped with a warning rather than failing the run. Unlike the
+// GitHub loop's incremental cursor, it reconciles the whole backfill window
+// every run (ingest_events' replace:true) — a meeting can be moved, renamed
+// or deleted after the fact, so re-checking only a narrow recent window
+// would leave stale rows behind with no way to notice they're gone.
 
 const (
 	defaultCollectInterval = 15 * time.Minute
@@ -58,6 +68,7 @@ const (
 	collectRunTimeout = 5 * time.Minute
 	maxStoredRuns     = 20
 	githubSource      = "github"
+	calendarSource    = "calendar"
 )
 
 var (
@@ -133,10 +144,10 @@ func (r *CollectorRun) clone() CollectorRun {
 
 // Collector owns the schedule and the run log.
 type Collector struct {
-	github, worklog *mcpclient.Conn
-	interval        time.Duration // 0: manual runs only
-	disabledReason  string
-	runsPath        string
+	github, worklog, calendar *mcpclient.Conn // calendar is nil when CalDAV isn't configured
+	interval                  time.Duration   // 0: manual runs only
+	disabledReason            string
+	runsPath                  string
 
 	mu      sync.Mutex
 	current *CollectorRun
@@ -144,8 +155,11 @@ type Collector struct {
 	nextRun *time.Time
 }
 
-func NewCollector(github, worklog *mcpclient.Conn, interval time.Duration, runsPath string) *Collector {
-	c := &Collector{github: github, worklog: worklog, interval: interval, runsPath: runsPath, runs: []CollectorRun{}}
+// NewCollector's calendar may be nil — the calendar step is then skipped
+// with a warning instead of failing the run; GitHub collection is the one
+// required source (see disabledReason below).
+func NewCollector(github, worklog, calendar *mcpclient.Conn, interval time.Duration, runsPath string) *Collector {
+	c := &Collector{github: github, worklog: worklog, calendar: calendar, interval: interval, runsPath: runsPath, runs: []CollectorRun{}}
 	if cfg := github.Config(); cfg.Token() == "" {
 		c.disabledReason = cfg.TokenEnv + " не задан в backend/.env — собирать активность неоткуда"
 	}
@@ -380,6 +394,10 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 		c.mu.Unlock()
 	}
 
+	if err := c.collectCalendar(ctx, run, now); err != nil {
+		return err
+	}
+
 	if err := c.rebuildSessions(ctx, run); err != nil {
 		return err
 	}
@@ -409,6 +427,68 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 	}
 	c.mu.Lock()
 	run.Digest = digest
+	c.mu.Unlock()
+	return nil
+}
+
+// collectCalendar re-fetches and reconciles the *entire* backfill window on
+// every run, unlike the incremental cursor the GitHub loop above advances.
+// A meeting isn't an immutable log entry the way a commit is — it can be
+// moved, renamed or deleted — so an incremental "only look near now" cursor
+// would leave a stale row behind forever the moment something changes
+// outside that narrow window, with no signal that it should be removed.
+// Calendar data is small enough (a person's own meetings, not commits) that
+// re-checking the whole window every time is cheap, and ingest_events'
+// replace:true makes it correct: the window ends up exactly matching what
+// the calendar reports right now. A missing/unconfigured calendar server is
+// not an error: this step is simply skipped, with a warning, so GitHub-only
+// collection keeps working before CalDAV creds are filled in.
+func (c *Collector) collectCalendar(ctx context.Context, run *CollectorRun, now time.Time) error {
+	if c.calendar == nil {
+		c.mu.Lock()
+		run.Warnings = append(run.Warnings, "CALDAV_USERNAME/CALDAV_APP_PASSWORD не заданы — встречи не собираются")
+		c.mu.Unlock()
+		return nil
+	}
+
+	since := now.Add(-collectBackfill).Truncate(time.Second)
+
+	var fetched struct {
+		Events   []json.RawMessage `json:"events"`
+		Warnings []string          `json:"warnings"`
+	}
+	window := fmt.Sprintf("%s — %s", since.Format("02.01 15:04"), now.Format("02.01 15:04"))
+	args := map[string]any{"from": since.Format(time.RFC3339), "to": now.Format(time.RFC3339)}
+	if err := c.call(ctx, run, c.calendar, "get_events", args, window, &fetched, func() string {
+		return fmt.Sprintf("%d встреч", len(fetched.Events))
+	}); err != nil {
+		return err
+	}
+
+	var ingested struct {
+		Inserted   int `json:"inserted"`
+		Duplicates int `json:"duplicates"`
+		Deleted    int `json:"deleted"`
+	}
+	args = map[string]any{
+		"source": calendarSource, "events": fetched.Events,
+		"window_since": since.Format(time.RFC3339), "window_until": now.Format(time.RFC3339),
+		"replace": true,
+	}
+	if fetched.Events == nil {
+		args["events"] = []json.RawMessage{}
+	}
+	if err := c.call(ctx, run, c.worklog, "ingest_events", args, fmt.Sprintf("%d встреч", len(fetched.Events)), &ingested, func() string {
+		return fmt.Sprintf("+%d новых, %d уже были, %d убрано", ingested.Inserted, ingested.Duplicates, ingested.Deleted)
+	}); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	run.Fetched += len(fetched.Events)
+	run.Inserted += ingested.Inserted
+	run.Duplicates += ingested.Duplicates
+	run.Warnings = append(run.Warnings, fetched.Warnings...)
 	c.mu.Unlock()
 	return nil
 }

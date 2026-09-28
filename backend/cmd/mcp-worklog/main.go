@@ -26,6 +26,11 @@
 //   - get_analytics       — KPIs, time by project/day, a commit-type
 //     breakdown, a weekday×hour heatmap, and an 8-week trend
 //
+// Day 20 adds meetings (kind=meeting events, from mcp-calendar) into the
+// same events/sessions tables, and one more read tool:
+//
+//   - get_day_timeline    — one day as non-overlapping work/meeting blocks
+//
 // It speaks MCP over stdio. WORKLOG_DB is the database file path (created if
 // missing). Stdout carries the protocol, so all logging goes to stderr.
 package main
@@ -59,7 +64,7 @@ const (
 
 var validKinds = map[activity.Kind]bool{
 	activity.KindCommit: true, activity.KindPROpened: true, activity.KindPRMerged: true,
-	activity.KindReview: true, activity.KindIssueComment: true,
+	activity.KindReview: true, activity.KindIssueComment: true, activity.KindMeeting: true,
 }
 
 type server struct {
@@ -95,7 +100,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "ingest_events",
 		Title:       "Сохранить события",
-		Description: "Store a batch of activity events fetched from one source for the window [window_since, window_until]. Events already stored (same source and id) are skipped, so overlapping windows are safe. Advances the source's sync cursor in the same transaction. Used by the background collector, not for answering questions.",
+		Description: "Store a batch of activity events fetched from one source for the window [window_since, window_until]. Events already stored (same source and id) are skipped, so overlapping windows are safe. With replace, every stored event of this source inside the window is deleted first, so a moved/renamed/deleted item (e.g. a rescheduled calendar meeting) doesn't linger — use it for a source whose events can change after the fact. Advances the source's sync cursor in the same transaction. Used by the background collector, not for answering questions.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
 	}, s.ingestEvents)
 
@@ -116,14 +121,14 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_activity_digest",
 		Title:       "Сводка активности",
-		Description: "Aggregated summary of the user's stored work activity for a period: total, counts per kind, per repository and per day, active days, first and last event. Answers from the local work history — fast, no call to GitHub. Use it for 'how much / which repos / which days' questions; use list_events when the actual items are needed.",
+		Description: "Aggregated summary of the user's stored work activity for a period: total, counts per kind, per repository and per day, active days, meetings_count, first and last event. Meetings are counted in total/counts/active_days/meetings_count but excluded from by_repo (they have no repository). Answers from the local work history — fast, no call to GitHub or the calendar. Use it for 'how much / which repos / which days' questions; use list_events when the actual items are needed.",
 		Annotations: readOnly,
 	}, s.getDigest)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build_sessions",
 		Title:       "Собрать сессии из событий",
-		Description: "Pure computation, no storage: groups activity events into work sessions, independently per repository — contiguous blocks where consecutive events in the same repository are no more than 45 minutes apart, each starting 30 minutes before its first event. A session never spans two repositories, so working in several repos in the same window still counts every one of them in full. Each session reports its category counts (development_events/review_events/other_events) for a proportional hours split, plus a dominant category as a convenience label. Does not read or write the database; pass it save_sessions' input to persist the result.",
+		Description: "Pure computation, no storage: groups activity events into sessions. Commit/PR/review/comment events become work sessions, independently per repository — contiguous blocks where consecutive events in the same repository are no more than 45 minutes apart, each starting 30 minutes before its first event; a session never spans two repositories, so working in several repos in the same window still counts every one of them in full. Meeting events (kind=meeting, from the Calendar server) each become their own meeting session directly, using their own start/end — no gap-merging, since a calendar event already has exact bounds. Does not read or write the database; pass it save_sessions' input to persist the result.",
 		Annotations: readOnly,
 	}, s.buildSessionsTool)
 
@@ -137,7 +142,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_sessions",
 		Title:       "Сессии из журнала",
-		Description: "List the user's stored work sessions for a period, each with its category counts, repository, event count, and project (the repository's own bare name unless explicitly mapped to something else). Answers from the local work history — no call to GitHub.",
+		Description: "List the user's stored sessions for a period: work sessions (repository, event count, project — the repository's own bare name unless explicitly mapped to something else) and meeting sessions (title) side by side, distinguished by kind. Answers from the local work history — no call to GitHub or the calendar.",
 		Annotations: readOnly,
 	}, s.getSessions)
 
@@ -158,9 +163,16 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_analytics",
 		Title:       "Аналитика по сессиям",
-		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total hours, active days, sessions, repos, projects), hours by project (a repository with no explicit project mapping is its own project), hours by day, a commit-type breakdown (feat/fix/chore/... parsed from commit messages, by count), a weekday×hour heatmap, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). No LLM, no productivity score — counts and hours only.",
+		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total and meeting hours, active days, work sessions, meetings, repos, projects), hours by project (a repository with no explicit project mapping is its own project), hours by day (split into work/meeting/total), a commit-type breakdown (feat/fix/chore/... parsed from commit messages, by count), a weekday×hour heatmap of work only, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). Meetings take priority over work wherever they overlap, so time is never double-counted. No LLM, no productivity score — counts and hours only.",
 		Annotations: readOnly,
 	}, s.getAnalytics)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_day_timeline",
+		Title:       "Таймлайн дня",
+		Description: "One day laid out as non-overlapping blocks — work (repository, project) or meeting (title) — ready to draw as a Gantt-style day view, or to answer 'what did I do on <day>' from a single call instead of combining get_sessions results by hand. A meeting always wins any time it shares with work.",
+		Annotations: readOnly,
+	}, s.getDayTimeline)
 
 	log.Printf("database %s", path)
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -175,12 +187,14 @@ type IngestInput struct {
 	Events      []activity.Event `json:"events" jsonschema:"events fetched for the window; each must have this source"`
 	WindowSince string           `json:"window_since" jsonschema:"start of the fetched window (RFC3339)"`
 	WindowUntil string           `json:"window_until" jsonschema:"end of the fetched window (RFC3339); becomes the sync cursor"`
+	Replace     bool             `json:"replace,omitempty" jsonschema:"for a source whose events can change after the fact (e.g. calendar: a meeting can be moved, renamed or deleted) — deletes every stored event of this source inside [window_since, window_until] before inserting, so the window ends up matching exactly what was just fetched, with no stale leftovers. Leave false for an immutable source like GitHub, where dedup-by-id is enough and nothing is ever removed from history."`
 }
 
 type IngestOutput struct {
 	Received   int       `json:"received"`
 	Inserted   int       `json:"inserted" jsonschema:"events that were new"`
 	Duplicates int       `json:"duplicates" jsonschema:"events already stored, skipped"`
+	Deleted    int       `json:"deleted,omitempty" jsonschema:"stored events removed from the window because replace was true and the source no longer reports them"`
 	Sync       SyncState `json:"sync" jsonschema:"the source's covered range after this batch"`
 }
 
@@ -216,13 +230,13 @@ func (s *server) ingestEvents(ctx context.Context, _ *mcp.CallToolRequest, in In
 		}
 	}
 
-	res, err := s.store.ingest(ctx, source, in.Events, since, until)
+	res, err := s.store.ingest(ctx, source, in.Events, since, until, in.Replace)
 	if err != nil {
 		return nil, IngestOutput{}, fmt.Errorf("store: %w", err)
 	}
-	log.Printf("ingest %s %s..%s: %d received, %d new, %d duplicate(s)",
-		source, since.Format(time.RFC3339), until.Format(time.RFC3339), len(in.Events), res.inserted, res.duplicates)
-	return nil, IngestOutput{Received: len(in.Events), Inserted: res.inserted, Duplicates: res.duplicates, Sync: res.state}, nil
+	log.Printf("ingest %s %s..%s: %d received, %d new, %d duplicate(s), %d deleted",
+		source, since.Format(time.RFC3339), until.Format(time.RFC3339), len(in.Events), res.inserted, res.duplicates, res.deleted)
+	return nil, IngestOutput{Received: len(in.Events), Inserted: res.inserted, Duplicates: res.duplicates, Deleted: res.deleted, Sync: res.state}, nil
 }
 
 // ---- get_sync_state ----
@@ -429,13 +443,14 @@ type DayDigest struct {
 
 type DigestOutput struct {
 	periodMeta
-	Total        int                   `json:"total"`
-	Counts       map[activity.Kind]int `json:"counts" jsonschema:"events per kind"`
-	ByRepo       []RepoDigest          `json:"by_repo" jsonschema:"per repository, most active first"`
-	ByDay        []DayDigest           `json:"by_day" jsonschema:"per day, oldest first; every day of the period when it is at most 62 days long, otherwise only days with events"`
-	ActiveDays   int                   `json:"active_days" jsonschema:"days with at least one event"`
-	FirstEventAt *time.Time            `json:"first_event_at,omitempty"`
-	LastEventAt  *time.Time            `json:"last_event_at,omitempty"`
+	Total         int                   `json:"total"`
+	Counts        map[activity.Kind]int `json:"counts" jsonschema:"events per kind"`
+	ByRepo        []RepoDigest          `json:"by_repo" jsonschema:"per repository, most active first; meetings excluded (they have no repository) — see meetings_count"`
+	ByDay         []DayDigest           `json:"by_day" jsonschema:"per day, oldest first; every day of the period when it is at most 62 days long, otherwise only days with events"`
+	ActiveDays    int                   `json:"active_days" jsonschema:"days with at least one event, GitHub or meeting"`
+	MeetingsCount int                   `json:"meetings_count" jsonschema:"same as counts.meeting, surfaced as its own field since a meeting is a different kind of thing from a repository event"`
+	FirstEventAt  *time.Time            `json:"first_event_at,omitempty"`
+	LastEventAt   *time.Time            `json:"last_event_at,omitempty"`
 }
 
 var weekdays = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
@@ -455,13 +470,18 @@ func (s *server) getDigest(ctx context.Context, _ *mcp.CallToolRequest, in Diges
 	days := map[string]*DayDigest{}
 	for _, e := range events { // newest first
 		out.Counts[e.Kind]++
-		r := repos[e.Repo]
-		if r == nil {
-			r = &RepoDigest{Repo: e.Repo, Counts: map[activity.Kind]int{}}
-			repos[e.Repo] = r
+		// A meeting has no repository (e.Repo == "") — grouping it in would
+		// produce a nameless, meaningless "repo" entry; meetings_count is
+		// its own field instead (see DigestOutput).
+		if e.Kind != activity.KindMeeting {
+			r := repos[e.Repo]
+			if r == nil {
+				r = &RepoDigest{Repo: e.Repo, Counts: map[activity.Kind]int{}}
+				repos[e.Repo] = r
+			}
+			r.Total++
+			r.Counts[e.Kind]++
 		}
-		r.Total++
-		r.Counts[e.Kind]++
 		key := e.OccurredAt.Format("2006-01-02")
 		d := days[key]
 		if d == nil {
@@ -476,6 +496,7 @@ func (s *server) getDigest(ctx context.Context, _ *mcp.CallToolRequest, in Diges
 		out.FirstEventAt, out.LastEventAt = &first, &last
 	}
 	out.ActiveDays = len(days)
+	out.MeetingsCount = out.Counts[activity.KindMeeting]
 
 	for _, r := range repos {
 		out.ByRepo = append(out.ByRepo, *r)
