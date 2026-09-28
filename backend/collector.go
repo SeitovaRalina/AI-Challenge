@@ -29,12 +29,29 @@ import (
 // and it can be pushed (become visible) much later. Dedup makes that free.
 // The run log — what was called, how long it took, what came back, and the
 // digest the run produced — is kept in a small JSON file for the UI.
+//
+// Day 19 appends the composition pipeline to the same run, right after
+// ingestion and before the digests:
+//
+//	worklog.list_events(all=true)   the entire stored history, not just this run's window
+//	worklog.build_sessions          pure: groups it into WorkSession blocks
+//	worklog.save_sessions           replaces the stored sessions with the result
+//
+// Rebuilding from the whole history (not just the freshly ingested window)
+// avoids boundary bugs — a session can straddle two collection runs — at the
+// cost of a full recompute every time, which is cheap at this data size.
+// "Auto after each collect" from the day's plan means exactly this: no
+// separate scheduler, no separate button — every run of this one already
+// ends with sessions rebuilt.
 
 const (
 	defaultCollectInterval = 15 * time.Minute
 	minCollectInterval     = time.Minute
 	// collectBackfill is how far back the first run (empty worklog) reaches.
-	collectBackfill   = 30 * 24 * time.Hour
+	// 90 days so the Analytics screen's longest period and its 8-week trend
+	// are both meaningfully populated right after the very first backfill,
+	// not just after weeks of subsequent runs.
+	collectBackfill   = 90 * 24 * time.Hour
 	collectOverlap    = 48 * time.Hour
 	collectChunk      = 7 * 24 * time.Hour
 	collectStartDelay = 5 * time.Second
@@ -81,22 +98,30 @@ type RunDigest struct {
 	Week  DigestTotals `json:"week"`
 }
 
+// SessionsRebuild is what the day-19 pipeline step of a run produced.
+type SessionsRebuild struct {
+	EventsIn    int `json:"events_in"`
+	SessionsOut int `json:"sessions_out"`
+	Replaced    int `json:"replaced" jsonschema:"how many sessions existed before this rebuild"`
+}
+
 // CollectorRun is one execution of the collection chain.
 type CollectorRun struct {
-	Trigger     string          `json:"trigger"` // startup | schedule | manual
-	StartedAt   time.Time       `json:"started_at"`
-	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
-	Status      string          `json:"status"` // running | ok | error
-	Error       string          `json:"error,omitempty"`
-	Backfill    bool            `json:"backfill"`
-	WindowSince *time.Time      `json:"window_since,omitempty"`
-	WindowUntil *time.Time      `json:"window_until,omitempty"`
-	Fetched     int             `json:"fetched"`
-	Inserted    int             `json:"inserted"`
-	Duplicates  int             `json:"duplicates"`
-	Warnings    []string        `json:"warnings"`
-	Steps       []CollectorStep `json:"steps"`
-	Digest      *RunDigest      `json:"digest,omitempty"`
+	Trigger     string           `json:"trigger"` // startup | schedule | manual
+	StartedAt   time.Time        `json:"started_at"`
+	FinishedAt  *time.Time       `json:"finished_at,omitempty"`
+	Status      string           `json:"status"` // running | ok | error
+	Error       string           `json:"error,omitempty"`
+	Backfill    bool             `json:"backfill"`
+	WindowSince *time.Time       `json:"window_since,omitempty"`
+	WindowUntil *time.Time       `json:"window_until,omitempty"`
+	Fetched     int              `json:"fetched"`
+	Inserted    int              `json:"inserted"`
+	Duplicates  int              `json:"duplicates"`
+	Warnings    []string         `json:"warnings"`
+	Steps       []CollectorStep  `json:"steps"`
+	Digest      *RunDigest       `json:"digest,omitempty"`
+	Sessions    *SessionsRebuild `json:"sessions,omitempty"`
 }
 
 func (r *CollectorRun) clone() CollectorRun {
@@ -254,9 +279,9 @@ func (c *Collector) execute(run *CollectorRun) {
 	if err != nil {
 		log.Printf("collector: %s run failed after %s: %v", run.Trigger, finished.Sub(run.StartedAt).Round(time.Millisecond), err)
 	} else {
-		log.Printf("collector: %s run ok in %s: %d fetched, %d new, %d duplicate(s); today %d event(s), 7 days %d",
+		log.Printf("collector: %s run ok in %s: %d fetched, %d new, %d duplicate(s); %d session(s) rebuilt; today %d event(s), 7 days %d",
 			run.Trigger, finished.Sub(run.StartedAt).Round(time.Millisecond), run.Fetched, run.Inserted, run.Duplicates,
-			run.Digest.Today.Total, run.Digest.Week.Total)
+			run.Sessions.SessionsOut, run.Digest.Today.Total, run.Digest.Week.Total)
 	}
 	c.saveRuns(snapshot)
 }
@@ -289,7 +314,7 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 				return fmt.Sprintf("курсор %s: %s · в журнале %d событий", s.Source, s.SyncedUntil.Format("02.01 15:04"), state.TotalEvents)
 			}
 		}
-		return "журнал пуст — первый сбор, история за 30 дней"
+		return "журнал пуст — первый сбор, история за 90 дней"
 	}); err != nil {
 		return err
 	}
@@ -355,6 +380,10 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 		c.mu.Unlock()
 	}
 
+	if err := c.rebuildSessions(ctx, run); err != nil {
+		return err
+	}
+
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	digest := &RunDigest{}
 	for _, p := range []struct {
@@ -380,6 +409,44 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 	}
 	c.mu.Lock()
 	run.Digest = digest
+	c.mu.Unlock()
+	return nil
+}
+
+// rebuildSessions runs day 19's composition pipeline: the entire stored
+// history in, work sessions out, replacing whatever was stored before.
+func (c *Collector) rebuildSessions(ctx context.Context, run *CollectorRun) error {
+	var all struct {
+		Events []json.RawMessage `json:"events"`
+	}
+	if err := c.call(ctx, run, c.worklog, "list_events", map[string]any{"from": "1970-01-01", "all": true}, "вся история", &all, func() string {
+		return fmt.Sprintf("%d событий", len(all.Events))
+	}); err != nil {
+		return err
+	}
+
+	var built struct {
+		Sessions    []json.RawMessage `json:"sessions"`
+		SessionsOut int               `json:"sessions_out"`
+	}
+	if err := c.call(ctx, run, c.worklog, "build_sessions", map[string]any{"events": all.Events}, fmt.Sprintf("%d событий", len(all.Events)), &built, func() string {
+		return fmt.Sprintf("%d сессий", built.SessionsOut)
+	}); err != nil {
+		return err
+	}
+
+	var saved struct {
+		Saved    int `json:"saved"`
+		Replaced int `json:"replaced"`
+	}
+	if err := c.call(ctx, run, c.worklog, "save_sessions", map[string]any{"sessions": built.Sessions}, fmt.Sprintf("%d сессий", len(built.Sessions)), &saved, func() string {
+		return fmt.Sprintf("сохранено %d (было %d)", saved.Saved, saved.Replaced)
+	}); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	run.Sessions = &SessionsRebuild{EventsIn: len(all.Events), SessionsOut: saved.Saved, Replaced: saved.Replaced}
 	c.mu.Unlock()
 	return nil
 }

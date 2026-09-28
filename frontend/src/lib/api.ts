@@ -879,3 +879,90 @@ export function getActivityEvents(
   if (filters?.kind) params.set('kind', filters.kind)
   return request<ActivityEventsResult>(`/api/activity/events?${params}`)
 }
+
+// ---- Day 19: session pipeline + Analytics screen ----
+
+export type AnalyticsPeriod = '7d' | '30d' | '90d'
+
+export interface AnalyticsKpi {
+  total_hours: number
+  active_days: number
+  sessions_count: number
+  repo_count: number
+  project_count: number
+}
+
+export interface ProjectHours {
+  project: string
+  hours: number
+}
+
+export interface DayHours {
+  date: string
+  weekday: string
+  total_hours: number
+}
+
+// CommitTypeCount is one Conventional Commits type ("feat(scope): ..." ->
+// "feat", scope dropped) and how many commits in the period carried it.
+// "other" covers commits with no recognized prefix.
+export interface CommitTypeCount {
+  type: string
+  count: number
+}
+
+export interface HeatmapCell {
+  weekday: number // 0 = Sunday .. 6 = Saturday (JS Date convention too)
+  weekday_label: string
+  hour: number
+  // Average minutes worked in this hour, on this weekday, per such day in
+  // the period (0-60) — not a sum across every week, which would grow with
+  // the period's length and could exceed 60.
+  avg_minutes: number
+}
+
+export interface WeekTrend {
+  week_start: string
+  week_end: string
+  hours: number
+}
+
+export interface Analytics {
+  from: string
+  to: string
+  timezone: string
+  kpi: AnalyticsKpi
+  time_by_project: ProjectHours[]
+  by_day: DayHours[]
+  commit_types: CommitTypeCount[]
+  heatmap: HeatmapCell[]
+  weekly_trend: WeekTrend[]
+  warnings?: string[]
+}
+
+export function getAnalytics(period: AnalyticsPeriod): Promise<Analytics> {
+  return request<Analytics>(`/api/analytics?period=${period}`)
+}
+
+export interface RepoProject {
+  repo: string
+  project?: string
+}
+
+export function listRepoProjects(): Promise<{ repos: RepoProject[] }> {
+  return request<{ repos: RepoProject[] }>('/api/analytics/repos')
+}
+
+// setRepoProject is opt-in merging: repo is its own project by default
+// (its bare name), and this only matters when you want several repos to
+// share one label ("" clears it). Takes effect on the very next
+// getAnalytics call — no session rebuild needed, the project is resolved
+// at read time.
+export function setRepoProject(repo: string, project: string): Promise<RepoProject> {
+  // repo is "owner/repo" — the backend's {repo...} wildcard route expects
+  // that literal slash as a path separator, not percent-encoded.
+  return request<RepoProject>(`/api/analytics/repos/${repo}`, {
+    method: 'PATCH',
+    body: { project },
+  })
+}

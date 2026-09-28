@@ -93,7 +93,7 @@ with coverage info). The backend (the MCP host) runs a background collector
 `worklog.get_sync_state` → `github.get_activity` per ≤7-day chunk →
 `worklog.ingest_events` → `worklog.get_activity_digest` for today and the
 last 7 days. The cursor lives in the worklog database, so a restart just
-picks up from it; the first run backfills 30 days, and every run re-reads
+picks up from it; the first run backfills 90 days, and every run re-reads
 48h before the cursor since a commit's author date and its push time can
 differ — dedup makes the overlap free. The chat agent now takes tools from
 both MCP servers: Worklog's read tools (`get_activity_digest`, `list_events`)
@@ -103,6 +103,31 @@ Worklog's coverage doesn't reach the period. The «Активность» screen
 the collector's own state (last/next run, a manual "Собрать сейчас", the run
 log) plus a period digest and event feed, both read from Worklog. See
 [`days/w04-d18-activity-scheduler.md`](days/w04-d18-activity-scheduler.md).
+
+Day 19 is a composition pipeline on top: `list_events` → `build_sessions` →
+`save_sessions`, three more Worklog tools chained automatically after every
+collection (same run, same run log — no separate scheduler or button).
+`build_sessions` is pure (no I/O): it groups events into `WorkSession`
+blocks — events no more than 45 minutes apart, a session starting 30 minutes
+before its first event — **independently per repository**, so working in two
+repos in the same window produces two sessions, not one that drops whichever
+repo had fewer events. `save_sessions` replaces the whole sessions table
+every time, rebuilding from the *entire* stored history rather than merging
+incrementally, so a session straddling two collection runs is never split at
+a boundary. Two more tools round out the domain: `set_repo_project`/
+`get_repo_projects` are *opt-in* merging of several repos under one shared
+project label — a repo with no explicit mapping is its own project (its bare
+name), never a shared "unmapped" bucket — and `get_analytics` aggregates
+stored sessions, plus commit messages, into everything the new
+**«Аналитика»** screen renders: KPI cards, hours by project, hours by day, a
+commit-type breakdown (`feat`/`fix`/`chore`/... parsed from each commit's
+Conventional Commits prefix — the scope in `type(scope): ...` is dropped,
+only the type is kept), a weekday×hour heatmap, and an 8-week trend (always
+the trailing 8 weeks, independent of the selected period). No LLM, no
+productivity score, no development/review split (a mostly-commits workflow
+made that split ~100% development and meaningless) — counts and hours only,
+same principle as day 18's digest. See
+[`days/w04-d19-work-sessions-pipeline.md`](days/w04-d19-work-sessions-pipeline.md).
 
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
@@ -298,4 +323,16 @@ now prefers this local data over a live `github.get_activity` call:
 curl -s -X POST http://localhost:8080/api/agent/chats/$chat_id/messages \
   -H "Content-Type: application/json" \
   -d '{"message":"Сколько всего коммитов у меня за последние 30 дней?"}'
+```
+
+The session pipeline and Analytics screen (day 19) — sessions are rebuilt
+automatically at the end of every collector run above; this only reads the
+result:
+
+```
+curl -s "http://localhost:8080/api/analytics?period=30d"
+
+curl -s http://localhost:8080/api/analytics/repos
+curl -s -X PATCH http://localhost:8080/api/analytics/repos/owner/repo \
+  -H "Content-Type: application/json" -d '{"project":"AI Challenge"}'
 ```
