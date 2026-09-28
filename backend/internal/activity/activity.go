@@ -32,7 +32,7 @@ type Event struct {
 	Kind       Kind      `json:"kind" jsonschema:"what happened: commit, pr_opened (PR created — says nothing about whether it is still open), pr_merged, review, issue_comment, or meeting (a calendar event)"`
 	Repo       string    `json:"repo" jsonschema:"owner/repo; empty for a meeting"`
 	Title      string    `json:"title" jsonschema:"commit subject, PR title, comment excerpt, or meeting title"`
-	URL        string    `json:"url" jsonschema:"link to the event on github.com; empty for a meeting"`
+	URL        string    `json:"url" jsonschema:"link to the event — github.com for GitHub kinds, the calendar's own web link for a meeting when the source provides one; empty if not"`
 	OccurredAt time.Time `json:"occurred_at" jsonschema:"when the event happened (RFC3339); a meeting's start"`
 	Author     string    `json:"author" jsonschema:"GitHub login of the author; empty for a meeting"`
 	Ref        string    `json:"ref,omitempty" jsonschema:"branch name for commits, #number for PR/review/comment events"`

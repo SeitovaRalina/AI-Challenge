@@ -200,6 +200,7 @@ func (a *calendarAPI) expand(ev ical.Event, since, until time.Time) ([]activity.
 	duration := end.Sub(start)
 	uid := eventUID(ev)
 	title := summary(ev)
+	link := eventURL(ev)
 
 	set, err := ev.RecurrenceSet(time.Local)
 	if err != nil {
@@ -207,27 +208,38 @@ func (a *calendarAPI) expand(ev ical.Event, since, until time.Time) ([]activity.
 	}
 	if set == nil {
 		if start.Before(until) && !end.Before(since) {
-			return []activity.Event{meetingEvent(uid, title, start, end)}, nil
+			return []activity.Event{meetingEvent(uid, title, link, start, end)}, nil
 		}
 		return nil, nil
 	}
 
 	var out []activity.Event
 	for _, occStart := range set.Between(since, until, true) {
-		out = append(out, meetingEvent(uid+":"+occStart.UTC().Format(time.RFC3339), title, occStart, occStart.Add(duration)))
+		out = append(out, meetingEvent(uid+":"+occStart.UTC().Format(time.RFC3339), title, link, occStart, occStart.Add(duration)))
 	}
 	return out, nil
 }
 
-func meetingEvent(id, title string, start, end time.Time) activity.Event {
+func meetingEvent(id, title, link string, start, end time.Time) activity.Event {
 	return activity.Event{
 		ID: "calendar:" + id, Source: "calendar", Kind: activity.KindMeeting,
-		Title: title, OccurredAt: start.In(time.Local), EndsAt: end.In(time.Local),
+		Title: title, URL: link, OccurredAt: start.In(time.Local), EndsAt: end.In(time.Local),
 	}
 }
 
 func eventUID(ev ical.Event) string {
 	if p := ev.Props.Get(ical.PropUID); p != nil {
+		return p.Value
+	}
+	return ""
+}
+
+// eventURL is the calendar's own web link for the event (Yandex sets its
+// standard iCal URL property to e.g. https://calendar.yandex.ru/event?
+// event_id=...) — "" when the source doesn't provide one, which the
+// frontend already renders as plain text instead of a dead link.
+func eventURL(ev ical.Event) string {
+	if p := ev.Props.Get(ical.PropURL); p != nil {
 		return p.Value
 	}
 	return ""
