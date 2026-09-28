@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +23,8 @@ import (
 // and cached, since they essentially never change between calls.
 type calendarAPI struct {
 	client   *caldav.Client
+	http     webdav.HTTPClient
+	baseURL  *url.URL
 	username string
 
 	mu        sync.Mutex
@@ -33,7 +37,11 @@ func newCalendarAPI(serverURL, username, password string) (*calendarAPI, error) 
 	if err != nil {
 		return nil, fmt.Errorf("caldav client: %w", err)
 	}
-	return &calendarAPI{client: c, username: username}, nil
+	base, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("caldav url: %w", err)
+	}
+	return &calendarAPI{client: c, http: httpClient, baseURL: base, username: username}, nil
 }
 
 // discover resolves and caches the account's calendars.
@@ -71,28 +79,18 @@ func (a *calendarAPI) events(ctx context.Context, calendars []caldav.Calendar, s
 		warnings []string
 	)
 	for _, cal := range calendars {
-		objs, err := a.client.QueryCalendar(ctx, cal.Path, &caldav.CalendarQuery{
-			CompRequest: caldav.CalendarCompRequest{
-				Name:     "VCALENDAR",
-				AllProps: true,
-				Comps:    []caldav.CalendarCompRequest{{Name: "VEVENT", AllProps: true}},
-			},
-			CompFilter: caldav.CompFilter{
-				Name: "VCALENDAR",
-				Comps: []caldav.CompFilter{{
-					Name: "VEVENT", Start: since, End: until,
-				}},
-			},
-		})
+		blocks, err := a.queryCalendarData(ctx, cal.Path, since, until)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", cal.Name, err))
 			continue
 		}
-		for _, obj := range objs {
-			if obj.Data == nil {
+		for _, data := range blocks {
+			ics, err := ical.NewDecoder(strings.NewReader(data)).Decode()
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: разбор события: %v", cal.Name, err))
 				continue
 			}
-			for _, ev := range obj.Data.Events() {
+			for _, ev := range ics.Events() {
 				occs, err := a.expand(ev, since, until)
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("%s: %s: %v", cal.Name, eventUID(ev), err))
@@ -104,6 +102,77 @@ func (a *calendarAPI) events(ctx context.Context, calendars []caldav.Calendar, s
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].OccurredAt.Before(events[j].OccurredAt) })
 	return events, warnings
+}
+
+// caldavMultistatus/caldavResponse/caldavPropstat/caldavProp are a minimal
+// decode of a REPORT's multistatus body — just enough to pull out each
+// resource's calendar-data. Deliberately not go-webdav's own types: its
+// GetETag.UnmarshalText calls strconv.Unquote on the getetag value and
+// requires an RFC 7232 quoted string, but Yandex's CalDAV sends getetag
+// unquoted (a bare number) — that decode failure was killing the *whole*
+// response, calendar-data included, even though nothing here reads ETags at
+// all. Asking only for calendar-data (never getetag) in the request below
+// sidesteps the bug entirely instead of working around a parse error.
+type caldavMultistatus struct {
+	Responses []caldavResponse `xml:"response"`
+}
+type caldavResponse struct {
+	Propstats []caldavPropstat `xml:"propstat"`
+}
+type caldavPropstat struct {
+	Prop caldavProp `xml:"prop"`
+}
+type caldavProp struct {
+	CalendarData string `xml:"urn:ietf:params:xml:ns:caldav calendar-data"`
+}
+
+// queryCalendarData runs the calendar-query REPORT for one calendar
+// collection's VEVENTs overlapping [since, until] and returns each matching
+// resource's raw iCalendar text.
+func (a *calendarAPI) queryCalendarData(ctx context.Context, calPath string, since, until time.Time) ([]string, error) {
+	reqURL := a.baseURL.ResolveReference(&url.URL{Path: calPath})
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <C:calendar-data/>
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="%s" end="%s"/>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>`, since.UTC().Format("20060102T150405Z"), until.UTC().Format("20060102T150405Z"))
+
+	req, err := http.NewRequestWithContext(ctx, "REPORT", reqURL.String(), strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", `application/xml; charset="utf-8"`)
+	req.Header.Set("Depth", "1")
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMultiStatus {
+		return nil, fmt.Errorf("unexpected status %s", resp.Status)
+	}
+
+	var ms caldavMultistatus
+	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+		return nil, fmt.Errorf("decode multistatus: %w", err)
+	}
+	var out []string
+	for _, r := range ms.Responses {
+		for _, ps := range r.Propstats {
+			if ps.Prop.CalendarData != "" {
+				out = append(out, ps.Prop.CalendarData)
+			}
+		}
+	}
+	return out, nil
 }
 
 // expand turns one VEVENT (which may recur) into zero or more meeting
