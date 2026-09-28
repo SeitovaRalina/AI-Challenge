@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Activity,
+  BarChart3,
   Brain,
   Check,
   ChevronDown,
@@ -65,6 +66,8 @@ interface SidebarProps {
   onOpenSources: () => void
   activityActive: boolean
   onOpenActivity: () => void
+  analyticsActive: boolean
+  onOpenAnalytics: () => void
   onCollapse: () => void
   onRenameChat: (id: string, title: string) => void
   onDeleteChat: (id: string) => void
@@ -117,6 +120,8 @@ export function Sidebar({
   onOpenSources,
   activityActive,
   onOpenActivity,
+  analyticsActive,
+  onOpenAnalytics,
   onCollapse,
   onRenameChat,
   onDeleteChat,
@@ -352,6 +357,19 @@ export function Sidebar({
         >
           <Activity className="h-4 w-4" />
           Активность
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAnalytics}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+            analyticsActive
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <BarChart3 className="h-4 w-4" />
+          Аналитика
         </button>
       </div>
 

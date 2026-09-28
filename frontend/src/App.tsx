@@ -17,6 +17,7 @@ import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
 import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { SourcesPanel } from '@/components/sources-panel'
 import { ActivityPanel } from '@/components/activity-panel'
+import { AnalyticsPanel } from '@/components/analytics-panel'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
@@ -64,7 +65,7 @@ import {
 import { applyTurnEvent, EMPTY_TURN_PROGRESS, type TurnProgress } from '@/lib/turn-progress'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'chat' | 'sources' | 'activity' | DemoMode
+type Mode = 'chat' | 'sources' | 'activity' | 'analytics' | DemoMode
 
 // Identifies one send-like operation's target for the pendingKeys set below:
 // a chat by itself, or (for a branching chat) one specific branch within it —
@@ -99,6 +100,11 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
     title: 'Активность',
     description:
       'Фоновый сборщик каждые несколько минут забирает вашу активность из GitHub и сохраняет её в Worklog — внутреннем журнале работы. Здесь видно, когда он запускался и что нашёл; в чате ассистент отвечает на вопросы о работе из этого же журнала, без обращения к GitHub.',
+  },
+  analytics: {
+    title: 'Аналитика',
+    description:
+      'После каждого сбора события автоматически собираются в рабочие сессии (Worklog: list_events → build_sessions → save_sessions) — это и есть материал для графиков ниже. Просто счётчики и часы, без оценки продуктивности.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -771,7 +777,8 @@ function App() {
     }
   }
 
-  const activeDemo = mode === 'chat' || mode === 'sources' || mode === 'activity' ? null : mode
+  const activeDemo =
+    mode === 'chat' || mode === 'sources' || mode === 'activity' || mode === 'analytics' ? null : mode
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -811,6 +818,8 @@ function App() {
             onOpenSources={() => setMode('sources')}
             activityActive={mode === 'activity'}
             onOpenActivity={() => setMode('activity')}
+            analyticsActive={mode === 'analytics'}
+            onOpenAnalytics={() => setMode('analytics')}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
@@ -912,6 +921,8 @@ function App() {
           {mode === 'sources' && <SourcesPanel />}
 
           {mode === 'activity' && <ActivityPanel />}
+
+          {mode === 'analytics' && <AnalyticsPanel />}
 
           {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
