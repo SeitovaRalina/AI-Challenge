@@ -51,119 +51,24 @@ short-term (this chat), working (this chat's own task state), and long-term
 [`docs/concept.md`](docs/concept.md) for the overall product vision, and
 [`days/`](days/) for each day's exact assignment scope as the product grows.
 
-Week 4 starts connecting real work-activity sources over MCP (Model Context
-Protocol). Day 16 adds the first step: the «Источники» screen (and a
-`cmd/mcp-tools` CLI sharing the same client code) connects to GitHub's
-official remote MCP server over streamable HTTP, performs the `initialize`
-handshake, and lists the tools it exposes — no tool is called yet. See
-[`days/w04-d16-mcp-connection.md`](days/w04-d16-mcp-connection.md).
+Week 4 connects real work-activity sources over MCP (Model Context
+Protocol): the product's own GitHub, Calendar (CalDAV) and Worklog MCP
+servers, plus a background collector that keeps a local history of commits,
+PRs, reviews and meetings. The chat agent picks the right server and tool
+per question — the local history by default, a live call only when the
+user explicitly asks for fresh data — and can chain several calls in one
+turn for a longer question ("what did I do yesterday", "this week vs
+last"). The «Источники» screen shows each server's connection and tools;
+«Активность» shows the collector's own status and a raw event feed.
 
-Day 17 adds the product's own MCP server, `backend/cmd/mcp-github` — a
-thin, stateless stdio adapter over the GitHub REST API with two read-only
-tools: `list_repos` and `get_activity(since, until?, repos?)`, which returns
-the user's own commits (on every branch pushed in the period), PRs opened and
-merged, reviews and comments as normalized `ActivityEvent` records in local
-time. The chat agent uses these tools through OpenAI function calling via
-LiteLLM, in two steps per turn (`backend/agent_tools.go`): a small routing
-call sees the recent conversation plus the tools and either calls them —
-the backend forwards each call over MCP and feeds the result back — or
-answers `NONE`; then the ordinary answering call writes the reply, strictly
-from the returned events when there are any. Keeping the tools away from the
-answering call is deliberate: offered there, the model kept slipping its
-JSON answer into stray tool calls, even on plain estimate requests. So
-"что я делала вчера?" calls `get_activity`, while estimating a task never
-touches GitHub. A question about activity also doesn't move the chat's task
-stage (it isn't a task description).
-
-Messages are sent over `POST /api/agent/chats/{id}/messages/stream`, which
-reports the turn as server-sent events (`backend/turn_stream.go`): each
-tool call as it starts and returns, then the reply as soon as it's ready
-while memory updates finish. The chat shows these live, and each call stays
-above its reply, stored with the chat. See
-[`days/w04-d17-github-mcp-tool.md`](days/w04-d17-github-mcp-tool.md).
-
-Day 18 adds the internal domain server, `backend/cmd/mcp-worklog` — a SQLite
-store of the user's work history (`modernc.org/sqlite`, no cgo), separate
-from the source adapters that feed it. Its tools: `ingest_events` (stores a
-batch, deduped by id, and advances the source's sync cursor in the same
-transaction), `get_sync_state` (the covered range per source), `list_events`
-and `get_activity_digest` (aggregated counts by kind, repository and day,
-with coverage info). The backend (the MCP host) runs a background collector
-(`backend/collector.go`) on a schedule (`COLLECT_INTERVAL`, default 15m):
-`worklog.get_sync_state` → `github.get_activity` per ≤7-day chunk →
-`worklog.ingest_events` → `worklog.get_activity_digest` for today and the
-last 7 days. The cursor lives in the worklog database, so a restart just
-picks up from it; the first run backfills 90 days, and every run re-reads
-48h before the cursor since a commit's author date and its push time can
-differ — dedup makes the overlap free. The chat agent now takes tools from
-both MCP servers: Worklog's read tools (`get_activity_digest`, `list_events`)
-are the default for "what did I do" questions — fast, no GitHub round trip —
-falling back to live `github.get_activity` only when asked or when
-Worklog's coverage doesn't reach the period. The «Активность» screen shows
-the collector's own state (last/next run, a manual "Собрать сейчас", the run
-log) plus a period digest and event feed, both read from Worklog. See
-[`days/w04-d18-activity-scheduler.md`](days/w04-d18-activity-scheduler.md).
-
-Day 19 is a composition pipeline on top: `list_events` → `build_sessions` →
-`save_sessions`, three more Worklog tools chained automatically after every
-collection (same run, same run log — no separate scheduler or button).
-`build_sessions` is pure (no I/O): it groups events into `WorkSession`
-blocks — events no more than 45 minutes apart, a session starting 30 minutes
-before its first event — **independently per repository**, so working in two
-repos in the same window produces two sessions, not one that drops whichever
-repo had fewer events. `save_sessions` replaces the whole sessions table
-every time, rebuilding from the *entire* stored history rather than merging
-incrementally, so a session straddling two collection runs is never split at
-a boundary. Two more tools round out the domain: `set_repo_project`/
-`get_repo_projects` are *opt-in* merging of several repos under one shared
-project label — a repo with no explicit mapping is its own project (its bare
-name), never a shared "unmapped" bucket — and `get_analytics` aggregates
-stored sessions, plus commit messages, into everything the new
-**«Аналитика»** screen renders: KPI cards, hours by project, hours by day, a
-commit-type breakdown (`feat`/`fix`/`chore`/... parsed from each commit's
-Conventional Commits prefix — the scope in `type(scope): ...` is dropped,
-only the type is kept), a weekday×hour heatmap, and an 8-week trend (always
-the trailing 8 weeks, independent of the selected period). No LLM, no
-productivity score, no development/review split (a mostly-commits workflow
-made that split ~100% development and meaningless) — counts and hours only,
-same principle as day 18's digest. See
-[`days/w04-d19-work-sessions-pipeline.md`](days/w04-d19-work-sessions-pipeline.md).
-
-Day 20 adds a third MCP server, `backend/cmd/mcp-calendar` — a read-only
-adapter over CalDAV (`emersion/go-webdav`/`go-ical`), normalizing the user's
-own meetings into the same `ActivityEvent` shape as GitHub (`kind: meeting`,
-plus an `ends_at` an event carries alongside `occurred_at`; recurring events
-are expanded within the requested window via `teambition/rrule-go`, and
-declined/cancelled/all-day entries are already filtered out). The background
-collector gains a matching step — `calendar.get_events` →
-`worklog.ingest_events` — run right alongside the GitHub one; it's entirely
-optional, skipped with a warning until `CALDAV_USERNAME`/
-`CALDAV_APP_PASSWORD` are filled in, so GitHub-only collection keeps working
-either way. `build_sessions` now turns a meeting event straight into its own
-session (no gap-merging — a calendar event already has exact bounds), and
-`get_analytics`/the new `get_day_timeline(date)` resolve a period's sessions
-through `resolveIntervals`, which merges overlapping meetings into a union
-and subtracts that from any overlapping work session, so a meeting always
-wins shared time and nothing is ever double-counted. The Analytics screen
-gains a meeting-hours KPI, a work/meeting stacked by-day chart, and a
-Gantt-style day timeline reading `get_day_timeline` directly.
-
-This is also where the chat agent stops being single-server: its routing
-prompt (`backend/agent_tools.go`) now describes all three servers and picks
-across them per question — `get_day_timeline` for "what did I do
-today/yesterday" (work and meetings together, already deduplicated),
-`get_analytics` for KPI/trend questions (one call per period being
-compared), live `get_events`/`get_activity` only when explicitly asked for
-fresh data. A longer flow — e.g. "restore what I did yesterday" — can take
-more than one call in a turn; `maxRoutingRounds` went from 3 to 4 to give
-that room. Finally, a weekly summary (`backend/weekly_summary.go`): this
-week vs last, facts only (hours, meeting hours, top project, merged PRs)
-read via `get_analytics`/`get_activity_digest`, written up by one plain LLM
-call in the user's own profile tone — never a productivity judgment, same
-principle as `get_analytics` itself. Generated on demand from the Analytics
-card, and automatically every Friday evening via a poll loop (same style as
-`Collector.Start`). See
-[`days/w04-d20-mcp-orchestration.md`](days/w04-d20-mcp-orchestration.md).
+On top of that, an automatic pipeline turns events into work and meeting
+sessions (a meeting always wins any time it shares with work, so nothing
+is double-counted), powering the **«Аналитика»** screen: KPIs, hours by
+project/day, a commit-type breakdown, a weekday×hour heatmap, an 8-week
+trend, a Gantt-style day timeline, and a weekly summary comparing this
+week to last in the user's own tone — facts only, never a productivity
+score. See [`days/`](days/) (`w04-d16-mcp-connection.md` through
+`w04-d20-mcp-orchestration.md`) for each day's exact scope.
 
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
