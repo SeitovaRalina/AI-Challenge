@@ -76,35 +76,11 @@ func TestBuildSessions_UnsortedInputIsSortedFirst(t *testing.T) {
 	}
 }
 
-func TestBuildSessions_CategoryMajorityWithTieFavorsFirstSeen(t *testing.T) {
-	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
-	// One commit (development), then one review (review): a 1-1 tie —
-	// whichever kind's event came first in time should win.
-	events := []activity.Event{
-		ev("a", activity.KindReview, "r/1", base),
-		ev("b", activity.KindCommit, "r/1", base.Add(time.Minute)),
-	}
-	sessions := buildSessions(events)
-	if len(sessions) != 1 {
-		t.Fatalf("want 1 session, got %d", len(sessions))
-	}
-	if sessions[0].Category != CategoryReview {
-		t.Errorf("want tie to favor the first-seen category (review), got %s", sessions[0].Category)
-	}
-
-	// Two commits then one review: development strictly dominates.
-	events2 := []activity.Event{
-		ev("a", activity.KindCommit, "r/1", base),
-		ev("b", activity.KindCommit, "r/1", base.Add(time.Minute)),
-		ev("c", activity.KindIssueComment, "r/1", base.Add(2*time.Minute)),
-	}
-	sessions2 := buildSessions(events2)
-	if sessions2[0].Category != CategoryDevelopment {
-		t.Errorf("want development to dominate 2-1, got %s", sessions2[0].Category)
-	}
-}
-
-func TestBuildSessions_RepoMajority(t *testing.T) {
+// TestBuildSessions_ParallelReposNeverMerge is the fix for a real bug: events
+// in two repositories within the same time window used to collapse into one
+// session, with the repo that had fewer events silently dropped from every
+// chart. Now each repository gets its own session, both counted in full.
+func TestBuildSessions_ParallelReposNeverMerge(t *testing.T) {
 	base := time.Date(2026, 9, 28, 9, 0, 0, 0, time.Local)
 	events := []activity.Event{
 		ev("a", activity.KindCommit, "org/repo-a", base),
@@ -112,11 +88,20 @@ func TestBuildSessions_RepoMajority(t *testing.T) {
 		ev("c", activity.KindCommit, "org/repo-b", base.Add(2*time.Minute)),
 	}
 	sessions := buildSessions(events)
-	if len(sessions) != 1 {
-		t.Fatalf("want 1 session, got %d", len(sessions))
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 sessions (one per repo), got %d: %+v", len(sessions), sessions)
 	}
-	if sessions[0].Repo != "org/repo-b" {
-		t.Errorf("want the 2-1 dominant repo org/repo-b, got %s", sessions[0].Repo)
+	byRepo := map[string]WorkSession{}
+	for _, s := range sessions {
+		byRepo[s.Repo] = s
+	}
+	a, ok := byRepo["org/repo-a"]
+	if !ok || a.EventCount != 1 {
+		t.Errorf("want repo-a's session with 1 event, got %+v (present: %v)", a, ok)
+	}
+	b, ok := byRepo["org/repo-b"]
+	if !ok || b.EventCount != 2 {
+		t.Errorf("want repo-b's session with 2 events, got %+v (present: %v)", b, ok)
 	}
 }
 

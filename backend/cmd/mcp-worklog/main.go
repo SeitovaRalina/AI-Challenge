@@ -16,13 +16,15 @@
 // Day 19 adds the composition pipeline that turns events into work sessions,
 // and the analytics read side over them:
 //
-//   - build_sessions      — pure: groups events into WorkSession blocks
+//   - build_sessions      — pure: groups events into WorkSession blocks,
+//     independently per repository
 //   - save_sessions       — replaces the stored sessions with a new set
 //   - get_sessions        — stored sessions for a period
-//   - set_repo_project    — map a repository to a project label
+//   - set_repo_project    — opt in to merging a repository's hours under a
+//     shared project label (every repo stands on its own by default)
 //   - get_repo_projects   — every known repository and its mapping
-//   - get_analytics       — KPIs, time by project/day, composition, a
-//     weekday×hour heatmap, and an 8-week trend — all from stored sessions
+//   - get_analytics       — KPIs, time by project/day, a commit-type
+//     breakdown, a weekday×hour heatmap, and an 8-week trend
 //
 // It speaks MCP over stdio. WORKLOG_DB is the database file path (created if
 // missing). Stdout carries the protocol, so all logging goes to stderr.
@@ -121,7 +123,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "build_sessions",
 		Title:       "Собрать сессии из событий",
-		Description: "Pure computation, no storage: groups activity events into work sessions — contiguous blocks where consecutive events are no more than 45 minutes apart, each starting 30 minutes before its first event. Each session is tagged with its dominant category (development or review) and repository. Does not read or write the database; pass it save_sessions' input to persist the result.",
+		Description: "Pure computation, no storage: groups activity events into work sessions, independently per repository — contiguous blocks where consecutive events in the same repository are no more than 45 minutes apart, each starting 30 minutes before its first event. A session never spans two repositories, so working in several repos in the same window still counts every one of them in full. Each session reports its category counts (development_events/review_events/other_events) for a proportional hours split, plus a dominant category as a convenience label. Does not read or write the database; pass it save_sessions' input to persist the result.",
 		Annotations: readOnly,
 	}, s.buildSessionsTool)
 
@@ -135,28 +137,28 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_sessions",
 		Title:       "Сессии из журнала",
-		Description: "List the user's stored work sessions for a period, each with its category (development/review), dominant repository, event count, and mapped project (\"Без проекта\" when the repository has no mapping). Answers from the local work history — no call to GitHub.",
+		Description: "List the user's stored work sessions for a period, each with its category counts, repository, event count, and project (the repository's own bare name unless explicitly mapped to something else). Answers from the local work history — no call to GitHub.",
 		Annotations: readOnly,
 	}, s.getSessions)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "set_repo_project",
 		Title:       "Привязать репозиторий к проекту",
-		Description: "Maps a repository to a project label, purely for grouping in analytics (time by project). Takes effect immediately for every future query — sessions are not recomputed, since the project is resolved at read time, not stored on the session.",
+		Description: "Every repository is shown on its own in analytics by default (project = its bare name) — this tool is opt-in, for merging several repositories under one shared project label. Takes effect immediately for every future query — sessions are not recomputed, since the project is resolved at read time, not stored on the session.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
 	}, s.setRepoProjectTool)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_repo_projects",
 		Title:       "Репозитории и их проекты",
-		Description: "Every repository with at least one stored event, and its project mapping if any (unmapped repositories fall back to \"Без проекта\" everywhere else). Used to build a repo -> project mapping UI.",
+		Description: "Every repository with at least one stored event, and its explicit project mapping if any (unmapped repositories use their own bare name as the project everywhere else). Used to build a repo -> project mapping UI.",
 		Annotations: readOnly,
 	}, s.getRepoProjectsTool)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_analytics",
 		Title:       "Аналитика по сессиям",
-		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total/development/review hours, active days, sessions, repos, projects), hours by project, hours by day (development vs review), a development/review/other composition, a weekday×hour heatmap, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). No LLM, no productivity score — counts and hours only.",
+		Description: "Everything the Analytics screen's charts need for a period, computed from stored sessions: KPIs (total hours, active days, sessions, repos, projects), hours by project (a repository with no explicit project mapping is its own project), hours by day, a commit-type breakdown (feat/fix/chore/... parsed from commit messages, by count), a weekday×hour heatmap, and an 8-week trend (always the trailing 8 weeks, independent of the requested period). No LLM, no productivity score — counts and hours only.",
 		Annotations: readOnly,
 	}, s.getAnalytics)
 

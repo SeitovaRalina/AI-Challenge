@@ -18,6 +18,14 @@ import (
 // Kept as three separate tools (not one), exactly mirroring the challenge's
 // search → summarize → saveToFile shape, so the chain and the data passed
 // between its steps are both real MCP calls, inspectable independently.
+//
+// Sessions carry no development/review split: for a workflow that's mostly
+// commits (reviews and comments are rare in a solo/small-team repo), that
+// split was almost always 100% development and told the user nothing. What
+// the user's own commit messages already encode — a conventional-commit
+// type prefix (feat/fix/chore/...) — is a real signal instead, surfaced by
+// get_analytics as a commit-type breakdown (analytics.go), not baked into
+// the session model here.
 
 const (
 	// sessionGap: events more than this far apart start a new session.
@@ -27,62 +35,59 @@ const (
 	sessionLeadIn = 30 * time.Minute
 )
 
-// Category buckets a session's events for analytics — no finer than this
-// (no "focus"/"idle"/etc.): a session is development or review depending on
-// which kind of event dominates it; "other" is reserved for future event
-// kinds (e.g. calendar meetings, day 20) that are neither.
-type Category string
-
-const (
-	CategoryDevelopment Category = "development"
-	CategoryReview      Category = "review"
-	CategoryOther       Category = "other"
-)
-
-func categoryOf(kind activity.Kind) Category {
-	switch kind {
-	case activity.KindCommit, activity.KindPROpened, activity.KindPRMerged:
-		return CategoryDevelopment
-	case activity.KindReview, activity.KindIssueComment:
-		return CategoryReview
-	default:
-		return CategoryOther
-	}
-}
-
-// WorkSession is one contiguous block of work, reconstructed from events
-// that are all within sessionGap of their neighbor. Category and Repo are
-// the session's dominant one — a session touching two repos or mixing a
-// commit with a review still gets exactly one of each, so every session
-// contributes its whole duration to exactly one bar in the by-day/by-project
-// charts, never split.
+// WorkSession is one contiguous block of work in a single repository,
+// reconstructed from that repository's events that are all within
+// sessionGap of their neighbor. A session never spans more than one
+// repository — working in two repos in the same 45-minute window produces
+// two overlapping sessions, one per repo, each counted in full, rather than
+// one session that silently drops whichever repo had fewer events.
 type WorkSession struct {
 	Start        time.Time `json:"start"`
 	End          time.Time `json:"end"`
-	Category     Category  `json:"category" jsonschema:"development, review, or other — whichever kind of event dominates the session"`
-	Repo         string    `json:"repo" jsonschema:"the session's dominant repository"`
+	Repo         string    `json:"repo"`
 	EventCount   int       `json:"event_count"`
 	FirstEventID string    `json:"first_event_id"`
 	LastEventID  string    `json:"last_event_id"`
 }
 
-// buildSessions groups events (any order) into WorkSessions. Pure: same
-// input always yields the same output, no clock, no I/O — the property that
-// makes it safe to call as its own MCP tool ahead of save_sessions.
+// buildSessions groups events (any order) into WorkSessions, independently
+// per repository (see WorkSession's doc for why). Pure: same input always
+// yields the same output, no clock, no I/O — the property that makes it
+// safe to call as its own MCP tool ahead of save_sessions.
 func buildSessions(events []activity.Event) []WorkSession {
-	if len(events) == 0 {
-		return []WorkSession{}
+	byRepo := map[string][]activity.Event{}
+	for _, e := range events {
+		byRepo[e.Repo] = append(byRepo[e.Repo], e)
 	}
+	repos := make([]string, 0, len(byRepo))
+	for repo := range byRepo {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos) // deterministic regardless of map iteration order
+
+	var sessions []WorkSession
+	for _, repo := range repos {
+		sessions = append(sessions, buildSessionsForRepo(repo, byRepo[repo])...)
+	}
+	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].Start.Before(sessions[j].Start) })
+	if sessions == nil {
+		sessions = []WorkSession{}
+	}
+	return sessions
+}
+
+// buildSessionsForRepo groups one repository's events by time gap alone.
+func buildSessionsForRepo(repo string, events []activity.Event) []WorkSession {
 	sorted := make([]activity.Event, len(events))
 	copy(sorted, events)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].OccurredAt.Before(sorted[j].OccurredAt) })
 
 	var sessions []WorkSession
-	b := newSessionBuilder(sorted[0])
+	b := newSessionBuilder(repo, sorted[0])
 	for _, e := range sorted[1:] {
 		if e.OccurredAt.Sub(b.lastAt) > sessionGap {
 			sessions = append(sessions, b.finish())
-			b = newSessionBuilder(e)
+			b = newSessionBuilder(repo, e)
 			continue
 		}
 		b.add(e)
@@ -91,25 +96,16 @@ func buildSessions(events []activity.Event) []WorkSession {
 	return sessions
 }
 
-// sessionBuilder accumulates one session's events. Repo/category are picked
-// by count with ties going to whichever was seen first, so a single
-// dominant repo or category never flips on a coin toss.
+// sessionBuilder accumulates one repository's session.
 type sessionBuilder struct {
+	repo                      string
 	firstAt, lastAt           time.Time
 	firstEventID, lastEventID string
 	eventCount                int
-	repoOrder                 []string
-	repoCounts                map[string]int
-	categoryOrder             []Category
-	categoryCounts            map[Category]int
 }
 
-func newSessionBuilder(e activity.Event) *sessionBuilder {
-	b := &sessionBuilder{
-		firstAt: e.OccurredAt, lastAt: e.OccurredAt,
-		firstEventID: e.ID, lastEventID: e.ID,
-		repoCounts: map[string]int{}, categoryCounts: map[Category]int{},
-	}
+func newSessionBuilder(repo string, e activity.Event) *sessionBuilder {
+	b := &sessionBuilder{repo: repo, firstAt: e.OccurredAt, lastAt: e.OccurredAt, firstEventID: e.ID, lastEventID: e.ID}
 	b.add(e)
 	return b
 }
@@ -118,33 +114,12 @@ func (b *sessionBuilder) add(e activity.Event) {
 	b.lastAt = e.OccurredAt
 	b.lastEventID = e.ID
 	b.eventCount++
-	if b.repoCounts[e.Repo] == 0 {
-		b.repoOrder = append(b.repoOrder, e.Repo)
-	}
-	b.repoCounts[e.Repo]++
-	cat := categoryOf(e.Kind)
-	if b.categoryCounts[cat] == 0 {
-		b.categoryOrder = append(b.categoryOrder, cat)
-	}
-	b.categoryCounts[cat]++
 }
 
 func (b *sessionBuilder) finish() WorkSession {
-	repo := b.repoOrder[0]
-	for _, r := range b.repoOrder[1:] {
-		if b.repoCounts[r] > b.repoCounts[repo] {
-			repo = r
-		}
-	}
-	category := b.categoryOrder[0]
-	for _, c := range b.categoryOrder[1:] {
-		if b.categoryCounts[c] > b.categoryCounts[category] {
-			category = c
-		}
-	}
 	return WorkSession{
 		Start: b.firstAt.Add(-sessionLeadIn), End: b.lastAt,
-		Category: category, Repo: repo, EventCount: b.eventCount,
+		Repo: b.repo, EventCount: b.eventCount,
 		FirstEventID: b.firstEventID, LastEventID: b.lastEventID,
 	}
 }
@@ -185,7 +160,7 @@ func (s *server) saveSessionsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 		}
 		rows[i] = storedSession{
 			startAt: sess.Start.Unix(), endAt: sess.End.Unix(),
-			category: string(sess.Category), repo: sess.Repo, eventCount: sess.EventCount,
+			repo: sess.Repo, eventCount: sess.EventCount,
 			firstEventID: sess.FirstEventID, lastEventID: sess.LastEventID,
 		}
 	}
@@ -201,8 +176,8 @@ func (s *server) saveSessionsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 type GetSessionsInput struct {
 	From    string   `json:"from" jsonschema:"start of the period: RFC3339 timestamp, or a YYYY-MM-DD date (local time)"`
 	To      string   `json:"to,omitempty" jsonschema:"end of the period; defaults to now"`
-	Repos   []string `json:"repos,omitempty" jsonschema:"only sessions whose dominant repository is one of these"`
-	Project string   `json:"project,omitempty" jsonschema:"only sessions mapped to this project name; \"Без проекта\" for unmapped repositories"`
+	Repos   []string `json:"repos,omitempty" jsonschema:"only sessions in one of these repositories"`
+	Project string   `json:"project,omitempty" jsonschema:"only sessions explicitly mapped to this project name via set_repo_project (an unmapped repository's own name is not matched here — filter by repos for that)"`
 }
 
 type SessionView struct {
@@ -239,7 +214,7 @@ func sessionViewFrom(row storedSessionRow) SessionView {
 	return SessionView{
 		WorkSession: WorkSession{
 			Start: time.Unix(row.startAt, 0).In(time.Local), End: time.Unix(row.endAt, 0).In(time.Local),
-			Category: Category(row.category), Repo: row.repo, EventCount: row.eventCount,
+			Repo: row.repo, EventCount: row.eventCount,
 			FirstEventID: row.firstEventID, LastEventID: row.lastEventID,
 		},
 		Project: row.project,
@@ -291,7 +266,7 @@ func (s *server) resolveSessionFilter(ctx context.Context, fromStr, toStr string
 
 type SetRepoProjectInput struct {
 	Repo    string `json:"repo" jsonschema:"owner/repo, as it appears in stored events"`
-	Project string `json:"project" jsonschema:"project name to group this repo's sessions under; empty clears the mapping (falls back to \"Без проекта\")"`
+	Project string `json:"project" jsonschema:"project label to merge this repo's hours under in analytics (e.g. to combine several repos into one project); empty clears the mapping, falling back to the repository's own bare name — every repository is shown on its own by default, this is opt-in merging, not a prerequisite"`
 }
 
 type SetRepoProjectOutput struct {
@@ -314,7 +289,7 @@ type GetRepoProjectsInput struct{}
 
 type RepoProjectView struct {
 	Repo    string `json:"repo"`
-	Project string `json:"project,omitempty" jsonschema:"empty means unmapped (\"Без проекта\")"`
+	Project string `json:"project,omitempty" jsonschema:"empty means not explicitly mapped — the repository's own bare name is used as its project label everywhere else"`
 }
 
 type GetRepoProjectsOutput struct {

@@ -48,7 +48,10 @@ const (
 	defaultCollectInterval = 15 * time.Minute
 	minCollectInterval     = time.Minute
 	// collectBackfill is how far back the first run (empty worklog) reaches.
-	collectBackfill   = 30 * 24 * time.Hour
+	// 90 days so the Analytics screen's longest period and its 8-week trend
+	// are both meaningfully populated right after the very first backfill,
+	// not just after weeks of subsequent runs.
+	collectBackfill   = 90 * 24 * time.Hour
 	collectOverlap    = 48 * time.Hour
 	collectChunk      = 7 * 24 * time.Hour
 	collectStartDelay = 5 * time.Second
@@ -311,7 +314,7 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 				return fmt.Sprintf("курсор %s: %s · в журнале %d событий", s.Source, s.SyncedUntil.Format("02.01 15:04"), state.TotalEvents)
 			}
 		}
-		return "журнал пуст — первый сбор, история за 30 дней"
+		return "журнал пуст — первый сбор, история за 90 дней"
 	}); err != nil {
 		return err
 	}

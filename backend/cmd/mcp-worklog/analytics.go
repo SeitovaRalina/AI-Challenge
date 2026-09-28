@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -12,8 +14,14 @@ import (
 
 // get_analytics is day 19's read side: everything the Analytics screen's
 // charts need, computed purely from stored sessions (get_sessions) joined
-// with the repo→project mapping. No LLM, no "productivity" score — counts
-// and hours only, same principle as get_activity_digest in day 18.
+// with the repo→project mapping, plus a commit-type breakdown read directly
+// from stored commit events. No LLM, no "productivity" score — counts and
+// hours only, same principle as get_activity_digest in day 18.
+//
+// There is no development/review split here: for a workflow that's mostly
+// commits, that split was almost always 100% development and told the user
+// nothing. A conventional-commit type prefix (feat/fix/chore/...) in their
+// own commit messages is a real signal instead — see commitTypeBreakdown.
 
 // maxAnalyticsByDayDays bounds how long a period may be for by_day to list
 // every day (empty ones included); the screen only ever asks for up to 90
@@ -32,13 +40,11 @@ type AnalyticsInput struct {
 }
 
 type KPI struct {
-	TotalHours       float64 `json:"total_hours"`
-	DevelopmentHours float64 `json:"development_hours"`
-	ReviewHours      float64 `json:"review_hours"`
-	ActiveDays       int     `json:"active_days"`
-	SessionsCount    int     `json:"sessions_count"`
-	RepoCount        int     `json:"repo_count"`
-	ProjectCount     int     `json:"project_count"`
+	TotalHours    float64 `json:"total_hours"`
+	ActiveDays    int     `json:"active_days"`
+	SessionsCount int     `json:"sessions_count"`
+	RepoCount     int     `json:"repo_count"`
+	ProjectCount  int     `json:"project_count"`
 }
 
 type ProjectHours struct {
@@ -47,17 +53,9 @@ type ProjectHours struct {
 }
 
 type DayHours struct {
-	Date             string  `json:"date" jsonschema:"YYYY-MM-DD, local time"`
-	Weekday          string  `json:"weekday"`
-	DevelopmentHours float64 `json:"development_hours"`
-	ReviewHours      float64 `json:"review_hours"`
-	OtherHours       float64 `json:"other_hours"`
-	TotalHours       float64 `json:"total_hours"`
-}
-
-type CategoryHours struct {
-	Category Category `json:"category"`
-	Hours    float64  `json:"hours"`
+	Date       string  `json:"date" jsonschema:"YYYY-MM-DD, local time"`
+	Weekday    string  `json:"weekday"`
+	TotalHours float64 `json:"total_hours"`
 }
 
 type HeatmapCell struct {
@@ -73,17 +71,26 @@ type WeekTrend struct {
 	Hours     float64 `json:"hours"`
 }
 
+// CommitTypeCount is how many commits in the period carried a given
+// conventional-commit type prefix ("feat(scope): ..." -> "feat"; scope is
+// dropped, only the type is kept). "other" covers commits with no
+// recognized prefix.
+type CommitTypeCount struct {
+	Type  string `json:"type"`
+	Count int    `json:"count"`
+}
+
 type AnalyticsOutput struct {
-	From          time.Time       `json:"from"`
-	To            time.Time       `json:"to"`
-	Timezone      string          `json:"timezone"`
-	KPI           KPI             `json:"kpi"`
-	TimeByProject []ProjectHours  `json:"time_by_project" jsonschema:"most active project first; unmapped repositories under \"Без проекта\""`
-	ByDay         []DayHours      `json:"by_day"`
-	Composition   []CategoryHours `json:"composition" jsonschema:"development/review/other totals over the whole period"`
-	Heatmap       []HeatmapCell   `json:"heatmap" jsonschema:"all 168 weekday×hour cells, zero-filled"`
-	WeeklyTrend   []WeekTrend     `json:"weekly_trend" jsonschema:"the last 8 ISO weeks ending with the current one, regardless of the requested period"`
-	Warnings      []string        `json:"warnings,omitempty"`
+	From          time.Time         `json:"from"`
+	To            time.Time         `json:"to"`
+	Timezone      string            `json:"timezone"`
+	KPI           KPI               `json:"kpi"`
+	TimeByProject []ProjectHours    `json:"time_by_project" jsonschema:"most active project first; a repository with no explicit mapping is its own project (its bare name)"`
+	ByDay         []DayHours        `json:"by_day"`
+	CommitTypes   []CommitTypeCount `json:"commit_types" jsonschema:"commits in the period by conventional-commit type (feat/fix/chore/...), most frequent first; counts, not hours — an individual commit has no duration"`
+	Heatmap       []HeatmapCell     `json:"heatmap" jsonschema:"all 168 weekday×hour cells, zero-filled"`
+	WeeklyTrend   []WeekTrend       `json:"weekly_trend" jsonschema:"the last 8 ISO weeks ending with the current one, regardless of the requested period"`
+	Warnings      []string          `json:"warnings,omitempty"`
 }
 
 func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in AnalyticsInput) (*mcp.CallToolResult, AnalyticsOutput, error) {
@@ -98,7 +105,6 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 
 	out := AnalyticsOutput{From: f.from.In(time.Local), To: f.to.In(time.Local), Timezone: activity.LocalZoneName(), Warnings: warnings}
 	projectHours := map[string]float64{}
-	categoryHours := map[Category]float64{}
 	dayHours := map[string]*DayHours{}
 	activeDays := map[string]bool{}
 	repos := map[string]bool{}
@@ -115,25 +121,17 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 
 		out.KPI.SessionsCount++
 		out.KPI.TotalHours += hours
-		categoryHours[sess.Category] += hours
-		if sess.Category == CategoryDevelopment {
-			out.KPI.DevelopmentHours += hours
-		} else if sess.Category == CategoryReview {
-			out.KPI.ReviewHours += hours
-		}
 		projectHours[sess.Project] += hours
 		repos[sess.Repo] = true
 		projects[sess.Project] = true
 
-		distributeDayHours(dayHours, activeDays, sess.Category, start, end)
+		distributeDayHours(dayHours, activeDays, start, end)
 		distributeHeatmapMinutes(&heatmapMinutes, start, end)
 	}
 	out.KPI.ActiveDays = len(activeDays)
 	out.KPI.RepoCount = len(repos)
 	out.KPI.ProjectCount = len(projects)
 	out.KPI.TotalHours = round2(out.KPI.TotalHours)
-	out.KPI.DevelopmentHours = round2(out.KPI.DevelopmentHours)
-	out.KPI.ReviewHours = round2(out.KPI.ReviewHours)
 
 	out.TimeByProject = make([]ProjectHours, 0, len(projectHours))
 	for project, hours := range projectHours {
@@ -146,13 +144,13 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 		return out.TimeByProject[i].Project < out.TimeByProject[j].Project
 	})
 
-	out.Composition = []CategoryHours{
-		{Category: CategoryDevelopment, Hours: round2(categoryHours[CategoryDevelopment])},
-		{Category: CategoryReview, Hours: round2(categoryHours[CategoryReview])},
-		{Category: CategoryOther, Hours: round2(categoryHours[CategoryOther])},
-	}
-
 	out.ByDay = buildByDay(dayHours, f.from, f.to)
+
+	commitTypes, err := s.commitTypeBreakdown(ctx, f.from, f.to)
+	if err != nil {
+		return nil, AnalyticsOutput{}, err
+	}
+	out.CommitTypes = commitTypes
 
 	out.Heatmap = make([]HeatmapCell, 0, 168)
 	for wd := 0; wd < 7; wd++ {
@@ -169,6 +167,59 @@ func (s *server) getAnalytics(ctx context.Context, _ *mcp.CallToolRequest, in An
 	return nil, out, nil
 }
 
+// conventionalCommitType matches a Conventional Commits type prefix:
+// "feat(scope): ..." or "feat!: ..." or plain "feat: ...". Group 1 is the
+// type; the scope in group 2, if any, is deliberately discarded — the user
+// asked for the type only.
+var conventionalCommitType = regexp.MustCompile(`^([a-zA-Z]+)(\([^)]*\))?!?:\s`)
+
+// knownCommitTypes is the standard Conventional Commits vocabulary (plus
+// this project's own "chore"/"docs" usage); anything else — including a
+// prefix-shaped but unrecognized word, or no prefix at all — is "other"
+// rather than growing an unbounded, noisy set of one-off buckets.
+var knownCommitTypes = map[string]bool{
+	"feat": true, "fix": true, "docs": true, "style": true, "refactor": true,
+	"perf": true, "test": true, "build": true, "ci": true, "chore": true, "revert": true,
+}
+
+func commitType(title string) string {
+	m := conventionalCommitType.FindStringSubmatch(title)
+	if m == nil {
+		return "other"
+	}
+	t := strings.ToLower(m[1])
+	if !knownCommitTypes[t] {
+		return "other"
+	}
+	return t
+}
+
+// commitTypeBreakdown counts commit events in [from,to] by conventional-
+// commit type, reading raw events directly (not sessions) — an individual
+// commit's type is a property of the commit, unrelated to which session it
+// fell into.
+func (s *server) commitTypeBreakdown(ctx context.Context, from, to time.Time) ([]CommitTypeCount, error) {
+	events, err := s.store.events(ctx, eventFilter{from: from, to: to, kinds: []activity.Kind{activity.KindCommit}}, 0)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[commitType(e.Title)]++
+	}
+	out := make([]CommitTypeCount, 0, len(counts))
+	for t, n := range counts {
+		out = append(out, CommitTypeCount{Type: t, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Type < out[j].Type
+	})
+	return out, nil
+}
+
 // clipInterval intersects [start,end] with [from,to]; ok is false when they
 // don't overlap (shouldn't happen given the caller already filtered by
 // overlap, but a session store is shared state — defend anyway).
@@ -182,8 +233,8 @@ func round2(f float64) float64 {
 }
 
 // distributeDayHours splits [start,end] across the local calendar days it
-// spans, crediting each day's slice to sess's category.
-func distributeDayHours(days map[string]*DayHours, activeDays map[string]bool, category Category, start, end time.Time) {
+// spans.
+func distributeDayHours(days map[string]*DayHours, activeDays map[string]bool, start, end time.Time) {
 	cur := start
 	for cur.Before(end) {
 		dayStart := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, time.Local)
@@ -196,14 +247,6 @@ func distributeDayHours(days map[string]*DayHours, activeDays map[string]bool, c
 		if d == nil {
 			d = &DayHours{Date: key, Weekday: weekdays[dayStart.Weekday()]}
 			days[key] = d
-		}
-		switch category {
-		case CategoryDevelopment:
-			d.DevelopmentHours += hours
-		case CategoryReview:
-			d.ReviewHours += hours
-		default:
-			d.OtherHours += hours
 		}
 		d.TotalHours += hours
 		activeDays[key] = true
@@ -249,7 +292,7 @@ func buildByDay(days map[string]*DayHours, from, to time.Time) []DayHours {
 }
 
 func roundDay(d DayHours) DayHours {
-	d.DevelopmentHours, d.ReviewHours, d.OtherHours, d.TotalHours = round2(d.DevelopmentHours), round2(d.ReviewHours), round2(d.OtherHours), round2(d.TotalHours)
+	d.TotalHours = round2(d.TotalHours)
 	return d
 }
 

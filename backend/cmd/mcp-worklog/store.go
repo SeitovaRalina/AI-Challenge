@@ -51,8 +51,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	id             INTEGER PRIMARY KEY AUTOINCREMENT,
 	start_at       INTEGER NOT NULL,
 	end_at         INTEGER NOT NULL,
-	category       TEXT    NOT NULL, -- development | review | other
-	repo           TEXT    NOT NULL, -- the session's dominant repository
+	repo           TEXT    NOT NULL, -- a session never spans more than one repository
 	event_count    INTEGER NOT NULL,
 	first_event_id TEXT    NOT NULL,
 	last_event_id  TEXT    NOT NULL
@@ -81,7 +80,49 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrateSessionsTable(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate sessions table: %w", err)
+	}
 	return &store{db: db}, nil
+}
+
+// migrateSessionsTable drops and recreates sessions if it still has the
+// pre-migration "category" column (an earlier iteration of day 19). Safe
+// because sessions is fully derived, rebuilt wholesale by the next pipeline
+// run — there is no data here worth preserving across a shape change.
+func migrateSessionsTable(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	hasCategory := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "category" {
+			hasCategory = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if !hasCategory {
+		return nil
+	}
+	_, err = db.Exec(`DROP TABLE sessions`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(schema)
+	return err
 }
 
 func (s *store) Close() error { return s.db.Close() }
@@ -278,7 +319,7 @@ func (s *store) repoNames(ctx context.Context) ([]string, error) {
 // sessions.go for the WorkSession the tool layer exposes).
 type storedSession struct {
 	startAt, endAt            int64
-	category, repo            string
+	repo                      string
 	eventCount                int
 	firstEventID, lastEventID string
 }
@@ -299,14 +340,14 @@ func (s *store) replaceSessions(ctx context.Context, sessions []storedSession) (
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions`); err != nil {
 		return 0, err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sessions (start_at, end_at, category, repo, event_count, first_event_id, last_event_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sessions (start_at, end_at, repo, event_count, first_event_id, last_event_id)
+		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer stmt.Close()
 	for _, sess := range sessions {
-		if _, err := stmt.ExecContext(ctx, sess.startAt, sess.endAt, sess.category, sess.repo, sess.eventCount, sess.firstEventID, sess.lastEventID); err != nil {
+		if _, err := stmt.ExecContext(ctx, sess.startAt, sess.endAt, sess.repo, sess.eventCount, sess.firstEventID, sess.lastEventID); err != nil {
 			return 0, err
 		}
 	}
@@ -318,15 +359,14 @@ func (s *store) replaceSessions(ctx context.Context, sessions []storedSession) (
 
 // sessionFilter selects sessions in [from, to] (inclusive, by start time),
 // optionally narrowed to repositories or — via a join against
-// repo_projects — a project name. "Без проекта" (unmappedProjectLabel)
-// matches any repo absent from repo_projects.
+// repo_projects — an explicitly mapped project name (an unmapped
+// repository's own bare name, used everywhere else as its default project
+// label, is not matched by this filter; filter by repos for that instead).
 type sessionFilter struct {
 	from, to time.Time
 	repos    []string
 	project  string // "" means no project filter
 }
-
-const unmappedProjectLabel = "Без проекта"
 
 func (f sessionFilter) where() (string, []any) {
 	clauses := []string{"s.start_at <= ?", "s.end_at >= ?"}
@@ -337,9 +377,7 @@ func (f sessionFilter) where() (string, []any) {
 			args = append(args, r)
 		}
 	}
-	if f.project == unmappedProjectLabel {
-		clauses = append(clauses, "rp.project IS NULL")
-	} else if f.project != "" {
+	if f.project != "" {
 		clauses = append(clauses, "rp.project = ?")
 		args = append(args, f.project)
 	}
@@ -347,7 +385,10 @@ func (f sessionFilter) where() (string, []any) {
 }
 
 // storedSessionRow is a session as read back, with its project already
-// resolved against the current repo_projects mapping.
+// resolved against the current repo_projects mapping — the repository's own
+// bare name (e.g. "AI-Challenge" from "SeitovaRalina/AI-Challenge") when
+// there's no explicit mapping, so every repository shows up distinctly by
+// default instead of being lumped into one shared placeholder.
 type storedSessionRow struct {
 	storedSession
 	project string
@@ -357,7 +398,7 @@ const sessionSelectJoin = `FROM sessions s LEFT JOIN repo_projects rp ON rp.repo
 
 func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionRow, error) {
 	where, args := f.where()
-	query := `SELECT s.start_at, s.end_at, s.category, s.repo, s.event_count, s.first_event_id, s.last_event_id, rp.project ` +
+	query := `SELECT s.start_at, s.end_at, s.repo, s.event_count, s.first_event_id, s.last_event_id, rp.project ` +
 		sessionSelectJoin + ` WHERE ` + where + ` ORDER BY s.start_at`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -368,10 +409,10 @@ func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionR
 	for rows.Next() {
 		var row storedSessionRow
 		var project sql.NullString
-		if err := rows.Scan(&row.startAt, &row.endAt, &row.category, &row.repo, &row.eventCount, &row.firstEventID, &row.lastEventID, &project); err != nil {
+		if err := rows.Scan(&row.startAt, &row.endAt, &row.repo, &row.eventCount, &row.firstEventID, &row.lastEventID, &project); err != nil {
 			return nil, err
 		}
-		row.project = unmappedProjectLabel
+		row.project = bareRepoName(row.repo)
 		if project.Valid && project.String != "" {
 			row.project = project.String
 		}
@@ -380,8 +421,18 @@ func (s *store) sessions(ctx context.Context, f sessionFilter) ([]storedSessionR
 	return out, rows.Err()
 }
 
+// bareRepoName is "AI-Challenge" from "SeitovaRalina/AI-Challenge" — the
+// default, always-populated project label for a repo with no explicit
+// mapping.
+func bareRepoName(repo string) string {
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		return repo[i+1:]
+	}
+	return repo
+}
+
 // setRepoProject upserts a repo's project label; an empty project clears the
-// mapping (the repo falls back to "Без проекта").
+// mapping (the repo falls back to its own bare name).
 func (s *store) setRepoProject(ctx context.Context, repo, project string) error {
 	if project == "" {
 		_, err := s.db.ExecContext(ctx, `DELETE FROM repo_projects WHERE repo = ?`, repo)
