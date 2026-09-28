@@ -852,6 +852,9 @@ export interface ActivityDigest {
   by_repo: RepoDigest[]
   by_day: DayDigest[]
   active_days: number
+  // meetings_count (day 20): same as counts.meeting, as its own field — a
+  // meeting has no repository, so it's excluded from by_repo.
+  meetings_count: number
   first_event_at?: string
   last_event_at?: string
 }

@@ -121,7 +121,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_activity_digest",
 		Title:       "Сводка активности",
-		Description: "Aggregated summary of the user's stored work activity for a period: total, counts per kind, per repository and per day, active days, first and last event. Answers from the local work history — fast, no call to GitHub. Use it for 'how much / which repos / which days' questions; use list_events when the actual items are needed.",
+		Description: "Aggregated summary of the user's stored work activity for a period: total, counts per kind, per repository and per day, active days, meetings_count, first and last event. Meetings are counted in total/counts/active_days/meetings_count but excluded from by_repo (they have no repository). Answers from the local work history — fast, no call to GitHub or the calendar. Use it for 'how much / which repos / which days' questions; use list_events when the actual items are needed.",
 		Annotations: readOnly,
 	}, s.getDigest)
 
@@ -443,13 +443,14 @@ type DayDigest struct {
 
 type DigestOutput struct {
 	periodMeta
-	Total        int                   `json:"total"`
-	Counts       map[activity.Kind]int `json:"counts" jsonschema:"events per kind"`
-	ByRepo       []RepoDigest          `json:"by_repo" jsonschema:"per repository, most active first"`
-	ByDay        []DayDigest           `json:"by_day" jsonschema:"per day, oldest first; every day of the period when it is at most 62 days long, otherwise only days with events"`
-	ActiveDays   int                   `json:"active_days" jsonschema:"days with at least one event"`
-	FirstEventAt *time.Time            `json:"first_event_at,omitempty"`
-	LastEventAt  *time.Time            `json:"last_event_at,omitempty"`
+	Total         int                   `json:"total"`
+	Counts        map[activity.Kind]int `json:"counts" jsonschema:"events per kind"`
+	ByRepo        []RepoDigest          `json:"by_repo" jsonschema:"per repository, most active first; meetings excluded (they have no repository) — see meetings_count"`
+	ByDay         []DayDigest           `json:"by_day" jsonschema:"per day, oldest first; every day of the period when it is at most 62 days long, otherwise only days with events"`
+	ActiveDays    int                   `json:"active_days" jsonschema:"days with at least one event, GitHub or meeting"`
+	MeetingsCount int                   `json:"meetings_count" jsonschema:"same as counts.meeting, surfaced as its own field since a meeting is a different kind of thing from a repository event"`
+	FirstEventAt  *time.Time            `json:"first_event_at,omitempty"`
+	LastEventAt   *time.Time            `json:"last_event_at,omitempty"`
 }
 
 var weekdays = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
@@ -469,13 +470,18 @@ func (s *server) getDigest(ctx context.Context, _ *mcp.CallToolRequest, in Diges
 	days := map[string]*DayDigest{}
 	for _, e := range events { // newest first
 		out.Counts[e.Kind]++
-		r := repos[e.Repo]
-		if r == nil {
-			r = &RepoDigest{Repo: e.Repo, Counts: map[activity.Kind]int{}}
-			repos[e.Repo] = r
+		// A meeting has no repository (e.Repo == "") — grouping it in would
+		// produce a nameless, meaningless "repo" entry; meetings_count is
+		// its own field instead (see DigestOutput).
+		if e.Kind != activity.KindMeeting {
+			r := repos[e.Repo]
+			if r == nil {
+				r = &RepoDigest{Repo: e.Repo, Counts: map[activity.Kind]int{}}
+				repos[e.Repo] = r
+			}
+			r.Total++
+			r.Counts[e.Kind]++
 		}
-		r.Total++
-		r.Counts[e.Kind]++
 		key := e.OccurredAt.Format("2006-01-02")
 		d := days[key]
 		if d == nil {
@@ -490,6 +496,7 @@ func (s *server) getDigest(ctx context.Context, _ *mcp.CallToolRequest, in Diges
 		out.FirstEventAt, out.LastEventAt = &first, &last
 	}
 	out.ActiveDays = len(days)
+	out.MeetingsCount = out.Counts[activity.KindMeeting]
 
 	for _, r := range repos {
 		out.ByRepo = append(out.ByRepo, *r)

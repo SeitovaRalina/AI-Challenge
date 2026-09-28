@@ -393,6 +393,7 @@ function DigestSummary({ digest }: { digest: ActivityDigest }) {
       <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
         <Kpi label="Всего событий" value={String(digest.total)} />
         <Kpi label="Активных дней" value={String(digest.active_days)} />
+        <Kpi label="Встреч" value={String(digest.meetings_count)} />
         <Kpi label="Репозиториев" value={String(digest.by_repo.length)} />
         <Kpi
           label="Период"
@@ -400,9 +401,12 @@ function DigestSummary({ digest }: { digest: ActivityDigest }) {
         />
       </div>
 
+      {/* meeting already has its own KPI above, and no repository to group
+          under below — left out of this per-kind breakdown to avoid saying
+          the same count twice. */}
       <div className="flex flex-wrap gap-1.5">
         {(Object.keys(KIND_META) as ActivityKind[])
-          .filter((k) => (digest.counts[k] ?? 0) > 0)
+          .filter((k) => k !== 'meeting' && (digest.counts[k] ?? 0) > 0)
           .map((k) => (
             <span key={k} className="rounded-full bg-muted px-2.5 py-1 text-xs text-foreground">
               {KIND_META[k].label}: {digest.counts[k]}
