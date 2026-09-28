@@ -100,7 +100,7 @@ func main() {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "ingest_events",
 		Title:       "Сохранить события",
-		Description: "Store a batch of activity events fetched from one source for the window [window_since, window_until]. Events already stored (same source and id) are skipped, so overlapping windows are safe. Advances the source's sync cursor in the same transaction. Used by the background collector, not for answering questions.",
+		Description: "Store a batch of activity events fetched from one source for the window [window_since, window_until]. Events already stored (same source and id) are skipped, so overlapping windows are safe. With replace, every stored event of this source inside the window is deleted first, so a moved/renamed/deleted item (e.g. a rescheduled calendar meeting) doesn't linger — use it for a source whose events can change after the fact. Advances the source's sync cursor in the same transaction. Used by the background collector, not for answering questions.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
 	}, s.ingestEvents)
 
@@ -187,12 +187,14 @@ type IngestInput struct {
 	Events      []activity.Event `json:"events" jsonschema:"events fetched for the window; each must have this source"`
 	WindowSince string           `json:"window_since" jsonschema:"start of the fetched window (RFC3339)"`
 	WindowUntil string           `json:"window_until" jsonschema:"end of the fetched window (RFC3339); becomes the sync cursor"`
+	Replace     bool             `json:"replace,omitempty" jsonschema:"for a source whose events can change after the fact (e.g. calendar: a meeting can be moved, renamed or deleted) — deletes every stored event of this source inside [window_since, window_until] before inserting, so the window ends up matching exactly what was just fetched, with no stale leftovers. Leave false for an immutable source like GitHub, where dedup-by-id is enough and nothing is ever removed from history."`
 }
 
 type IngestOutput struct {
 	Received   int       `json:"received"`
 	Inserted   int       `json:"inserted" jsonschema:"events that were new"`
 	Duplicates int       `json:"duplicates" jsonschema:"events already stored, skipped"`
+	Deleted    int       `json:"deleted,omitempty" jsonschema:"stored events removed from the window because replace was true and the source no longer reports them"`
 	Sync       SyncState `json:"sync" jsonschema:"the source's covered range after this batch"`
 }
 
@@ -228,13 +230,13 @@ func (s *server) ingestEvents(ctx context.Context, _ *mcp.CallToolRequest, in In
 		}
 	}
 
-	res, err := s.store.ingest(ctx, source, in.Events, since, until)
+	res, err := s.store.ingest(ctx, source, in.Events, since, until, in.Replace)
 	if err != nil {
 		return nil, IngestOutput{}, fmt.Errorf("store: %w", err)
 	}
-	log.Printf("ingest %s %s..%s: %d received, %d new, %d duplicate(s)",
-		source, since.Format(time.RFC3339), until.Format(time.RFC3339), len(in.Events), res.inserted, res.duplicates)
-	return nil, IngestOutput{Received: len(in.Events), Inserted: res.inserted, Duplicates: res.duplicates, Sync: res.state}, nil
+	log.Printf("ingest %s %s..%s: %d received, %d new, %d duplicate(s), %d deleted",
+		source, since.Format(time.RFC3339), until.Format(time.RFC3339), len(in.Events), res.inserted, res.duplicates, res.deleted)
+	return nil, IngestOutput{Received: len(in.Events), Inserted: res.inserted, Duplicates: res.duplicates, Deleted: res.deleted, Sync: res.state}, nil
 }
 
 // ---- get_sync_state ----

@@ -166,19 +166,38 @@ type SyncState struct {
 }
 
 type ingestResult struct {
-	inserted, duplicates int
-	state                SyncState
+	inserted, duplicates, deleted int
+	state                         SyncState
 }
 
 // ingest stores events and advances the source's cursor in one transaction,
 // so a crash can never leave the cursor ahead of the data it claims.
-func (s *store) ingest(ctx context.Context, source string, events []activity.Event, since, until time.Time) (ingestResult, error) {
+//
+// replace matters for a source whose events can change after the fact —
+// GitHub commits/PRs are an immutable log (dedup-by-id is enough), but a
+// calendar event can be moved, renamed or deleted, and would otherwise
+// leave a stale row behind forever with no way to remove it (there is no
+// "delete" signal from a source that simply stops returning something).
+// When true, every existing row for this source inside [since, until] is
+// deleted before the batch is inserted, so the window ends up exactly
+// matching what the source just reported for it — see mcp-calendar's use.
+func (s *store) ingest(ctx context.Context, source string, events []activity.Event, since, until time.Time, replace bool) (ingestResult, error) {
 	var res ingestResult
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return res, err
 	}
 	defer tx.Rollback()
+
+	if replace {
+		result, err := tx.ExecContext(ctx, `DELETE FROM events WHERE source = ? AND occurred_at >= ? AND occurred_at <= ?`,
+			source, since.Unix(), until.Unix())
+		if err != nil {
+			return res, err
+		}
+		deleted, _ := result.RowsAffected()
+		res.deleted = int(deleted)
+	}
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events (source, id, kind, repo, title, url, occurred_at, author, ref, ingested_at, ends_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (source, id) DO NOTHING`)

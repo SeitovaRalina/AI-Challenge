@@ -48,7 +48,11 @@ import (
 // step: calendar.get_events -> worklog.ingest_events (kind=meeting), so
 // build_sessions sees meetings alongside GitHub events in the very same
 // list_events(all=true) call. Optional: if CalDAV isn't configured, this
-// step is skipped with a warning rather than failing the run.
+// step is skipped with a warning rather than failing the run. Unlike the
+// GitHub loop's incremental cursor, it reconciles the whole backfill window
+// every run (ingest_events' replace:true) — a meeting can be moved, renamed
+// or deleted after the fact, so re-checking only a narrow recent window
+// would leave stale rows behind with no way to notice they're gone.
 
 const (
 	defaultCollectInterval = 15 * time.Minute
@@ -427,13 +431,18 @@ func (c *Collector) collect(ctx context.Context, run *CollectorRun) error {
 	return nil
 }
 
-// collectCalendar fetches and ingests meetings since the calendar source's
-// own cursor, exactly like the GitHub loop above but in a single call — a
-// CalDAV query has no per-repo fan-out to chunk, and get_events' own window
-// cap (90 days) already matches collectBackfill. A missing/unconfigured
-// calendar server is not an error: this step is simply skipped, with a
-// warning, so GitHub-only collection keeps working before CalDAV creds are
-// filled in.
+// collectCalendar re-fetches and reconciles the *entire* backfill window on
+// every run, unlike the incremental cursor the GitHub loop above advances.
+// A meeting isn't an immutable log entry the way a commit is — it can be
+// moved, renamed or deleted — so an incremental "only look near now" cursor
+// would leave a stale row behind forever the moment something changes
+// outside that narrow window, with no signal that it should be removed.
+// Calendar data is small enough (a person's own meetings, not commits) that
+// re-checking the whole window every time is cheap, and ingest_events'
+// replace:true makes it correct: the window ends up exactly matching what
+// the calendar reports right now. A missing/unconfigured calendar server is
+// not an error: this step is simply skipped, with a warning, so GitHub-only
+// collection keeps working before CalDAV creds are filled in.
 func (c *Collector) collectCalendar(ctx context.Context, run *CollectorRun, now time.Time) error {
 	if c.calendar == nil {
 		c.mu.Lock()
@@ -442,25 +451,7 @@ func (c *Collector) collectCalendar(ctx context.Context, run *CollectorRun, now 
 		return nil
 	}
 
-	var state struct {
-		Sources []struct {
-			Source      string    `json:"source"`
-			SyncedUntil time.Time `json:"synced_until"`
-		} `json:"sources"`
-	}
-	if err := c.call(ctx, run, c.worklog, "get_sync_state", nil, "", &state, func() string { return "" }); err != nil {
-		return err
-	}
-	since := now.Add(-collectBackfill)
-	for _, s := range state.Sources {
-		if s.Source == calendarSource && s.SyncedUntil.After(since) {
-			since = s.SyncedUntil.Add(-collectOverlap)
-		}
-	}
-	since = since.Truncate(time.Second)
-	if !since.Before(now) {
-		return nil
-	}
+	since := now.Add(-collectBackfill).Truncate(time.Second)
 
 	var fetched struct {
 		Events   []json.RawMessage `json:"events"`
@@ -477,16 +468,18 @@ func (c *Collector) collectCalendar(ctx context.Context, run *CollectorRun, now 
 	var ingested struct {
 		Inserted   int `json:"inserted"`
 		Duplicates int `json:"duplicates"`
+		Deleted    int `json:"deleted"`
 	}
 	args = map[string]any{
 		"source": calendarSource, "events": fetched.Events,
 		"window_since": since.Format(time.RFC3339), "window_until": now.Format(time.RFC3339),
+		"replace": true,
 	}
 	if fetched.Events == nil {
 		args["events"] = []json.RawMessage{}
 	}
 	if err := c.call(ctx, run, c.worklog, "ingest_events", args, fmt.Sprintf("%d встреч", len(fetched.Events)), &ingested, func() string {
-		return fmt.Sprintf("+%d новых, %d уже были", ingested.Inserted, ingested.Duplicates)
+		return fmt.Sprintf("+%d новых, %d уже были, %d убрано", ingested.Inserted, ingested.Duplicates, ingested.Deleted)
 	}); err != nil {
 		return err
 	}
