@@ -746,3 +746,136 @@ export function listMcpServers(): Promise<McpServer[]> {
 export function connectMcpServer(id: string): Promise<McpServer> {
   return request<McpServer>(`/api/mcp/servers/${id}/connect`, { method: 'POST' })
 }
+
+// ---- Day 18: background activity collector («Активность» screen) ----
+
+export type ActivityPeriod = 'today' | '7d' | '30d'
+
+export interface CollectorStep {
+  server: string
+  tool: string
+  detail?: string
+  ok: boolean
+  error?: string
+  duration_ms: number
+  summary?: string
+}
+
+export interface CollectorRun {
+  trigger: 'startup' | 'schedule' | 'manual'
+  started_at: string
+  finished_at?: string
+  status: 'running' | 'ok' | 'error'
+  error?: string
+  backfill: boolean
+  window_since?: string
+  window_until?: string
+  fetched: number
+  inserted: number
+  duplicates: number
+  warnings: string[]
+  steps: CollectorStep[]
+  digest?: {
+    today: DigestTotals
+    week: DigestTotals
+  }
+}
+
+export interface RepoTotal {
+  repo: string
+  total: number
+}
+
+export interface DigestTotals {
+  from: string
+  to: string
+  total: number
+  counts: Partial<Record<ActivityKind, number>>
+  active_days: number
+  top_repos: RepoTotal[]
+}
+
+export interface SyncState {
+  source: string
+  synced_since: string
+  synced_until: string
+  updated_at: string
+}
+
+export interface CollectorStatus {
+  enabled: boolean
+  disabled_reason?: string
+  interval_seconds: number
+  next_run_at?: string
+  current?: CollectorRun
+  runs: CollectorRun[]
+  sync?: { sources: SyncState[]; total_events: number; database: string }
+  sync_error?: string
+}
+
+export function getActivityStatus(): Promise<CollectorStatus> {
+  return request<CollectorStatus>('/api/activity/status')
+}
+
+// triggerActivityCollect starts a manual run and returns the status right
+// after — the run itself keeps going in the background; poll getActivityStatus
+// to watch it finish.
+export function triggerActivityCollect(): Promise<CollectorStatus> {
+  return request<CollectorStatus>('/api/activity/collect', { method: 'POST' })
+}
+
+export interface RepoDigest {
+  repo: string
+  total: number
+  counts: Partial<Record<ActivityKind, number>>
+}
+
+export interface DayDigest {
+  date: string
+  weekday: string
+  total: number
+  counts: Partial<Record<ActivityKind, number>>
+}
+
+export interface ActivityDigest {
+  from: string
+  to: string
+  timezone: string
+  coverage: SyncState[]
+  covered: boolean
+  warnings?: string[]
+  total: number
+  counts: Partial<Record<ActivityKind, number>>
+  by_repo: RepoDigest[]
+  by_day: DayDigest[]
+  active_days: number
+  first_event_at?: string
+  last_event_at?: string
+}
+
+export function getActivityDigest(period: ActivityPeriod): Promise<ActivityDigest> {
+  return request<ActivityDigest>(`/api/activity/digest?period=${period}`)
+}
+
+export interface ActivityEventsResult {
+  from: string
+  to: string
+  timezone: string
+  coverage: SyncState[]
+  covered: boolean
+  warnings?: string[]
+  events: ActivityEvent[]
+  total: number
+  counts: Partial<Record<ActivityKind, number>>
+  truncated: boolean
+}
+
+export function getActivityEvents(
+  period: ActivityPeriod,
+  filters?: { repo?: string; kind?: ActivityKind },
+): Promise<ActivityEventsResult> {
+  const params = new URLSearchParams({ period })
+  if (filters?.repo) params.set('repo', filters.repo)
+  if (filters?.kind) params.set('kind', filters.kind)
+  return request<ActivityEventsResult>(`/api/activity/events?${params}`)
+}

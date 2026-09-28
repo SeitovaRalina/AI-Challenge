@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Activity,
   Brain,
   Check,
   ChevronDown,
@@ -62,6 +63,8 @@ interface SidebarProps {
   onSelectDemo: (mode: DemoMode) => void
   sourcesActive: boolean
   onOpenSources: () => void
+  activityActive: boolean
+  onOpenActivity: () => void
   onCollapse: () => void
   onRenameChat: (id: string, title: string) => void
   onDeleteChat: (id: string) => void
@@ -112,6 +115,8 @@ export function Sidebar({
   onSelectDemo,
   sourcesActive,
   onOpenSources,
+  activityActive,
+  onOpenActivity,
   onCollapse,
   onRenameChat,
   onDeleteChat,
@@ -334,6 +339,19 @@ export function Sidebar({
         >
           <Plug className="h-4 w-4" />
           Источники
+        </button>
+        <button
+          type="button"
+          onClick={onOpenActivity}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+            activityActive
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <Activity className="h-4 w-4" />
+          Активность
         </button>
       </div>
 

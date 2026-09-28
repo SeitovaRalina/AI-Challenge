@@ -25,31 +25,24 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"aiwork/backend/internal/activity"
 )
 
-// Kind is the normalized type of one activity event.
-type Kind string
+// The event shape is shared with the Worklog MCP server, which stores what
+// this one returns (day 18).
+type (
+	Kind          = activity.Kind
+	ActivityEvent = activity.Event
+)
 
 const (
-	KindCommit       Kind = "commit"
-	KindPROpened     Kind = "pr_opened"
-	KindPRMerged     Kind = "pr_merged"
-	KindReview       Kind = "review"
-	KindIssueComment Kind = "issue_comment"
+	KindCommit       = activity.KindCommit
+	KindPROpened     = activity.KindPROpened
+	KindPRMerged     = activity.KindPRMerged
+	KindReview       = activity.KindReview
+	KindIssueComment = activity.KindIssueComment
 )
-
-// ActivityEvent is the product's source-agnostic unit of work activity.
-type ActivityEvent struct {
-	ID         string    `json:"id" jsonschema:"stable unique id, e.g. github:commit:<sha>"`
-	Source     string    `json:"source" jsonschema:"always github for this server"`
-	Kind       Kind      `json:"kind" jsonschema:"what happened in the period: commit, pr_opened (PR created — says nothing about whether it is still open), pr_merged, review or issue_comment"`
-	Repo       string    `json:"repo" jsonschema:"owner/repo"`
-	Title      string    `json:"title" jsonschema:"commit subject, PR title or comment excerpt"`
-	URL        string    `json:"url" jsonschema:"link to the event on github.com"`
-	OccurredAt time.Time `json:"occurred_at" jsonschema:"when the event happened (RFC3339)"`
-	Author     string    `json:"author" jsonschema:"GitHub login of the author"`
-	Ref        string    `json:"ref,omitempty" jsonschema:"branch name for commits, #number for PR/review/comment events"`
-}
 
 // maxWindow and maxEvents keep a single call bounded — both in GitHub API
 // requests and in how much text lands in the model's context.
@@ -153,13 +146,13 @@ func (s *server) listRepos(ctx context.Context, _ *mcp.CallToolRequest, _ ListRe
 
 func (s *server) getActivity(ctx context.Context, _ *mcp.CallToolRequest, in GetActivityInput) (*mcp.CallToolResult, GetActivityOutput, error) {
 	now := time.Now()
-	since, err := parseBound(in.Since, false)
+	since, err := activity.ParseBound(in.Since, false)
 	if err != nil {
 		return nil, GetActivityOutput{}, fmt.Errorf("since: %w", err)
 	}
 	until := now
 	if in.Until != "" {
-		if until, err = parseBound(in.Until, true); err != nil {
+		if until, err = activity.ParseBound(in.Until, true); err != nil {
 			return nil, GetActivityOutput{}, fmt.Errorf("until: %w", err)
 		}
 	}
@@ -219,7 +212,7 @@ func (s *server) getActivity(ctx context.Context, _ *mcp.CallToolRequest, in Get
 		Login:    login,
 		Since:    since,
 		Until:    until,
-		Timezone: localZoneName(),
+		Timezone: activity.LocalZoneName(),
 		Repos:    make([]string, 0, len(repos)),
 		Counts:   map[Kind]int{},
 		Warnings: warnings,
@@ -243,38 +236,6 @@ func (s *server) getActivity(ctx context.Context, _ *mcp.CallToolRequest, in Get
 	return nil, out, nil
 }
 
-// parseBound accepts an RFC3339 timestamp or a bare YYYY-MM-DD date in the
-// server's local timezone — the start of that day for since, its end for
-// until, so "until: 2026-09-26" includes all of the 26th.
-func parseBound(s string, endOfDay bool) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return time.Time{}, errors.New("is required")
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, nil
-	}
-	d, err := time.ParseInLocation("2006-01-02", s, time.Local)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%q is neither RFC3339 nor YYYY-MM-DD", s)
-	}
-	if endOfDay {
-		return d.AddDate(0, 0, 1).Add(-time.Second), nil
-	}
-	return d, nil
-}
-
-func localZoneName() string {
-	name, offset := time.Now().Zone()
-	return fmt.Sprintf("%s (UTC%+03d:%02d)", name, offset/3600, abs(offset%3600)/60)
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
 
 func splitRepos(s string) []string {
 	var repos []string

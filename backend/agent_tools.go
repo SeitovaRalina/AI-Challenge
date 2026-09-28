@@ -11,11 +11,13 @@ import (
 	"aiwork/backend/internal/mcpclient"
 )
 
-// Day 17: the chat agent can call tools from the product's own GitHub
-// Activity MCP server (cmd/mcp-github). The model sees them as ordinary
-// OpenAI function tools; when it asks for a call, the host forwards it over
-// MCP and feeds the result back — see completeWithTools for how a turn is
-// split into a tool-routing step and the answering call.
+// Day 17: the chat agent can call tools from the product's own MCP servers —
+// GitHub Activity (cmd/mcp-github, live GitHub) and, since day 18, Worklog
+// (cmd/mcp-worklog, the stored work history the background collector
+// fills). The model sees them as ordinary OpenAI function tools; when it
+// asks for a call, the host forwards it to whichever server owns that tool
+// and feeds the result back — see completeWithTools for how a turn is split
+// into a tool-routing step and the answering call.
 
 // maxStoredEvents caps how many events a stored tool-call record keeps for
 // the UI; the model itself always sees the full result.
@@ -35,34 +37,72 @@ type ToolCallRecord struct {
 	Result     json.RawMessage `json:"result,omitempty"`
 }
 
-// SetActivityTools attaches the GitHub Activity MCP server connection whose
-// tools every non-lab chat turn may call. nil disables tool use.
-func (a *Agent) SetActivityTools(conn *mcpclient.Conn) {
-	a.activityTools = conn
+// toolSource is one MCP server whose tools the chat agent may call. allow,
+// when set, limits which of its tools the model sees: the Worklog server's
+// ingest_events and get_sync_state belong to the collector, not the chat.
+type toolSource struct {
+	conn  *mcpclient.Conn
+	allow map[string]bool
 }
 
-// availableTools lists the MCP server's tools in OpenAI function format.
-// A server that can't be reached right now just means no tools for this
-// turn — the chat still works, it only loses the activity lookup.
+// AddToolSource lets every non-lab chat turn call conn's tools — all of
+// them, or only the named ones.
+func (a *Agent) AddToolSource(conn *mcpclient.Conn, allow ...string) {
+	src := toolSource{conn: conn}
+	if len(allow) > 0 {
+		src.allow = map[string]bool{}
+		for _, name := range allow {
+			src.allow[name] = true
+		}
+	}
+	a.toolSources = append(a.toolSources, src)
+}
+
+// availableTools lists the servers' tools in OpenAI function format. A
+// server that can't be reached right now just means its tools are missing
+// from this turn — the chat still works.
 func (a *Agent) availableTools(ctx context.Context) []llmTool {
-	if a.activityTools == nil {
-		return nil
-	}
-	tools, err := a.activityTools.Tools(ctx)
-	if err != nil {
-		log.Printf("agent: activity MCP server unavailable, continuing without tools: %v", err)
-		return nil
-	}
-	out := make([]llmTool, 0, len(tools))
-	for _, t := range tools {
-		var lt llmTool
-		lt.Type = "function"
-		lt.Function.Name = t.Name
-		lt.Function.Description = t.Description
-		lt.Function.Parameters = t.InputSchema
-		out = append(out, lt)
+	var out []llmTool
+	seen := map[string]bool{}
+	for _, src := range a.toolSources {
+		tools, err := src.conn.Tools(ctx)
+		if err != nil {
+			log.Printf("agent: MCP server %s unavailable, continuing without its tools: %v", src.conn.Config().ID, err)
+			continue
+		}
+		for _, t := range tools {
+			if (src.allow != nil && !src.allow[t.Name]) || seen[t.Name] {
+				continue
+			}
+			seen[t.Name] = true
+			var lt llmTool
+			lt.Type = "function"
+			lt.Function.Name = t.Name
+			lt.Function.Description = t.Description
+			lt.Function.Parameters = t.InputSchema
+			out = append(out, lt)
+		}
 	}
 	return out
+}
+
+// toolConn finds the server that owns a tool the model asked for.
+func (a *Agent) toolConn(ctx context.Context, name string) *mcpclient.Conn {
+	for _, src := range a.toolSources {
+		if src.allow != nil && !src.allow[name] {
+			continue
+		}
+		tools, err := src.conn.Tools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if t.Name == name {
+				return src.conn
+			}
+		}
+	}
+	return nil
 }
 
 // Tool use runs as two separate model calls per turn, not one call that is
@@ -107,17 +147,26 @@ func localTimeLine(now time.Time) string {
 func routingSystemPrompt(now time.Time) string {
 	return localTimeLine(now) + `
 
-You are the tool-routing step of a work assistant. You never answer the user yourself — another step does. Your only job: decide whether the LATEST user message needs data from the user's own GitHub Activity MCP server, and if so, fetch it.
+You are the tool-routing step of a work assistant. You never answer the user yourself — another step does. Your only job: decide whether the LATEST user message needs data about the user's own work activity, and if so, fetch it.
 
-- It asks about the user's own past work (what they did, committed, merged, reviewed or commented on in some period or repository) → call get_activity.
-- It asks which repositories are tracked → call list_repos.
+The tools come from two of the user's own MCP servers:
+- Worklog — get_activity_digest and list_events: the user's work history, already collected from GitHub by a background collector every few minutes and stored locally. Fast. This is the default source for any question about past work.
+  - get_activity_digest: "how much / how active / which repositories / which days / summary" questions.
+  - list_events: when the actual items are wanted (which commits, which PRs, links).
+- GitHub Activity — get_activity and list_repos: live GitHub, slow.
+  - get_activity: only when the user explicitly asks for live/fresh data from GitHub, or when a Worklog result says its coverage does not include the period asked about (covered: false).
+  - list_repos: the user asks which repositories are tracked.
+
+- It asks about the user's own past work (what they did, committed, merged, reviewed or commented on in some period or repository) → call a Worklog tool.
 - Anything else — describing a task, asking to estimate one, refining an estimate, small talk → reply with exactly: NONE
 
 Earlier messages are there only to resolve follow-ups (e.g. "а вчера?" after an activity question); they never make a task or estimate message need a tool.
 
-When calling get_activity, compute since/until from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; until is inclusive — for a single day pass the same date as both). At most 31 days. Make one call covering exactly the period asked about. When the user names a repository, pass it in repos right away (the bare repo name is enough).
+Periods: compute from the current local date above; for whole days pass plain YYYY-MM-DD dates (same local timezone; the end is inclusive — for a single day pass the same date as both). Worklog tools take from/to (up to a year); get_activity takes since/until (at most 31 days). Make exactly one call covering the period asked about, then stop — see the rule below before ever making a second one. When the user names a repository, pass it in repos right away (the bare repo name is enough).
 
-After you receive tool results: if they cover the question, reply with exactly: NONE. Call again only if the question genuinely needs other data (e.g. a second period to compare).`
+"This week"/"на этой неделе" is the calendar week: from this week's Monday (which may be today) through today, inclusive — never a rolling 7-day window. If today is Monday, that period is just today; do not reach further back to "fill it out" — a thin result for a week that just started is the correct, honest answer, not a signal to broaden the query. "Last week"/"на прошлой неделе" is the full Monday-to-Sunday week before this one. "Last N days" is a rolling window, computed from today backward — the only case a rolling window is correct.
+
+After you receive tool results: if they answer the question as asked, reply with exactly: NONE — immediately, in the very next turn. Do not make a second call over a different or wider period "to double-check" or "to be safe": if your first call's period already matches what was asked, you are done. Call again only when the question itself genuinely needs more than that one call answered — e.g. the user asked to compare two periods, asked for the items behind a digest you already have, or Worklog's coverage doesn't reach a period asked about.`
 }
 
 // toolResultsSystemPrompt tells the answering call how to use the results
@@ -125,13 +174,13 @@ After you receive tool results: if they cover the question, reply with exactly: 
 func toolResultsSystemPrompt(now time.Time) string {
 	return localTimeLine(now) + `
 
-For the user's latest message, data was fetched from the user's own GitHub Activity MCP server; the tool calls and their results follow that message.
+For the user's latest message, data was fetched from the user's own MCP servers — Worklog (the stored work history, collected from GitHub in the background) and/or GitHub Activity (live GitHub); the tool calls and their results follow that message.
 
 Event kinds describe what happened in the period, not current state: pr_opened means the user created that PR during the period (it may well be merged or closed by now) — say "создала PR", never call such PRs "открытые"; pr_merged means it was merged during the period. The tool knows nothing about a PR's current state beyond these events.
 
 This data is final: you cannot call tools or fetch anything else in this step. If the period looks narrow or came back empty — e.g. "на этой неделе" asked on a Monday covers only today — still answer from it, say exactly which period it covers, and if useful suggest asking about a wider one (e.g. the previous week).
 
-Answer strictly from what the tools returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls. Times are already in the local timezone. If no events were found, say plainly that no activity was found for that period (and which repositories were checked). If there were warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
+Answer strictly from what the tools returned — never invent commits, PRs or repositories. Mention counts, group by repository when there are several, and link items with markdown links using the returned urls (a digest has no items — do not make any up). Times are already in the local timezone. Worklog data is only as fresh as its coverage (synced_until): when the period reaches today, mention up to what time it is collected. If no events were found, say plainly that no activity was found for that period. If there were warnings, mention them briefly. If a tool call failed, say so honestly instead of guessing.
 
 Answer in the same JSON envelope as always, with "estimate": null.`
 }
@@ -212,7 +261,7 @@ func (a *Agent) routeTools(ctx context.Context, chatID string, messages []chatMe
 
 	// The model was observed issuing the very same call twice; within a
 	// turn, an identical call (same tool, same arguments in any key order)
-	// reuses the first result instead of hitting GitHub again.
+	// reuses the first result instead of hitting the server again.
 	answered := map[string]string{}
 	for round := 0; round < maxRoutingRounds; round++ {
 		emitTurnEvent(ctx, "routing", map[string]int{"round": round + 1})
@@ -234,13 +283,17 @@ func (a *Agent) routeTools(ctx context.Context, chatID string, messages []chatMe
 			if seen {
 				content = "This exact call was already made in this turn and its result will not change — do not repeat it. The result was:\n" + content
 			} else {
-				cfg := a.activityTools.Config()
+				conn := a.toolConn(ctx, call.Function.Name)
+				var cfg mcpclient.ServerConfig
+				if conn != nil {
+					cfg = conn.Config()
+				}
 				emitTurnEvent(ctx, "tool_call_started", toolCallStartedEvent{
 					ID: call.ID, Server: cfg.ID, ServerName: cfg.Name, Tool: call.Function.Name,
 					Arguments: argumentsForDisplay(call.Function.Arguments),
 				})
 				var record ToolCallRecord
-				record, content = a.runToolCall(ctx, chatID, call)
+				record, content = a.runToolCall(ctx, chatID, conn, call)
 				emitTurnEvent(ctx, "tool_call_finished", toolCallFinishedEvent{ID: call.ID, Record: record})
 				records = append(records, record)
 				answered[key] = content
@@ -292,11 +345,16 @@ func argumentsForDisplay(raw string) json.RawMessage {
 	return json.RawMessage(raw)
 }
 
-// runToolCall forwards one model-requested call to the MCP server. It never
-// fails the turn: a bad call becomes a failed record plus an error text the
-// model can explain to the user.
-func (a *Agent) runToolCall(ctx context.Context, chatID string, call llmToolCall) (ToolCallRecord, string) {
-	cfg := a.activityTools.Config()
+// runToolCall forwards one model-requested call to the MCP server that owns
+// the tool (conn; nil when no server does). It never fails the turn: a bad
+// call becomes a failed record plus an error text the model can explain to
+// the user.
+func (a *Agent) runToolCall(ctx context.Context, chatID string, conn *mcpclient.Conn, call llmToolCall) (ToolCallRecord, string) {
+	if conn == nil {
+		return ToolCallRecord{Tool: call.Function.Name, Arguments: argumentsForDisplay(call.Function.Arguments), Error: "неизвестный инструмент"},
+			"Tool call failed: there is no tool named " + call.Function.Name
+	}
+	cfg := conn.Config()
 	record := ToolCallRecord{Server: cfg.ID, ServerName: cfg.Name, Tool: call.Function.Name, Arguments: json.RawMessage("{}")}
 
 	args := map[string]any{}
@@ -309,7 +367,7 @@ func (a *Agent) runToolCall(ctx context.Context, chatID string, call llmToolCall
 	}
 
 	started := time.Now()
-	result, err := a.activityTools.Call(ctx, call.Function.Name, args)
+	result, err := conn.Call(ctx, call.Function.Name, args)
 	record.DurationMs = time.Since(started).Milliseconds()
 	if err != nil {
 		log.Printf("agent: chat %s: tool %s failed: %v", chatID, call.Function.Name, err)

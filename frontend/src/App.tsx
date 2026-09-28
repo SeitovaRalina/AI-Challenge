@@ -16,6 +16,7 @@ import {
 import { ReasoningStatusPanel } from '@/components/reasoning-status-panel'
 import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { SourcesPanel } from '@/components/sources-panel'
+import { ActivityPanel } from '@/components/activity-panel'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
@@ -63,7 +64,7 @@ import {
 import { applyTurnEvent, EMPTY_TURN_PROGRESS, type TurnProgress } from '@/lib/turn-progress'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'chat' | 'sources' | DemoMode
+type Mode = 'chat' | 'sources' | 'activity' | DemoMode
 
 // Identifies one send-like operation's target for the pendingKeys set below:
 // a chat by itself, or (for a branching chat) one specific branch within it —
@@ -92,7 +93,12 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
   sources: {
     title: 'Источники',
     description:
-      'MCP-серверы — источники данных о вашей рабочей активности. Инструменты собственного сервера GitHub Activity ассистент вызывает в чате, когда вы спрашиваете о своей работе; публичный сервер GitHub — только для просмотра его инструментов.',
+      'MCP-серверы — источники данных о вашей рабочей активности. Инструменты собственных серверов (GitHub Activity, Worklog) ассистент вызывает в чате, когда вы спрашиваете о своей работе; публичный сервер GitHub — только для просмотра его инструментов.',
+  },
+  activity: {
+    title: 'Активность',
+    description:
+      'Фоновый сборщик каждые несколько минут забирает вашу активность из GitHub и сохраняет её в Worklog — внутреннем журнале работы. Здесь видно, когда он запускался и что нашёл; в чате ассистент отвечает на вопросы о работе из этого же журнала, без обращения к GitHub.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -765,7 +771,7 @@ function App() {
     }
   }
 
-  const activeDemo = mode === 'chat' || mode === 'sources' ? null : mode
+  const activeDemo = mode === 'chat' || mode === 'sources' || mode === 'activity' ? null : mode
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -803,6 +809,8 @@ function App() {
             onSelectDemo={(demo) => setMode(demo)}
             sourcesActive={mode === 'sources'}
             onOpenSources={() => setMode('sources')}
+            activityActive={mode === 'activity'}
+            onOpenActivity={() => setMode('activity')}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
@@ -902,6 +910,8 @@ function App() {
             </div>
 
           {mode === 'sources' && <SourcesPanel />}
+
+          {mode === 'activity' && <ActivityPanel />}
 
           {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
