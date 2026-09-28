@@ -129,6 +129,42 @@ made that split ~100% development and meaningless) — counts and hours only,
 same principle as day 18's digest. See
 [`days/w04-d19-work-sessions-pipeline.md`](days/w04-d19-work-sessions-pipeline.md).
 
+Day 20 adds a third MCP server, `backend/cmd/mcp-calendar` — a read-only
+adapter over CalDAV (`emersion/go-webdav`/`go-ical`), normalizing the user's
+own meetings into the same `ActivityEvent` shape as GitHub (`kind: meeting`,
+plus an `ends_at` an event carries alongside `occurred_at`; recurring events
+are expanded within the requested window via `teambition/rrule-go`, and
+declined/cancelled/all-day entries are already filtered out). The background
+collector gains a matching step — `calendar.get_events` →
+`worklog.ingest_events` — run right alongside the GitHub one; it's entirely
+optional, skipped with a warning until `CALDAV_USERNAME`/
+`CALDAV_APP_PASSWORD` are filled in, so GitHub-only collection keeps working
+either way. `build_sessions` now turns a meeting event straight into its own
+session (no gap-merging — a calendar event already has exact bounds), and
+`get_analytics`/the new `get_day_timeline(date)` resolve a period's sessions
+through `resolveIntervals`, which merges overlapping meetings into a union
+and subtracts that from any overlapping work session, so a meeting always
+wins shared time and nothing is ever double-counted. The Analytics screen
+gains a meeting-hours KPI, a work/meeting stacked by-day chart, and a
+Gantt-style day timeline reading `get_day_timeline` directly.
+
+This is also where the chat agent stops being single-server: its routing
+prompt (`backend/agent_tools.go`) now describes all three servers and picks
+across them per question — `get_day_timeline` for "what did I do
+today/yesterday" (work and meetings together, already deduplicated),
+`get_analytics` for KPI/trend questions (one call per period being
+compared), live `get_events`/`get_activity` only when explicitly asked for
+fresh data. A longer flow — e.g. "restore what I did yesterday" — can take
+more than one call in a turn; `maxRoutingRounds` went from 3 to 4 to give
+that room. Finally, a weekly summary (`backend/weekly_summary.go`): this
+week vs last, facts only (hours, meeting hours, top project, merged PRs)
+read via `get_analytics`/`get_activity_digest`, written up by one plain LLM
+call in the user's own profile tone — never a productivity judgment, same
+principle as `get_analytics` itself. Generated on demand from the Analytics
+card, and automatically every Friday evening via a poll loop (same style as
+`Collector.Start`). See
+[`days/w04-d20-mcp-orchestration.md`](days/w04-d20-mcp-orchestration.md).
+
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
 sidebar, collapsed under "День 1–5 (демо)" — the chat agent is now the
@@ -196,6 +232,18 @@ chat sessions. The background collector that feeds it runs automatically
 once `GITHUB_TOKEN` is set; `COLLECT_INTERVAL` changes how often (`0`/`off`
 to disable the schedule and only ever collect via the «Активность» screen's
 "Собрать сейчас").
+
+The Calendar MCP server (day 20) is optional — without `CALDAV_USERNAME`
+and `CALDAV_APP_PASSWORD` in `backend/.env` it simply isn't started, and
+the collector's calendar step is skipped with a warning; GitHub-only
+collection is unaffected. To enable it: `CALDAV_USERNAME` is usually your
+email, `CALDAV_APP_PASSWORD` an app-specific password (Yandex:
+id.yandex.ru → Безопасность → Пароли приложений → CalDAV), never your
+account password. `CALDAV_URL` defaults to Yandex's endpoint
+(`https://caldav.yandex.ru`); `CALDAV_CALENDARS` optionally narrows
+collection to specific calendars by name (comma-separated), defaulting to
+every calendar on the account. Same `go run ./cmd/mcp-calendar` /
+`MCP_CALENDAR_COMMAND` pattern as the other two servers.
 
 ### Frontend
 
