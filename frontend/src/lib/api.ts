@@ -884,12 +884,8 @@ export function getActivityEvents(
 
 export type AnalyticsPeriod = '7d' | '30d' | '90d'
 
-export type SessionCategory = 'development' | 'review' | 'other'
-
 export interface AnalyticsKpi {
   total_hours: number
-  development_hours: number
-  review_hours: number
   active_days: number
   sessions_count: number
   repo_count: number
@@ -904,15 +900,15 @@ export interface ProjectHours {
 export interface DayHours {
   date: string
   weekday: string
-  development_hours: number
-  review_hours: number
-  other_hours: number
   total_hours: number
 }
 
-export interface CategoryHours {
-  category: SessionCategory
-  hours: number
+// CommitTypeCount is one Conventional Commits type ("feat(scope): ..." ->
+// "feat", scope dropped) and how many commits in the period carried it.
+// "other" covers commits with no recognized prefix.
+export interface CommitTypeCount {
+  type: string
+  count: number
 }
 
 export interface HeatmapCell {
@@ -935,7 +931,7 @@ export interface Analytics {
   kpi: AnalyticsKpi
   time_by_project: ProjectHours[]
   by_day: DayHours[]
-  composition: CategoryHours[]
+  commit_types: CommitTypeCount[]
   heatmap: HeatmapCell[]
   weekly_trend: WeekTrend[]
   warnings?: string[]
@@ -954,9 +950,11 @@ export function listRepoProjects(): Promise<{ repos: RepoProject[] }> {
   return request<{ repos: RepoProject[] }>('/api/analytics/repos')
 }
 
-// setRepoProject maps repo to project ("" clears the mapping, falling back
-// to «Без проекта»). Takes effect on the very next getAnalytics call — no
-// session rebuild needed, the project is resolved at read time.
+// setRepoProject is opt-in merging: repo is its own project by default
+// (its bare name), and this only matters when you want several repos to
+// share one label ("" clears it). Takes effect on the very next
+// getAnalytics call — no session rebuild needed, the project is resolved
+// at read time.
 export function setRepoProject(repo: string, project: string): Promise<RepoProject> {
   // repo is "owner/repo" — the backend's {repo...} wildcard route expects
   // that literal slash as a path separator, not percent-encoded.

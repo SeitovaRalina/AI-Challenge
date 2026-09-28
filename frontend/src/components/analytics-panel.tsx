@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  XAxis,
-  YAxis,
-} from 'recharts'
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, XAxis, YAxis } from 'recharts'
 import { cn } from 'cn'
 
 import { Alert, AlertTitle } from '@/components/ui/alert'
@@ -24,7 +13,6 @@ import {
   type Analytics,
   type AnalyticsPeriod,
   type RepoProject,
-  type SessionCategory,
 } from '@/lib/api'
 
 // AnalyticsPanel is day 19's «Аналитика» screen: everything the composition
@@ -32,18 +20,40 @@ import {
 // automatically after every collection — see «Активность») produced,
 // rendered as charts. All numbers come from worklog.get_analytics; nothing
 // here is computed client-side beyond chart layout.
+//
+// Colors are deliberately real (not the app's neutral grayscale tokens):
+// on a screen whose whole point is telling projects and commit types apart
+// at a glance, color is the mechanism, not decoration.
 
-const CATEGORY_META: Record<SessionCategory, { label: string; color: string }> = {
-  development: { label: 'Разработка', color: 'var(--color-chart-1)' },
-  review: { label: 'Code review', color: 'var(--color-chart-2)' },
-  other: { label: 'Прочее', color: 'var(--color-chart-3)' },
+const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#ef4444', '#14b8a6']
+const HOURS_COLOR = '#6366f1'
+
+function colorFor(index: number): string {
+  return PALETTE[index % PALETTE.length]
+}
+
+const COMMIT_TYPE_LABELS: Record<string, string> = {
+  feat: 'Фичи',
+  fix: 'Фиксы',
+  docs: 'Доки',
+  style: 'Стиль',
+  refactor: 'Рефакторинг',
+  perf: 'Перф',
+  test: 'Тесты',
+  build: 'Билд',
+  ci: 'CI',
+  chore: 'Хозяйство',
+  revert: 'Ревёрты',
+  other: 'Другое',
+}
+
+function commitTypeLabel(type: string): string {
+  return COMMIT_TYPE_LABELS[type] ?? type
 }
 
 const CHART_CONFIG: ChartConfig = {
-  development_hours: { label: 'Разработка', color: 'var(--color-chart-1)' },
-  review_hours: { label: 'Code review', color: 'var(--color-chart-2)' },
-  other_hours: { label: 'Прочее', color: 'var(--color-chart-3)' },
-  hours: { label: 'Часы', color: 'var(--color-chart-1)' },
+  hours: { label: 'Часы', color: HOURS_COLOR },
+  count: { label: 'Коммитов', color: HOURS_COLOR },
 }
 
 const PERIODS: { value: AnalyticsPeriod; label: string }[] = [
@@ -113,71 +123,88 @@ export function AnalyticsPanel() {
         <>
           <KpiRow kpi={data.kpi} />
 
-          <ChartCard title="Время по проекту">
-            <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[220px] w-full">
-              <BarChart data={data.time_by_project} layout="vertical" margin={{ left: 8 }}>
-                <CartesianGrid horizontal={false} />
-                <XAxis type="number" dataKey="hours" hide />
-                <YAxis type="category" dataKey="project" width={140} tickLine={false} axisLine={false} />
-                <ChartTooltip content={<ChartTooltipContent hideLabel formatter={(v) => `${v} ч`} />} />
-                <Bar dataKey="hours" fill="var(--color-chart-1)" radius={4} />
-              </BarChart>
-            </ChartContainer>
-          </ChartCard>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <ChartCard title="Время по проекту">
+              <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[220px] w-full">
+                <BarChart data={data.time_by_project} layout="vertical" margin={{ left: 8 }}>
+                  <CartesianGrid horizontal={false} />
+                  <XAxis type="number" dataKey="hours" hide />
+                  <YAxis type="category" dataKey="project" width={120} tickLine={false} axisLine={false} />
+                  <ChartTooltip content={<ChartTooltipContent hideLabel formatter={(v) => `${v} ч`} />} />
+                  <Bar dataKey="hours" radius={4}>
+                    {data.time_by_project.map((p, i) => (
+                      <Cell key={p.project} fill={colorFor(i)} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ChartContainer>
+            </ChartCard>
 
-          <ChartCard title="По дням: разработка / review">
-            <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[220px] w-full">
+            <ChartCard title="Типы коммитов">
+              <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[220px] w-full">
+                <BarChart data={data.commit_types} layout="vertical" margin={{ left: 8 }}>
+                  <CartesianGrid horizontal={false} />
+                  <XAxis type="number" dataKey="count" hide />
+                  <YAxis
+                    type="category"
+                    dataKey="type"
+                    width={100}
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={commitTypeLabel}
+                  />
+                  <ChartTooltip
+                    content={<ChartTooltipContent hideLabel formatter={(v) => `${v}`} labelFormatter={(v) => commitTypeLabel(String(v))} />}
+                  />
+                  <Bar dataKey="count" radius={4}>
+                    {data.commit_types.map((c, i) => (
+                      <Cell key={c.type} fill={colorFor(i)} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ChartContainer>
+              <p className="mt-1 text-center text-xs text-muted-foreground">
+                По префиксу коммита: <code>type(scope): описание</code> — берётся только type
+              </p>
+            </ChartCard>
+          </div>
+
+          <ChartCard title="Часы по дням">
+            <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[200px] w-full">
               <BarChart data={data.by_day}>
                 <CartesianGrid vertical={false} />
                 <XAxis dataKey="date" tickFormatter={formatDayTick} tickLine={false} axisLine={false} interval="preserveStartEnd" />
                 <YAxis tickLine={false} axisLine={false} width={28} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={(v) => formatDayTick(String(v))} />} />
-                <Bar dataKey="development_hours" stackId="a" fill="var(--color-chart-1)" radius={[0, 0, 4, 4]} />
-                <Bar dataKey="review_hours" stackId="a" fill="var(--color-chart-2)" />
-                <Bar dataKey="other_hours" stackId="a" fill="var(--color-chart-3)" radius={[4, 4, 0, 0]} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={(v) => formatDayTick(String(v))} formatter={(v) => `${v} ч`} />} />
+                <Bar dataKey="total_hours" fill={HOURS_COLOR} radius={4} />
               </BarChart>
             </ChartContainer>
           </ChartCard>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <ChartCard title="Состав активности">
-              <ChartContainer config={CHART_CONFIG} className="mx-auto aspect-square h-[220px]">
-                <PieChart>
-                  <ChartTooltip content={<ChartTooltipContent hideLabel formatter={(v) => `${v} ч`} />} />
-                  <Pie data={data.composition} dataKey="hours" nameKey="category" innerRadius={50} outerRadius={80} strokeWidth={2}>
-                    {data.composition.map((c) => (
-                      <Cell key={c.category} fill={CATEGORY_META[c.category].color} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ChartContainer>
-              <CompositionLegend composition={data.composition} />
-            </ChartCard>
-
-            <ChartCard title="Недельный тренд">
-              <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[220px] w-full">
-                <LineChart data={data.weekly_trend}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="week_start" tickFormatter={formatDayTick} tickLine={false} axisLine={false} />
-                  <YAxis tickLine={false} axisLine={false} width={28} />
-                  <ChartTooltip
-                    content={<ChartTooltipContent labelFormatter={(v) => formatDayTick(String(v))} formatter={(v) => `${v} ч`} />}
-                  />
-                  <Line type="monotone" dataKey="hours" stroke="var(--color-chart-1)" strokeWidth={2} dot={{ r: 3 }} />
-                </LineChart>
-              </ChartContainer>
-              <p className="mt-1 text-center text-xs text-muted-foreground">Последние 8 недель, независимо от выбранного периода</p>
-            </ChartCard>
-          </div>
+          <ChartCard title="Недельный тренд">
+            <ChartContainer config={CHART_CONFIG} className="aspect-auto h-[200px] w-full">
+              <LineChart data={data.weekly_trend}>
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="week_start" tickFormatter={formatDayTick} tickLine={false} axisLine={false} />
+                <YAxis tickLine={false} axisLine={false} width={28} />
+                <ChartTooltip
+                  content={<ChartTooltipContent labelFormatter={(v) => formatDayTick(String(v))} formatter={(v) => `${v} ч`} />}
+                />
+                <Line type="monotone" dataKey="hours" stroke={HOURS_COLOR} strokeWidth={2} dot={{ r: 3, fill: HOURS_COLOR }} />
+              </LineChart>
+            </ChartContainer>
+            <p className="mt-1 text-center text-xs text-muted-foreground">Последние 8 недель, независимо от выбранного периода</p>
+          </ChartCard>
 
           <ChartCard title="Активность по часам и дням недели">
             <Heatmap heatmap={data.heatmap} />
           </ChartCard>
 
           <p className="text-xs text-muted-foreground">
-            Сессия — блок событий не дальше 45 минут друг от друга, начинается за 30 минут до первого события. Категория и
-            репозиторий сессии — по большинству её событий. Проект — по вашей привязке репозитория ниже; без привязки —
-            «Без проекта». Это не оценка продуктивности, только подсчёт часов и событий.
+            Сессия — блок событий в одном репозитории не дальше 45 минут друг от друга, начинается за 30 минут до первого
+            события. Работа сразу в нескольких репозиториях в одном окне времени даёт по сессии на каждый — ни один не
+            теряется. Проект по умолчанию — имя самого репозитория; объединить несколько репозиториев под одной меткой можно
+            ниже. Это не оценка продуктивности, только подсчёт часов и коммитов.
           </p>
         </>
       )}
@@ -210,9 +237,7 @@ function PeriodTabs({ period, onChange }: { period: AnalyticsPeriod; onChange: (
 function KpiRow({ kpi }: { kpi: Analytics['kpi'] }) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <Kpi label="Всего часов" value={formatHours(kpi.total_hours)} />
-      <Kpi label="Разработка" value={formatHours(kpi.development_hours)} />
-      <Kpi label="Code review" value={formatHours(kpi.review_hours)} />
+      <Kpi label="Всего часов" value={formatHours(kpi.total_hours)} accent />
       <Kpi label="Активных дней" value={String(kpi.active_days)} />
       <Kpi label="Сессий" value={String(kpi.sessions_count)} />
       <Kpi label="Репозиториев" value={String(kpi.repo_count)} />
@@ -221,11 +246,13 @@ function KpiRow({ kpi }: { kpi: Analytics['kpi'] }) {
   )
 }
 
-function Kpi({ label, value }: { label: string; value: string }) {
+function Kpi({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-3">
+    <div className={cn('rounded-lg border p-3', accent ? 'border-transparent' : 'border-border bg-card')} style={accent ? { backgroundColor: `color-mix(in oklch, ${HOURS_COLOR} 12%, transparent)` } : undefined}>
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-lg font-medium text-foreground">{value}</dd>
+      <dd className={cn('mt-0.5 text-lg font-medium', accent ? '' : 'text-foreground')} style={accent ? { color: HOURS_COLOR } : undefined}>
+        {value}
+      </dd>
     </div>
   )
 }
@@ -236,25 +263,6 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
       <h3 className="mb-2 text-sm font-medium text-foreground">{title}</h3>
       {children}
     </section>
-  )
-}
-
-function CompositionLegend({ composition }: { composition: Analytics['composition'] }) {
-  const total = composition.reduce((sum, c) => sum + c.hours, 0)
-  return (
-    <ul className="mt-2 flex flex-col gap-1 text-xs">
-      {composition
-        .filter((c) => c.hours > 0)
-        .map((c) => (
-          <li key={c.category} className="flex items-center gap-1.5">
-            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CATEGORY_META[c.category].color }} />
-            <span className="text-muted-foreground">{CATEGORY_META[c.category].label}</span>
-            <span className="ml-auto text-foreground">
-              {formatHours(c.hours)} · {total > 0 ? Math.round((c.hours / total) * 100) : 0}%
-            </span>
-          </li>
-        ))}
-    </ul>
   )
 }
 
@@ -295,7 +303,10 @@ function Heatmap({ heatmap }: { heatmap: Analytics['heatmap'] }) {
                   key={h}
                   title={`${labelByWeekday.get(wd) ?? ''} ${h}:00 — ${minutes} мин`}
                   className="aspect-square rounded-sm"
-                  style={{ backgroundColor: intensity > 0 ? `color-mix(in oklch, var(--color-chart-1) ${Math.round(intensity * 100)}%, transparent)` : 'var(--muted)' }}
+                  style={{
+                    backgroundColor:
+                      intensity > 0 ? `color-mix(in oklch, ${HOURS_COLOR} ${Math.round(10 + intensity * 90)}%, transparent)` : 'var(--muted)',
+                  }}
                 />
               )
             })}
@@ -334,17 +345,23 @@ function RepoProjectMapping({
         className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-medium text-foreground"
       >
         <ChevronRight className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-90')} />
-        Репозитории и проекты
+        Объединить репозитории в проект
         <span className="ml-auto text-xs font-normal text-muted-foreground">
-          {repos.filter((r) => r.project).length} из {repos.length} привязано
+          {repos.filter((r) => r.project).length} из {repos.length} объединено
         </span>
       </button>
       {open && (
-        <ul className="divide-y divide-border border-t border-border">
-          {repos.map((r) => (
-            <RepoProjectRow key={r.repo} repo={r} onSet={onSet} />
-          ))}
-        </ul>
+        <>
+          <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+            Каждый репозиторий уже виден на графиках под своим именем. Впишите сюда одинаковую метку для нескольких
+            репозиториев, чтобы считать их одним проектом — это не обязательно.
+          </p>
+          <ul className="divide-y divide-border border-t border-border">
+            {repos.map((r) => (
+              <RepoProjectRow key={r.repo} repo={r} onSet={onSet} />
+            ))}
+          </ul>
+        </>
       )}
     </section>
   )
@@ -353,6 +370,7 @@ function RepoProjectMapping({
 function RepoProjectRow({ repo, onSet }: { repo: RepoProject; onSet: (repo: string, project: string) => Promise<void> }) {
   const [value, setValue] = useState(repo.project ?? '')
   const [saving, setSaving] = useState(false)
+  const bareName = repo.repo.split('/').pop() ?? repo.repo
 
   async function commit() {
     if (value === (repo.project ?? '')) return
@@ -372,7 +390,7 @@ function RepoProjectRow({ repo, onSet }: { repo: RepoProject; onSet: (repo: stri
         onChange={(e) => setValue(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-        placeholder="Без проекта"
+        placeholder={bareName}
         className="w-40 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-foreground/30"
       />
       {saving && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />}
