@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   AlertCircle,
+  CalendarClock,
   ChevronRight,
   GitCommitHorizontal,
   GitMerge,
@@ -20,6 +21,7 @@ export const KIND_META: Record<ActivityKind, { label: string; icon: typeof GitCo
   pr_merged: { label: 'PR смёржен', icon: GitMerge },
   review: { label: 'ревью', icon: ScanEye },
   issue_comment: { label: 'комментарий', icon: MessageSquare },
+  meeting: { label: 'встреча', icon: CalendarClock },
 }
 
 // ToolCallList shows the MCP tool calls an assistant message was built on
