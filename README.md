@@ -104,6 +104,27 @@ the collector's own state (last/next run, a manual "Собрать сейчас"
 log) plus a period digest and event feed, both read from Worklog. See
 [`days/w04-d18-activity-scheduler.md`](days/w04-d18-activity-scheduler.md).
 
+Day 19 is a composition pipeline on top: `list_events` → `build_sessions` →
+`save_sessions`, three more Worklog tools chained automatically after every
+collection (same run, same run log — no separate scheduler or button).
+`build_sessions` is pure (no I/O): it groups events into `WorkSession`
+blocks — events no more than 45 minutes apart, a session starting 30 minutes
+before its first event — each tagged with a dominant category
+(`development`/`review`, by event-count majority) and repository.
+`save_sessions` replaces the whole sessions table every time, rebuilding
+from the *entire* stored history rather than merging incrementally, so a
+session straddling two collection runs is never split at a boundary. Two
+more tools round out the domain: `set_repo_project`/`get_repo_projects` map
+a repository to a project label purely for grouping (resolved at read time,
+so relabeling never needs a rebuild — unmapped repos show as "Без
+проекта"), and `get_analytics` aggregates stored sessions into everything
+the new **«Аналитика»** screen renders: KPI cards, hours by project, hours
+by day (development/review/other), a composition donut, a weekday×hour
+heatmap, and an 8-week trend (always the trailing 8 weeks, independent of
+the selected period). No LLM, no productivity score — counts and hours
+only, same principle as day 18's digest. See
+[`days/w04-d19-work-sessions-pipeline.md`](days/w04-d19-work-sessions-pipeline.md).
+
 The original day-1 through day-5 one-shot demos (structured output, reasoning
 strategies, temperature, model versions) are still available from the
 sidebar, collapsed under "День 1–5 (демо)" — the chat agent is now the
@@ -298,4 +319,16 @@ now prefers this local data over a live `github.get_activity` call:
 curl -s -X POST http://localhost:8080/api/agent/chats/$chat_id/messages \
   -H "Content-Type: application/json" \
   -d '{"message":"Сколько всего коммитов у меня за последние 30 дней?"}'
+```
+
+The session pipeline and Analytics screen (day 19) — sessions are rebuilt
+automatically at the end of every collector run above; this only reads the
+result:
+
+```
+curl -s "http://localhost:8080/api/analytics?period=30d"
+
+curl -s http://localhost:8080/api/analytics/repos
+curl -s -X PATCH http://localhost:8080/api/analytics/repos/owner/repo \
+  -H "Content-Type: application/json" -d '{"project":"AI Challenge"}'
 ```
