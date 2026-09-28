@@ -352,7 +352,7 @@ function DayTimelineView() {
   function shiftDay(delta: number) {
     const d = new Date(date + 'T00:00:00')
     d.setDate(d.getDate() + delta)
-    setDate(d.toISOString().slice(0, 10))
+    setDate(toLocalISODate(d))
   }
 
   return (
@@ -429,8 +429,20 @@ function formatTimeOfDay(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 }
 
+// toLocalISODate formats d as YYYY-MM-DD from its LOCAL calendar fields —
+// never via toISOString(), which converts to UTC first and silently shifts
+// the date for any non-zero timezone offset (the real bug behind "can't
+// move the timeline forward": for UTC+6, local midnight of tomorrow is
+// still today in UTC, so toISOString() kept returning the same date).
+function toLocalISODate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  return toLocalISODate(new Date())
 }
 
 // WeeklySummaryCard is day 20's "итоги недели": the model's own comparison
