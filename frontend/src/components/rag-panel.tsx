@@ -78,9 +78,7 @@ export function RagPanel() {
         <p className="mt-1.5 text-sm text-muted-foreground">
           Каждая ваша завершённая оценка задачи (описание + финальная оценка/риски/допущения) —
           это один документ. «Переиндексировать» разбирает все такие документы на небольшие
-          фрагменты (чанки), превращает каждый в вектор и сохраняет локально. Пока без самого
-          поиска по вопросу — это следующий шаг. Результат, который можно посмотреть прямо
-          сейчас: сколько фрагментов получилось и чем отличаются два способа их нарезки — ниже.
+          фрагменты (чанки) и превращает каждый в вектор.
         </p>
       </section>
 
@@ -162,24 +160,6 @@ export function RagPanel() {
               ))}
             </tbody>
           </table>
-        </section>
-      )}
-
-      {status.exists && (
-        <section className="rounded-lg border border-border bg-card p-4">
-          <h2 className="text-sm font-medium text-foreground">Посмотреть сами чанки</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Содержимое фрагментов (не только счётчики) — через API, в терминале:
-          </p>
-          <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
-            {'curl "http://localhost:8080/api/rag/chunks?strategy=structural&limit=5"'}
-          </pre>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {'strategy — '}
-            <span className="font-mono">fixed_size</span>
-            {' или '}
-            <span className="font-mono">structural</span>
-          </p>
         </section>
       )}
     </div>
