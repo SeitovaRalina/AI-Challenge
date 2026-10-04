@@ -1042,3 +1042,34 @@ export function getWeeklySummary(): Promise<WeeklySummary | null> {
 export function generateWeeklySummary(): Promise<WeeklySummary> {
   return postJson<WeeklySummary>('/api/analytics/weekly-summary', {})
 }
+
+// ---- Day 21: RAG index over historical estimate sessions («Похожие задачи» screen) ----
+
+export type ChunkStrategy = 'fixed_size' | 'structural'
+
+export interface StrategyStats {
+  strategy: ChunkStrategy
+  chunk_count: number
+  total_chars: number
+  avg_chars: number
+}
+
+export interface IndexStatus {
+  exists: boolean
+  built_at?: string
+  source_count: number
+  embed_model?: string
+  strategies?: StrategyStats[]
+}
+
+// getRagIndex reports the current index's state without rebuilding it —
+// exists: false (not an error) before the first reindex.
+export function getRagIndex(): Promise<IndexStatus> {
+  return request<IndexStatus>('/api/rag/index')
+}
+
+// reindexRag rebuilds the index from every chat that produced a real
+// estimate, via Ollama embeddings — can take a while on the first run.
+export function reindexRag(): Promise<IndexStatus> {
+  return request<IndexStatus>('/api/rag/reindex', { method: 'POST' })
+}

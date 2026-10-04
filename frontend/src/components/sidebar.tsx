@@ -8,6 +8,7 @@ import {
   FlaskConical,
   FolderKanban,
   FolderPlus,
+  Layers,
   PanelLeftClose,
   Pencil,
   Plug,
@@ -68,6 +69,8 @@ interface SidebarProps {
   onOpenActivity: () => void
   analyticsActive: boolean
   onOpenAnalytics: () => void
+  ragActive: boolean
+  onOpenRag: () => void
   onCollapse: () => void
   onRenameChat: (id: string, title: string) => void
   onDeleteChat: (id: string) => void
@@ -122,6 +125,8 @@ export function Sidebar({
   onOpenActivity,
   analyticsActive,
   onOpenAnalytics,
+  ragActive,
+  onOpenRag,
   onCollapse,
   onRenameChat,
   onDeleteChat,
@@ -370,6 +375,19 @@ export function Sidebar({
         >
           <BarChart3 className="h-4 w-4" />
           Аналитика
+        </button>
+        <button
+          type="button"
+          onClick={onOpenRag}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+            ragActive
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <Layers className="h-4 w-4" />
+          Похожие задачи
         </button>
       </div>
 
