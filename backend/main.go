@@ -241,6 +241,7 @@ func main() {
 	mux.HandleFunc("POST /api/rag/query", queryHandler(client, ollamaClient, ragStore))
 	mux.HandleFunc("GET /api/rag/eval", getEvalQuestionsHandler(ragEvalPath))
 	mux.HandleFunc("POST /api/rag/eval/run", evalRunHandler(client, ollamaClient, ragStore, ragEvalPath))
+	mux.HandleFunc("POST /api/rag/eval/run/stream", evalRunStreamHandler(client, ollamaClient, ragStore, ragEvalPath))
 	mux.HandleFunc("POST /api/rag/eval/retrieval", evalRetrievalHandler(ollamaClient, ragStore, ragEvalPath))
 
 	port := os.Getenv("PORT")

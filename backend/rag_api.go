@@ -230,12 +230,70 @@ func evalRunHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagSt
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
 		defer cancel()
 
-		results, err := RunEval(ctx, client, ollama, idx, questions, strategy)
+		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, nil)
 		if err != nil {
 			writeRagQueryError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, EvalRunResult{Strategy: strategy, Results: results})
+	}
+}
+
+// evalRunStreamHandler is evalRunHandler with progress: same request body,
+// same final EvalRunResult (as the "done" event), reporting each of the 20
+// calls as it completes so the UI can show a real progress bar instead of
+// a bare spinner for what's typically a multi-minute run.
+func evalRunStreamHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStore, evalPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req evalRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+		strategy := ChunkStrategy(req.Strategy)
+		if strategy != ChunkStrategyFixed && strategy != ChunkStrategyStructural {
+			writeError(w, http.StatusBadRequest, "strategy должен быть fixed_size или structural")
+			return
+		}
+
+		idx, err := ragStore.Load()
+		if err != nil {
+			log.Printf("rag: load index failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "не удалось прочитать индекс")
+			return
+		}
+		if idx == nil {
+			writeError(w, http.StatusConflict, "индекс ещё не построен — сначала «Переиндексировать»")
+			return
+		}
+
+		questions, err := loadEvalQuestions(evalPath)
+		if err != nil {
+			log.Printf("rag: load eval questions failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "не удалось прочитать контрольные вопросы: "+err.Error())
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		stream := &sseWriter{w: w, rc: http.NewResponseController(w)}
+		stream.err = stream.rc.Flush()
+
+		// Not derived from r.Context(): same reasoning as streamAgentMessageHandler
+		// — a closed tab shouldn't abort a run already a minute or two in.
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+
+		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, func(p EvalProgress) {
+			stream.send("progress", p)
+		})
+		if err != nil {
+			stream.send("error", errorResponse{Error: err.Error()})
+			return
+		}
+		stream.send("done", EvalRunResult{Strategy: strategy, Results: results})
 	}
 }
 

@@ -11,16 +11,15 @@ import {
   getEvalQuestions,
   getRagIndex,
   queryRag,
-  runEval,
   runRetrievalEval,
+  streamRunEval,
   type ChunkStrategy,
   type EvalQuestion,
-  type EvalRunResult,
   type IndexStatus,
   type RagAnswer,
-  type RetrievalEvalResult,
   type RetrievedChunk,
 } from '@/lib/api'
+import { useRagPanelState } from '@/lib/rag-panel-state'
 
 const STRATEGY_LABEL: Record<ChunkStrategy, string> = {
   fixed_size: 'по фиксированному размеру',
@@ -47,12 +46,12 @@ interface RagPanelProps {
 // against the same question with no retrieval at all, plus the same
 // comparison run over 10 hand-written control questions. Deliberately not
 // the main chat (no history, no estimate card) and deliberately a
-// separate sidebar screen from «Индексация» (day 21) — indexing is
-// infrastructure you touch rarely, this is the feature itself, and by
-// day 25 it grows into its own mini-chat.
+// separate sidebar screen from «Индексация» (day 21). All results live in
+// useRagPanelState's module-level cache, not plain useState — navigating
+// to a source chat and back must not lose a run that took minutes.
 export function RagPanel({ onOpenSource }: RagPanelProps) {
   const [status, setStatus] = useState<IndexStatus | null>(null)
-  const [strategy, setStrategy] = useState<ChunkStrategy>('structural')
+  const [state, update] = useRagPanelState()
 
   useEffect(() => {
     getRagIndex()
@@ -80,9 +79,9 @@ export function RagPanel({ onOpenSource }: RagPanelProps) {
         </Alert>
       )}
 
-      <CompareSection status={status} strategy={strategy} onStrategyChange={setStrategy} onOpenSource={onOpenSource} />
-      <EvalSection status={status} strategy={strategy} onOpenSource={onOpenSource} />
-      <RetrievalCompareSection status={status} />
+      <CompareSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
+      <EvalSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
+      <RetrievalCompareSection status={status} state={state} update={update} />
     </div>
   )
 }
@@ -106,44 +105,38 @@ function StrategySelect({
   )
 }
 
+type RagState = ReturnType<typeof useRagPanelState>[0]
+type RagUpdate = ReturnType<typeof useRagPanelState>[1]
+
 // CompareSection — главный инструмент: один вопрос, два ответа рядом. Не
 // чат: ни истории, ни карточки оценки задачи — отдельный, минимальный
 // путь в бэкенде (rag_query.go), не трогающий Agent/Estimate.
 function CompareSection({
   status,
-  strategy,
-  onStrategyChange,
+  state,
+  update,
   onOpenSource,
 }: {
   status: IndexStatus
-  strategy: ChunkStrategy
-  onStrategyChange: (s: ChunkStrategy) => void
+  state: RagState
+  update: RagUpdate
   onOpenSource: (chatId: string, messageIndex: number | null) => void
 }) {
-  const [question, setQuestion] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [noRag, setNoRag] = useState<RagAnswer | null>(null)
-  const [rag, setRag] = useState<RagAnswer | null>(null)
-
   async function handleCompare() {
-    const q = question.trim()
+    const q = state.compareQuestion.trim()
     if (!q) return
-    setLoading(true)
-    setError(null)
-    setNoRag(null)
-    setRag(null)
+    update({ compareLoading: true, compareError: null, compareNoRag: null, compareRag: null })
     try {
       const [noRagRes, ragRes] = await Promise.all([
         queryRag(q, 'no_rag'),
-        queryRag(q, 'rag', strategy),
+        queryRag(q, 'rag', state.strategy),
       ])
-      setNoRag(noRagRes)
-      setRag(ragRes)
+      update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось получить ответ')
-    } finally {
-      setLoading(false)
+      update({
+        compareError: err instanceof ApiError ? err.message : 'Не удалось получить ответ',
+        compareLoading: false,
+      })
     }
   }
 
@@ -157,32 +150,35 @@ function CompareSection({
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
         <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
+          value={state.compareQuestion}
+          onChange={(e) => update({ compareQuestion: e.target.value })}
           placeholder="Например: сколько часов на экспорт списка заказов в CSV в админке?"
           rows={2}
           className="flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
         />
         <div className="flex items-center gap-2">
-          <StrategySelect value={strategy} onChange={onStrategyChange} />
-          <Button onClick={handleCompare} disabled={loading || !status.exists || !question.trim()}>
-            {loading && <Loader2 className="animate-spin" />}
+          <StrategySelect value={state.strategy} onChange={(strategy) => update({ strategy })} />
+          <Button
+            onClick={handleCompare}
+            disabled={state.compareLoading || !status.exists || !state.compareQuestion.trim()}
+          >
+            {state.compareLoading && <Loader2 className="animate-spin" />}
             Сравнить
           </Button>
         </div>
       </div>
 
-      {error && (
+      {state.compareError && (
         <Alert variant="destructive" className="mt-3">
           <AlertCircle />
-          <AlertTitle>{error}</AlertTitle>
+          <AlertTitle>{state.compareError}</AlertTitle>
         </Alert>
       )}
 
-      {(noRag || rag) && (
+      {(state.compareNoRag || state.compareRag) && (
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <AnswerColumn title="Без RAG" answer={noRag} onOpenSource={onOpenSource} />
-          <AnswerColumn title="С RAG" answer={rag} onOpenSource={onOpenSource} />
+          <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
+          <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
         </div>
       )}
     </section>
@@ -193,10 +189,12 @@ function AnswerColumn({
   title,
   answer,
   onOpenSource,
+  expectedSources,
 }: {
   title: string
   answer: RagAnswer | null
   onOpenSource: (chatId: string, messageIndex: number | null) => void
+  expectedSources?: string[]
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 p-3">
@@ -209,7 +207,12 @@ function AnswerColumn({
           <div className="text-xs text-muted-foreground">Источники:</div>
           <ul className="mt-1 flex flex-col gap-1">
             {answer.retrieved.map((r) => (
-              <SourceItem key={r.chunk_id} chunk={r} onOpenSource={onOpenSource} />
+              <SourceItem
+                key={r.chunk_id}
+                chunk={r}
+                onOpenSource={onOpenSource}
+                isExpected={expectedSources?.includes(r.session_id) ?? false}
+              />
             ))}
           </ul>
         </div>
@@ -221,18 +224,23 @@ function AnswerColumn({
 // SourceItem — свёрнутая строка (заголовок сессии, где внутри неё, score);
 // разворачивается в полный текст найденного чанка и кнопку перехода в
 // реальный чат, к конкретному сообщению, если секция к нему привязана.
+// isExpected (только в «10 контрольных вопросах») подсвечивает чанк,
+// из-за которого вопросу засчитан бейдж «сессия найдена» — иначе непонятно,
+// почему бейдж зелёный, если сам текст ответа этот факт не нашёл.
 function SourceItem({
   chunk,
   onOpenSource,
+  isExpected,
 }: {
   chunk: RetrievedChunk
   onOpenSource: (chatId: string, messageIndex: number | null) => void
+  isExpected?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const messageIndex = parseMessageIndex(chunk.section)
 
   return (
-    <li className="rounded border border-border/60">
+    <li className={cn('rounded border border-border/60', isExpected && 'border-emerald-500/50 bg-emerald-500/5')}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -242,6 +250,11 @@ function SourceItem({
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={chunk.title}>
           {chunk.title} — <span className="font-mono">{chunk.section}</span>
         </span>
+        {isExpected && (
+          <span className="flex-shrink-0 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+            ожидаемая сессия
+          </span>
+        )}
         <span className="flex-shrink-0 text-xs text-muted-foreground">{chunk.score.toFixed(2)}</span>
       </button>
       {open && (
@@ -265,26 +278,23 @@ function SourceItem({
 
 // EvalSection — day-22's deliverable over the full control set: all 10
 // questions, both modes, with whether retrieval actually found the
-// expected source. Нет автоматической оценки СМЫСЛА ответа (это потребовало
-// бы отдельной LLM-judge модели — вне рамок дня 22) — единственная
-// автоматическая метрика здесь: нашёлся ли среди источников ожидаемый
-// (бейдж «источник»); качество самого текста сравнивается на глаз, читая
-// два столбца.
+// expected source. Единственная автоматическая метрика — попадание
+// ожидаемой сессии в топ-5 (бейдж «сессия найдена»); качество самого
+// текста ответа сравнивается на глаз.
 function EvalSection({
   status,
-  strategy,
+  state,
+  update,
   onOpenSource,
 }: {
   status: IndexStatus
-  strategy: ChunkStrategy
+  state: RagState
+  update: RagUpdate
   onOpenSource: (chatId: string, messageIndex: number | null) => void
 }) {
   const [questions, setQuestions] = useState<EvalQuestion[] | null>(null)
   const [questionsError, setQuestionsError] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
-  const [runError, setRunError] = useState<string | null>(null)
-  const [result, setResult] = useState<EvalRunResult | null>(null)
-  const [expanded, setExpanded] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     getEvalQuestions()
@@ -294,17 +304,29 @@ function EvalSection({
       )
   }, [])
 
+  function toggle(i: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
+
   async function handleRun() {
-    setRunning(true)
-    setRunError(null)
+    update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
     try {
-      setResult(await runEval(strategy))
+      const result = await streamRunEval(state.strategy, (progress) => update({ evalProgress: progress }))
+      update({ evalResult: result, evalRunning: false })
     } catch (err) {
-      setRunError(err instanceof ApiError ? err.message : 'Не удалось прогнать контрольные вопросы')
-    } finally {
-      setRunning(false)
+      update({
+        evalError: err instanceof ApiError ? err.message : 'Не удалось прогнать контрольные вопросы',
+        evalRunning: false,
+      })
     }
   }
+
+  const progressPct = state.evalProgress ? Math.round((state.evalProgress.step / state.evalProgress.total) * 100) : 0
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
@@ -315,17 +337,33 @@ function EvalSection({
             Для каждого — ожидание и (если применимо) ожидаемый источник.
           </p>
         </div>
-        <Button onClick={handleRun} disabled={running || !status.exists || !questions?.length}>
-          {running && <Loader2 className="animate-spin" />}
+        <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
+          {state.evalRunning && <Loader2 className="animate-spin" />}
           Прогнать все 10
         </Button>
       </div>
       <p className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
         Как это оценивается: единственная автоматическая метрика — попал ли среди топ-5
-        найденных фрагментов чанк из ожидаемой сессии (бейдж «источник» ✓/✗ у вопроса). Качество
-        самого текста ответа автоматически не оценивается — сравнивайте два столбца глазами
-        после разворота вопроса.
+        найденных фрагментов чанк из ожидаемой сессии (бейдж «сессия найдена» ✓/✗ у вопроса; это
+        проверка retrieval, не проверка того, что модель правильно использовала найденный факт).
+        Качество самого текста ответа автоматически не оценивается — сравнивайте два столбца
+        глазами после разворота вопроса.
       </p>
+
+      {state.evalRunning && state.evalProgress && (
+        <div className="mt-3">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-all"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {state.evalProgress.step}/{state.evalProgress.total} —{' '}
+            {state.evalProgress.stage === 'rag' ? 'с RAG' : 'без RAG'}: {state.evalProgress.question}
+          </p>
+        </div>
+      )}
 
       {questionsError && (
         <Alert variant="destructive" className="mt-3">
@@ -333,22 +371,22 @@ function EvalSection({
           <AlertTitle>{questionsError}</AlertTitle>
         </Alert>
       )}
-      {runError && (
+      {state.evalError && (
         <Alert variant="destructive" className="mt-3">
           <AlertCircle />
-          <AlertTitle>{runError}</AlertTitle>
+          <AlertTitle>{state.evalError}</AlertTitle>
         </Alert>
       )}
 
       <ul className="mt-3 divide-y divide-border border-t border-border">
-        {(result?.results ?? questions)?.map((q, i) => {
-          const r = result?.results[i]
-          const open = expanded === i
+        {(state.evalResult?.results ?? questions)?.map((q, i) => {
+          const r = state.evalResult?.results[i]
+          const open = expanded.has(i)
           return (
             <li key={i}>
               <button
                 type="button"
-                onClick={() => setExpanded(open ? null : i)}
+                onClick={() => toggle(i)}
                 className="flex w-full items-start gap-2 py-2.5 text-left transition-colors hover:bg-accent/50"
               >
                 <ChevronRight
@@ -360,18 +398,27 @@ function EvalSection({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm text-foreground">{q.question}</span>
-                    {r?.expected_source_check && (
-                      <Badge
-                        className={cn(
-                          r.expected_source_hit
-                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                            : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
-                        )}
-                      >
-                        {r.expected_source_hit ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
-                        источник
-                      </Badge>
-                    )}
+                    {r &&
+                      (r.expected_source_check ? (
+                        <Badge
+                          title="Хотя бы один чанк из ожидаемой сессии попал в топ-5 retrieval. Это проверка поиска, а не проверка того, что модель правильно использовала найденный факт в ответе — см. подсветку источника ниже."
+                          className={cn(
+                            r.expected_source_hit
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                              : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+                          )}
+                        >
+                          {r.expected_source_hit ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                          сессия найдена
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="secondary"
+                          title="У вопроса нет одной конкретной ожидаемой сессии (агрегатный вопрос или вне базы) — метрика здесь неприменима."
+                        >
+                          нет привязки к сессии
+                        </Badge>
+                      ))}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{q.expectation}</p>
                 </div>
@@ -389,6 +436,7 @@ function EvalSection({
                         title="С RAG"
                         answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
                         onOpenSource={onOpenSource}
+                        expectedSources={r.expected_sources}
                       />
                     </div>
                   ) : (
@@ -409,23 +457,29 @@ function EvalSection({
 // RetrievalCompareSection — второстепенное: чисто retrieval, без LLM.
 // Перенесено из дня 21 (вопрос не чанкуется, он ищется среди готовых
 // чанков — это механика дня 22), визуально свёрнуто по умолчанию.
-function RetrievalCompareSection({ status }: { status: IndexStatus }) {
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<RetrievalEvalResult | null>(null)
-  const [detailsOpen, setDetailsOpen] = useState(false)
-
+function RetrievalCompareSection({
+  status,
+  state,
+  update,
+}: {
+  status: IndexStatus
+  state: RagState
+  update: RagUpdate
+}) {
   async function handleRun() {
-    setLoading(true)
-    setError(null)
+    update({ retrievalLoading: true, retrievalError: null })
     try {
-      setResult(await runRetrievalEval())
+      const result = await runRetrievalEval()
+      update({ retrievalResult: result, retrievalLoading: false })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось сравнить стратегии')
-    } finally {
-      setLoading(false)
+      update({
+        retrievalError: err instanceof ApiError ? err.message : 'Не удалось сравнить стратегии',
+        retrievalLoading: false,
+      })
     }
   }
+
+  const result = state.retrievalResult
 
   return (
     <section className="rounded-lg border border-border bg-muted/20 p-4">
@@ -441,16 +495,16 @@ function RetrievalCompareSection({ status }: { status: IndexStatus }) {
             вообще правильный источник.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleRun} disabled={loading || !status.exists}>
-          {loading && <Loader2 className="animate-spin" />}
+        <Button variant="outline" size="sm" onClick={handleRun} disabled={state.retrievalLoading || !status.exists}>
+          {state.retrievalLoading && <Loader2 className="animate-spin" />}
           Сравнить
         </Button>
       </div>
 
-      {error && (
+      {state.retrievalError && (
         <Alert variant="destructive" className="mt-3">
           <AlertCircle />
-          <AlertTitle>{error}</AlertTitle>
+          <AlertTitle>{state.retrievalError}</AlertTitle>
         </Alert>
       )}
 
@@ -467,14 +521,14 @@ function RetrievalCompareSection({ status }: { status: IndexStatus }) {
             ))}
             <button
               type="button"
-              onClick={() => setDetailsOpen((v) => !v)}
+              onClick={() => update({ retrievalDetailsOpen: !state.retrievalDetailsOpen })}
               className="text-muted-foreground underline underline-offset-2"
             >
-              {detailsOpen ? 'скрыть по вопросам' : 'показать по вопросам'}
+              {state.retrievalDetailsOpen ? 'скрыть по вопросам' : 'показать по вопросам'}
             </button>
           </div>
 
-          {detailsOpen && (
+          {state.retrievalDetailsOpen && (
             <table className="mt-2 w-full text-left text-xs">
               <thead className="text-muted-foreground">
                 <tr className="border-b border-border">

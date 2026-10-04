@@ -59,18 +59,39 @@ func expectedSourceHit(q EvalQuestion, retrieved []RetrievedChunk) (hit, applica
 	return false, true
 }
 
+// EvalProgress is one step of a RunEval call — reported via onProgress so
+// a 20-call run (10 questions x 2 modes, sequential, a couple of minutes)
+// can show real progress instead of a bare spinner.
+type EvalProgress struct {
+	Step     int    `json:"step"`
+	Total    int    `json:"total"`
+	Question string `json:"question"`
+	Stage    string `json:"stage"` // "no_rag" | "rag"
+}
+
 // RunEval is day 22's actual deliverable: every control question answered
 // both without RAG and with RAG (on one chosen strategy), so the two can
 // be read side by side. A question whose call still fails after retry gets
 // an inline error string instead of aborting the rest of the batch — 20
 // sequential LLM calls is long enough that one flaky one is expected.
-func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy) ([]EvalQuestionResult, error) {
+// onProgress may be nil (the plain, non-streaming endpoint doesn't report).
+func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
+	total := len(questions) * 2
+	step := 0
+	report := func(question, stage string) {
+		step++
+		if onProgress != nil {
+			onProgress(EvalProgress{Step: step, Total: total, Question: question, Stage: stage})
+		}
+	}
+
 	results := make([]EvalQuestionResult, 0, len(questions))
 	for _, q := range questions {
 		noRag, err := callWithRetry(func() (string, error) { return AnswerNoRAG(ctx, client, q.Question) })
 		if err != nil {
 			noRag = fmt.Sprintf("[ошибка: %v]", err)
 		}
+		report(q.Question, "no_rag")
 
 		var ragAnswer string
 		var retrieved []RetrievedChunk
@@ -85,6 +106,7 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 			retrieved = rag.Retrieved
 			hit, applicable = expectedSourceHit(q, rag.Retrieved)
 		}
+		report(q.Question, "rag")
 
 		results = append(results, EvalQuestionResult{
 			EvalQuestion:        q,
