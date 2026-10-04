@@ -216,6 +216,24 @@ func main() {
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 
+	// Day 21: RAG index over the chat agent's own historical task-estimation
+	// sessions. Embeddings come from a local Ollama (the company LiteLLM
+	// gateway has no embedding model routed for this key — verified
+	// directly, see ollama.go); everything else in the RAG pipeline (rerank,
+	// query rewrite, the final answer) stays on the existing LiteLLM client.
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+	ollamaEmbedModel := os.Getenv("OLLAMA_EMBED_MODEL")
+	if ollamaEmbedModel == "" {
+		log.Printf("OLLAMA_EMBED_MODEL not set — «Похожие задачи» reindex will fail until it is (e.g. \"ollama pull nomic-embed-text\")")
+	}
+	ollamaClient := NewOllamaClient(ollamaURL, ollamaEmbedModel)
+	ragStore := NewRagStore(filepath.Join(filepath.Dir(dataDir), "rag_index.json"))
+	mux.HandleFunc("POST /api/rag/reindex", reindexHandler(agent, ragStore, ollamaClient, ollamaEmbedModel))
+	mux.HandleFunc("GET /api/rag/index", getIndexHandler(ragStore))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
