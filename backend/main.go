@@ -233,6 +233,7 @@ func main() {
 	ragStore := NewRagStore(filepath.Join(filepath.Dir(dataDir), "rag_index.json"))
 	mux.HandleFunc("POST /api/rag/reindex", reindexHandler(agent, ragStore, ollamaClient, ollamaEmbedModel))
 	mux.HandleFunc("GET /api/rag/index", getIndexHandler(ragStore))
+	mux.HandleFunc("GET /api/rag/chunks", chunksHandler(ragStore))
 
 	port := os.Getenv("PORT")
 	if port == "" {

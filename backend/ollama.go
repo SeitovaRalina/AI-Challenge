@@ -30,11 +30,15 @@ type OllamaClient struct {
 	httpClient *http.Client
 }
 
+// 300s, not the usual 120s elsewhere in this codebase: a CPU-only Ollama
+// instance (no GPU) embedding a batch of chunk texts measurably needs more
+// than 120s under load — seen directly on 2026-10-04 (a 64-chunk batch hit
+// "context deadline exceeded" at 120s).
 func NewOllamaClient(baseURL, model string) *OllamaClient {
 	return &OllamaClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		model:      model,
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 

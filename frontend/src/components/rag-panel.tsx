@@ -22,10 +22,10 @@ const STRATEGY_HINT: Record<ChunkStrategy, string> = {
   structural: 'Один чанк на заголовок/сообщение/поле оценки (риск, допущение, подзадача…)',
 }
 
-// RagPanel is day 21's «Похожие задачи» screen: build/inspect the local RAG
-// index over the chat agent's own historical task-estimation sessions, and
-// compare the two chunking strategies side by side. Querying the index
-// (day 22+) is a separate step added on top of this same screen later.
+// RagPanel builds/inspects the local RAG index over the chat agent's own
+// historical task-estimation sessions, and compares two ways of splitting
+// that text into searchable chunks. Querying the index by a question is a
+// separate step added on top of this same screen later.
 export function RagPanel() {
   const [status, setStatus] = useState<IndexStatus | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -73,6 +73,17 @@ export function RagPanel() {
 
   return (
     <div className="flex max-w-3xl flex-col gap-4">
+      <section className="rounded-lg border border-border bg-muted/40 p-4">
+        <h2 className="text-sm font-medium text-foreground">Что здесь происходит сейчас</h2>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Каждая ваша завершённая оценка задачи (описание + финальная оценка/риски/допущения) —
+          это один документ. «Переиндексировать» разбирает все такие документы на небольшие
+          фрагменты (чанки), превращает каждый в вектор и сохраняет локально. Пока без самого
+          поиска по вопросу — это следующий шаг. Результат, который можно посмотреть прямо
+          сейчас: сколько фрагментов получилось и чем отличаются два способа их нарезки — ниже.
+        </p>
+      </section>
+
       <section className="rounded-lg border border-border bg-card">
         <div className="flex items-start gap-3 p-4">
           <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
@@ -90,7 +101,7 @@ export function RagPanel() {
               )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Корпус — сессии оценки задач этого инстанса (реальные истории «описание задачи →
+              Источник — сессии оценки задач этого инстанса (реальные истории «описание задачи →
               оценка»), не сторонние документы.
             </p>
             {status.exists && (
@@ -121,17 +132,17 @@ export function RagPanel() {
         <section className="rounded-lg border border-border bg-card">
           <div className="border-b border-border p-4">
             <h2 className="text-sm font-medium text-foreground">
-              Сравнение стратегий чанкинга
+              Два способа нарезки — один и тот же корпус
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Один и тот же корпус, две разных разбивки на чанки — день 22 использует лучшую из
-              них для поиска.
+              Одни и те же сессии разбиты двумя разными способами. Заметная разница в количестве
+              и размере фрагментов — и есть повод выбрать один из них для поиска позже.
             </p>
           </div>
           <table className="w-full text-left text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border">
-                <th className="px-4 py-2 font-medium">Стратегия</th>
+                <th className="px-4 py-2 font-medium">Способ</th>
                 <th className="px-4 py-2 font-medium">Чанков</th>
                 <th className="px-4 py-2 font-medium">Символов всего</th>
                 <th className="px-4 py-2 font-medium">Средняя длина</th>
@@ -151,6 +162,24 @@ export function RagPanel() {
               ))}
             </tbody>
           </table>
+        </section>
+      )}
+
+      {status.exists && (
+        <section className="rounded-lg border border-border bg-card p-4">
+          <h2 className="text-sm font-medium text-foreground">Посмотреть сами чанки</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Содержимое фрагментов (не только счётчики) — через API, в терминале:
+          </p>
+          <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
+            {'curl "http://localhost:8080/api/rag/chunks?strategy=structural&limit=5"'}
+          </pre>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {'strategy — '}
+            <span className="font-mono">fixed_size</span>
+            {' или '}
+            <span className="font-mono">structural</span>
+          </p>
         </section>
       )}
     </div>

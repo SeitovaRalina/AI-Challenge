@@ -9,9 +9,10 @@ import (
 )
 
 // embedBatchSize caps how many chunk texts go into one Ollama /api/embed
-// call — the corpus is small (a few hundred chunks at most) but batching
-// still keeps any single request body/timeout reasonable.
-const embedBatchSize = 64
+// call. Kept small (not e.g. 64) because a CPU-only Ollama instance embeds
+// slowly enough that a bigger batch risks the client timeout outright —
+// smaller batches finish individually and the loop just makes more of them.
+const embedBatchSize = 16
 
 // RagStore persists the single local RagIndex as one JSON file, the same
 // pattern as weekly_summary.json — a sibling of the chats/labs/projects

@@ -46,6 +46,19 @@ type StrategyStats struct {
 	AvgChars   float64       `json:"avg_chars"`
 }
 
+// ChunkPreview is one chunk without its embedding (a 768-number vector is
+// useless to read by eye) — what GET /api/rag/chunks returns for someone
+// inspecting the index's actual content, as opposed to IndexStatus's
+// aggregate counts.
+type ChunkPreview struct {
+	ID        string        `json:"id"`
+	SessionID string        `json:"session_id"`
+	Title     string        `json:"title"`
+	Section   string        `json:"section"`
+	Strategy  ChunkStrategy `json:"strategy"`
+	Text      string        `json:"text"`
+}
+
 // IndexStatus is what GET /api/rag/index returns: whether an index exists,
 // when it was built, and the per-strategy comparison.
 type IndexStatus struct {
