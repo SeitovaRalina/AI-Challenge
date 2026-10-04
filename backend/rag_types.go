@@ -68,3 +68,81 @@ type IndexStatus struct {
 	EmbedModel  string          `json:"embed_model,omitempty"`
 	Strategies  []StrategyStats `json:"strategies"`
 }
+
+// RetrievedChunk is one chunk retrieval matched for a question, with its
+// similarity score — what both the single-query endpoint and the eval
+// runs report so the UI can show exactly what grounded an answer.
+type RetrievedChunk struct {
+	SessionID string  `json:"session_id"`
+	Title     string  `json:"title"`
+	Section   string  `json:"section"`
+	ChunkID   string  `json:"chunk_id"`
+	Score     float64 `json:"score"`
+}
+
+// RagAnswer is what POST /api/rag/query returns for either mode — Strategy
+// and Retrieved stay empty for mode "no_rag", which never touches the
+// index at all (the honest baseline day 22 compares RAG against).
+type RagAnswer struct {
+	Mode      string           `json:"mode"`
+	Strategy  ChunkStrategy    `json:"strategy,omitempty"`
+	Answer    string           `json:"answer"`
+	Retrieved []RetrievedChunk `json:"retrieved,omitempty"`
+}
+
+// EvalQuestion is one of the day-22 "10 контрольных вопросов" — hand-
+// written against this instance's real corpus (see backend/data/
+// rag_eval.json, gitignored like the rest of data/). ExpectedSources is
+// empty when the question is an aggregate across many sessions or has no
+// good match in the corpus at all ("если применимо" per the assignment).
+type EvalQuestion struct {
+	Question        string   `json:"question"`
+	Expectation     string   `json:"expectation"`
+	ExpectedSources []string `json:"expected_sources"`
+}
+
+// EvalQuestionResult is one eval question run through both modes — the
+// actual day-22 deliverable ("агент с двумя режимами + 10 контрольных
+// вопросов и сравнение качества"), not the retrieval-only hit-rate below.
+type EvalQuestionResult struct {
+	EvalQuestion
+	NoRagAnswer         string           `json:"no_rag_answer"`
+	RagAnswer           string           `json:"rag_answer"`
+	Retrieved           []RetrievedChunk `json:"retrieved"`
+	ExpectedSourceHit   bool             `json:"expected_source_hit"`
+	ExpectedSourceCheck bool             `json:"expected_source_check"` // false when ExpectedSources was empty — nothing to check
+}
+
+// EvalRunResult is the full day-22 RAG-vs-no-RAG run, all 10 questions,
+// RAG answered with one chosen strategy.
+type EvalRunResult struct {
+	Strategy ChunkStrategy        `json:"strategy"`
+	Results  []EvalQuestionResult `json:"results"`
+}
+
+// RetrievalHitRate is one strategy's score on the retrieval-only
+// comparison (RunRetrievalEval) — whether top-K retrieval actually
+// surfaces each question's expected source session, no LLM call involved.
+// This is the day-21-leftover comparison the plan moved to day 22 (a
+// question isn't chunked, it's matched against existing chunks, which is
+// retrieval, not chunking) — secondary to EvalRunResult above, not the
+// day-22 headline.
+type RetrievalHitRate struct {
+	Strategy ChunkStrategy `json:"strategy"`
+	Hits     int           `json:"hits"`
+	Total    int           `json:"total"` // only questions with ExpectedSources set
+	HitRate  float64       `json:"hit_rate"`
+}
+
+// RetrievalQuestionResult is one question's per-strategy hit/miss, for the
+// 2-column comparison table.
+type RetrievalQuestionResult struct {
+	Question string                 `json:"question"`
+	Checked  bool                   `json:"checked"` // false when the question has no ExpectedSources
+	Hits     map[ChunkStrategy]bool `json:"hits"`
+}
+
+type RetrievalEvalResult struct {
+	Questions  []RetrievalQuestionResult `json:"questions"`
+	Strategies []RetrievalHitRate        `json:"strategies"`
+}

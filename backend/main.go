@@ -235,6 +235,14 @@ func main() {
 	mux.HandleFunc("GET /api/rag/index", getIndexHandler(ragStore))
 	mux.HandleFunc("GET /api/rag/chunks", chunksHandler(ragStore))
 
+	// Day 22: question -> retrieval -> LLM, both modes, plus the 10 control
+	// questions run through both for a real quality comparison.
+	ragEvalPath := filepath.Join(filepath.Dir(dataDir), "rag_eval.json")
+	mux.HandleFunc("POST /api/rag/query", queryHandler(client, ollamaClient, ragStore))
+	mux.HandleFunc("GET /api/rag/eval", getEvalQuestionsHandler(ragEvalPath))
+	mux.HandleFunc("POST /api/rag/eval/run", evalRunHandler(client, ollamaClient, ragStore, ragEvalPath))
+	mux.HandleFunc("POST /api/rag/eval/retrieval", evalRetrievalHandler(ollamaClient, ragStore, ragEvalPath))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

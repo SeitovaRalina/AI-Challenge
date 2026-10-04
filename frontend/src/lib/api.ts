@@ -1073,3 +1073,85 @@ export function getRagIndex(): Promise<IndexStatus> {
 export function reindexRag(): Promise<IndexStatus> {
   return request<IndexStatus>('/api/rag/reindex', { method: 'POST' })
 }
+
+// ---- Day 22: RAG query — question -> retrieval -> LLM, RAG vs no-RAG ----
+
+export interface RetrievedChunk {
+  session_id: string
+  title: string
+  section: string
+  chunk_id: string
+  score: number
+}
+
+export interface RagAnswer {
+  mode: 'rag' | 'no_rag'
+  strategy?: ChunkStrategy
+  answer: string
+  retrieved?: RetrievedChunk[]
+}
+
+// queryRag answers one question in either mode. strategy is required when
+// mode is 'rag'.
+export function queryRag(
+  question: string,
+  mode: 'rag' | 'no_rag',
+  strategy?: ChunkStrategy,
+): Promise<RagAnswer> {
+  return postJson<RagAnswer>('/api/rag/query', { question, mode, strategy })
+}
+
+export interface EvalQuestion {
+  question: string
+  expectation: string
+  expected_sources: string[]
+}
+
+// getEvalQuestions returns the day-22 control-question set.
+export function getEvalQuestions(): Promise<EvalQuestion[]> {
+  return request<EvalQuestion[]>('/api/rag/eval')
+}
+
+export interface EvalQuestionResult extends EvalQuestion {
+  no_rag_answer: string
+  rag_answer: string
+  retrieved: RetrievedChunk[]
+  expected_source_hit: boolean
+  expected_source_check: boolean
+}
+
+export interface EvalRunResult {
+  strategy: ChunkStrategy
+  results: EvalQuestionResult[]
+}
+
+// runEval answers all 10 control questions in both modes (RAG on
+// strategy, plus no-RAG) — this is day 22's actual "сравнение качества"
+// deliverable. Slow: ~20 LLM calls.
+export function runEval(strategy: ChunkStrategy): Promise<EvalRunResult> {
+  return postJson<EvalRunResult>('/api/rag/eval/run', { strategy })
+}
+
+export interface RetrievalQuestionResult {
+  question: string
+  checked: boolean
+  hits: Partial<Record<ChunkStrategy, boolean>>
+}
+
+export interface RetrievalHitRate {
+  strategy: ChunkStrategy
+  hits: number
+  total: number
+  hit_rate: number
+}
+
+export interface RetrievalEvalResult {
+  questions: RetrievalQuestionResult[]
+  strategies: RetrievalHitRate[]
+}
+
+// runRetrievalEval is the secondary, no-LLM comparison: does top-K
+// retrieval surface the expected source under each chunking strategy.
+export function runRetrievalEval(): Promise<RetrievalEvalResult> {
+  return postJson<RetrievalEvalResult>('/api/rag/eval/retrieval', {})
+}
