@@ -18,6 +18,7 @@ import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { SourcesPanel } from '@/components/sources-panel'
 import { ActivityPanel } from '@/components/activity-panel'
 import { AnalyticsPanel } from '@/components/analytics-panel'
+import { RagPanel } from '@/components/rag-panel'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
 import {
@@ -65,7 +66,7 @@ import {
 import { applyTurnEvent, EMPTY_TURN_PROGRESS, type TurnProgress } from '@/lib/turn-progress'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'chat' | 'sources' | 'activity' | 'analytics' | DemoMode
+type Mode = 'chat' | 'sources' | 'activity' | 'analytics' | 'rag' | DemoMode
 
 // Identifies one send-like operation's target for the pendingKeys set below:
 // a chat by itself, or (for a branching chat) one specific branch within it —
@@ -105,6 +106,11 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
     title: 'Аналитика',
     description:
       'После каждого сбора события автоматически собираются в рабочие сессии (Worklog: list_events → build_sessions → save_sessions) — это и есть материал для графиков ниже. Просто счётчики и часы, без оценки продуктивности.',
+  },
+  rag: {
+    title: 'Похожие задачи',
+    description:
+      'Ассистент строит локальную базу знаний по вашим прошлым оценкам задач, чтобы потом находить среди них похожие на новую задачу и давать более точный ответ. Ниже — что сейчас в этой базе и как текст сессий превращается в единицы поиска.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -778,7 +784,9 @@ function App() {
   }
 
   const activeDemo =
-    mode === 'chat' || mode === 'sources' || mode === 'activity' || mode === 'analytics' ? null : mode
+    mode === 'chat' || mode === 'sources' || mode === 'activity' || mode === 'analytics' || mode === 'rag'
+      ? null
+      : mode
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -820,6 +828,8 @@ function App() {
             onOpenActivity={() => setMode('activity')}
             analyticsActive={mode === 'analytics'}
             onOpenAnalytics={() => setMode('analytics')}
+            ragActive={mode === 'rag'}
+            onOpenRag={() => setMode('rag')}
             onCollapse={() => setSidebarCollapsed(true)}
             onRenameChat={handleRenameChat}
             onDeleteChat={handleDeleteChat}
@@ -923,6 +933,8 @@ function App() {
           {mode === 'activity' && <ActivityPanel />}
 
           {mode === 'analytics' && <AnalyticsPanel />}
+
+          {mode === 'rag' && <RagPanel />}
 
           {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">

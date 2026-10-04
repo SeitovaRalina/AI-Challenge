@@ -297,7 +297,7 @@ type Agent struct {
 	order    []string // chat IDs, oldest first, for stable listing order
 	labs     map[string]*Lab
 	projects map[string]*Project
-	profile  *UserProfile               // day 12: single global profile, never nil after NewAgent
+	profile  *UserProfile              // day 12: single global profile, never nil after NewAgent
 	fanOut   map[string][]FanOutStatus // labID -> its most recent coordinator fan-out, in-memory only
 
 	// toolSources are the MCP servers whose tools non-lab chat turns may
@@ -516,6 +516,20 @@ func copyChat(c *Chat) *Chat {
 	copied.Messages = make([]AgentMessage, len(active))
 	copy(copied.Messages, active)
 	return &copied
+}
+
+// AllChats returns a snapshot of every chat's full state (history, current
+// estimate, task memory) — day 21's RAG indexing reads this to build the
+// corpus, rather than ListChats's summaries.
+func (a *Agent) AllChats() []*Chat {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	chats := make([]*Chat, 0, len(a.order))
+	for _, id := range a.order {
+		chats = append(chats, copyChat(a.chats[id]))
+	}
+	return chats
 }
 
 // GetChat returns one chat's full state (history and current estimate).
