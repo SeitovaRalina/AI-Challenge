@@ -142,6 +142,10 @@ interface ChatPanelProps {
   // one-click way to see the full list, not just the ones this message
   // itself mentions.
   onOpenProjectMemory?: () => void
+  // Set when navigating here from the RAG screen's "перейти к сообщению"
+  // link (day 22) — scrolls that message into view and briefly highlights
+  // it. null/undefined: no-op.
+  highlightMessageIndex?: number | null
 }
 
 export function ChatPanel({
@@ -184,6 +188,7 @@ export function ChatPanel({
   taskState,
   onSetTaskDone,
   onOpenProjectMemory,
+  highlightMessageIndex,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
@@ -196,6 +201,10 @@ export function ChatPanel({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Briefly highlighted message index, set via highlightMessageIndex (RAG
+  // screen "перейти к сообщению" navigation) — local so it can clear itself
+  // without the parent having to track "consumed" state.
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null)
 
   // A fan-out still running means the 3 strategy chats' history isn't
   // settled yet — sending another message now would race a second fan-out
@@ -239,6 +248,19 @@ export function ChatPanel({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, isSending, fanOut, turnProgress])
+
+  // Runs after the scroll-to-bottom effect above (declared later = fires
+  // later), so a RAG-navigation highlight wins over the default "jump to
+  // the newest message" behavior when a chat first mounts.
+  useEffect(() => {
+    if (highlightMessageIndex == null) return
+    setHighlightedIndex(highlightMessageIndex)
+    document
+      .getElementById(`chat-message-${highlightMessageIndex}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const timer = setTimeout(() => setHighlightedIndex(null), 2500)
+    return () => clearTimeout(timer)
+  }, [chatId, highlightMessageIndex])
 
   // Grows the composer with the draft up to COMPOSER_MAX_HEIGHT, so a long
   // message stays visible while typing instead of scrolling inside a
@@ -435,7 +457,14 @@ export function ChatPanel({
           ) : (
             <div className="flex flex-col gap-4">
               {messages.map((message, index) => (
-                <div key={index} className="flex flex-col gap-4">
+                <div
+                  key={index}
+                  id={`chat-message-${index}`}
+                  className={cn(
+                    'flex flex-col gap-4 rounded-lg transition-colors',
+                    highlightedIndex === index && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
+                  )}
+                >
                   {eventsBeforeIndex.get(index)?.map((event, i) => (
                     <CompressionNotice key={`compression-${index}-${i}`} event={event} />
                   ))}

@@ -13,6 +13,7 @@ import {
   Pencil,
   Plug,
   Plus,
+  Search,
   Target,
   Trash2,
   User,
@@ -69,6 +70,8 @@ interface SidebarProps {
   onOpenActivity: () => void
   analyticsActive: boolean
   onOpenAnalytics: () => void
+  ragIndexActive: boolean
+  onOpenRagIndex: () => void
   ragActive: boolean
   onOpenRag: () => void
   onCollapse: () => void
@@ -125,6 +128,8 @@ export function Sidebar({
   onOpenActivity,
   analyticsActive,
   onOpenAnalytics,
+  ragIndexActive,
+  onOpenRagIndex,
   ragActive,
   onOpenRag,
   onCollapse,
@@ -378,6 +383,19 @@ export function Sidebar({
         </button>
         <button
           type="button"
+          onClick={onOpenRagIndex}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+            ragIndexActive
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <Layers className="h-4 w-4" />
+          Индексация
+        </button>
+        <button
+          type="button"
           onClick={onOpenRag}
           className={cn(
             'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
@@ -386,7 +404,7 @@ export function Sidebar({
               : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )}
         >
-          <Layers className="h-4 w-4" />
+          <Search className="h-4 w-4" />
           Похожие задачи
         </button>
       </div>

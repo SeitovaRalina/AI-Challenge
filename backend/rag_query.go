@@ -17,13 +17,17 @@ const defaultTopK = 5
 // excerpts — day 22 has no mandatory-citation/"не знаю" enforcement yet
 // (that's day 24), but asking it not to invent numbers keeps the RAG vs
 // no-RAG comparison meaningful rather than both sides just guessing.
-const ragSystemPrompt = `Ты отвечаешь на вопрос, используя приведённые ниже фрагменты из прошлых сессий оценки задач пользователя. Отвечай на русском языке, опираясь только на эти фрагменты — не придумывай цифры и факты, которых там нет. Если фрагментов недостаточно для ответа, прямо скажи об этом.`
+const ragSystemPrompt = `Ты отвечаешь на вопрос, используя приведённые ниже фрагменты из прошлых сессий оценки задач пользователя. Отвечай на русском языке, опираясь только на эти фрагменты — не придумывай цифры и факты, которых там нет. Если фрагментов недостаточно для ответа, прямо скажи об этом. Отвечай кратко и по существу — 2-4 предложения, без преамбул и длинных списков, если вопрос их прямо не требует.`
 
 // noRagSystemPrompt is the honest baseline day 22 compares RAG against: a
 // plain assistant with explicitly NO access to the user's history, so a
 // difference between the two answers is attributable to retrieval, not to
-// one side being told more about the product than the other.
-const noRagSystemPrompt = `Ты обычный ассистент общего назначения. Отвечай на вопрос на русском языке, опираясь только на свои общие знания. У тебя НЕТ доступа к истории прошлых задач пользователя — не утверждай, что знаешь подробности его проектов.`
+// one side being told more about the product than the other. The same
+// brevity instruction as ragSystemPrompt is deliberate — without it this
+// side tends to compensate for having nothing concrete to say with long,
+// generic elaboration, which makes the two columns look lopsided for
+// reasons that have nothing to do with RAG itself.
+const noRagSystemPrompt = `Ты обычный ассистент общего назначения. Отвечай на вопрос на русском языке, опираясь только на свои общие знания. У тебя НЕТ доступа к истории прошлых задач пользователя — не утверждай, что знаешь подробности его проектов. Отвечай кратко и по существу — 2-4 предложения, без преамбул и длинных списков, если вопрос их прямо не требует.`
 
 // cosineSimilarity is the only ranking signal day 22 uses — no rerank yet
 // (day 23).
@@ -65,7 +69,7 @@ func retrieveTopK(chunks []Chunk, strategy ChunkStrategy, queryEmbedding []float
 func toRetrievedChunks(scored []scoredChunk) []RetrievedChunk {
 	out := make([]RetrievedChunk, len(scored))
 	for i, s := range scored {
-		out[i] = RetrievedChunk{SessionID: s.SessionID, Title: s.Title, Section: s.Section, ChunkID: s.ID, Score: s.Score}
+		out[i] = RetrievedChunk{SessionID: s.SessionID, Title: s.Title, Section: s.Section, ChunkID: s.ID, Score: s.Score, Text: s.Text}
 	}
 	return out
 }

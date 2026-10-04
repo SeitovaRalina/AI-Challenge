@@ -78,6 +78,10 @@ type RetrievedChunk struct {
 	Section   string  `json:"section"`
 	ChunkID   string  `json:"chunk_id"`
 	Score     float64 `json:"score"`
+	// Text is the chunk's actual content — included so the UI can show
+	// exactly what grounded the answer without a second round trip (user
+	// feedback: sources need to be inspectable, not just named).
+	Text string `json:"text"`
 }
 
 // RagAnswer is what POST /api/rag/query returns for either mode — Strategy

@@ -1082,6 +1082,7 @@ export interface RetrievedChunk {
   section: string
   chunk_id: string
   score: number
+  text: string
 }
 
 export interface RagAnswer {
