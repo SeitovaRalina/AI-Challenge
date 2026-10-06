@@ -244,17 +244,20 @@ function SourceItem({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-2 py-1 text-left"
+        className="flex w-full items-start gap-1.5 px-2 py-1.5 text-left"
       >
-        <ChevronRight className={cn('h-3 w-3 flex-shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={chunk.title}>
-          {chunk.title} — <span className="font-mono">{chunk.section}</span>
-        </span>
-        {isExpected && (
-          <span className="flex-shrink-0 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-            ожидаемая сессия
-          </span>
-        )}
+        <ChevronRight
+          className={cn('mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+            <span className="text-xs text-foreground">{chunk.title}</span>
+            <span className="font-mono text-xs text-muted-foreground">{chunk.section}</span>
+          </div>
+          {isExpected && (
+            <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">ожидаемая сессия</span>
+          )}
+        </div>
         <span className="flex-shrink-0 text-xs text-muted-foreground">{chunk.score.toFixed(2)}</span>
       </button>
       {open && (
