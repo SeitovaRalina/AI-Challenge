@@ -25,13 +25,23 @@ outside it:
 {
   "reply": "the message shown to the user in the chat, in Russian, conversational, may reference the estimate but does not need to repeat every field",
   "estimate": <the EstimateResponse object described above> or null,
-  "invariant_conflict": ["verbatim text of each violated project invariant"] or [] when there is no conflict, or no invariants are configured
+  "invariant_conflict": ["verbatim text of each violated project invariant"] or [] when there is no conflict, or no invariants are configured,
+  "citations": [{"chunk_id": "...", "text": "..."}] or [] — see below
 }
 
 This applies even to a plain conversational answer that changes nothing (a
 clarifying question, summing existing subtask hours, small talk) — NEVER
 respond with bare prose outside this envelope, even then; put that prose in
 "reply" and set "estimate" to null.
+
+"citations" is only ever non-empty when a system message below gave you
+context tagged "Найденный контекст из истории прошлых задач" — each of its
+fragments is marked with its own "[chunk_id]". If your reply actually used
+a specific fact from one of those fragments, add one citation per such
+fact: {"chunk_id": "the exact bracketed ID", "text": "an EXACT, verbatim
+substring of that fragment's text — never paraphrase, never summarize"}.
+If no such context was given this turn, or none of it was actually used in
+"reply", set "citations" to [].
 
 "invariant_conflict" is only ever non-empty when the project's hard
 invariants (given to you as their own system message, when any exist) rule
@@ -64,6 +74,12 @@ type agentTurn struct {
 	Reply             string            `json:"reply"`
 	Estimate          *EstimateResponse `json:"estimate"`
 	InvariantConflict []string          `json:"invariant_conflict"`
+	// Citations (day 25) are the model's own claimed quotes from this
+	// turn's RAG grounding (see rag_chat.go), unverified at this point —
+	// PostMessage runs them through verifyCitations (rag_query.go, day 24)
+	// before storing or returning them, exactly like the standalone RAG
+	// query endpoint. Empty/absent on a turn with no grounding context.
+	Citations []rawCitation `json:"citations"`
 }
 
 // interviewModeSystemPrompt is injected, turn-only, when the frontend flags
@@ -113,6 +129,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	summary := chat.Summary
 	summarizedThrough := chat.SummarizedThrough
 	task := chat.Task
+	ragEnabled := chat.RagEnabled
 	// Snapshot BEFORE this turn runs — the stage as the conversation stood
 	// when the user sent this message, used only for prompt injection below.
 	// buildAgentReplyLocked recomputes it fresh AFTER the turn mutates chat,
@@ -162,7 +179,21 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 	}
 
-	messages := make([]chatMessage, 0, len(history)+4)
+	// Day 25: retrieval grounding, in-process (see rag_chat.go's doc
+	// comment for why this isn't a model-invoked tool). Every real turn of
+	// a RAG-enabled, non-lab chat searches the index before the main call;
+	// an index load/embedding failure just means no grounding this turn,
+	// never a failed turn — same discipline as every other side-call here.
+	var found []scoredChunk
+	if labID == "" && ragEnabled && a.ragStore != nil {
+		if idx, err := a.ragStore.Load(); err != nil {
+			log.Printf("agent: chat %s: rag index load failed, answering without grounding: %v", chatID, err)
+		} else {
+			found = retrieveForChat(ctx, a.ragOllama, idx, userMessage)
+		}
+	}
+
+	messages := make([]chatMessage, 0, len(history)+5)
 	messages = append(messages, chatMessage{Role: "system", Content: agentSystemPrompt})
 	if interviewMode {
 		messages = append(messages, chatMessage{Role: "system", Content: interviewModeSystemPrompt})
@@ -192,6 +223,9 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	// beyond the ContextStrategy actually being tested.
 	if labID == "" {
 		messages = append(messages, chatMessage{Role: "system", Content: taskStateSystemPrompt(taskStateBefore)})
+	}
+	if len(found) > 0 {
+		messages = append(messages, chatMessage{Role: "system", Content: ragChatSystemPrompt(found)})
 	}
 	extra, raw := buildContextMessages(strategy, a.historyKeepLastN, history, facts, summary, summarizedThrough)
 	messages = append(messages, extra...)
@@ -254,6 +288,14 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 	assistantSentAt := time.Now()
 
+	// Day 25: never trust the model's own claimed quotes — verify each one
+	// against the actual chunk text, exactly like the standalone RAG query
+	// endpoint (verifyCitations, rag_query.go, day 24). sources is the
+	// deterministic Go-side result of retrieval itself, independent of
+	// anything the model said.
+	sources := toRetrievedChunks(found)
+	citations := verifyCitations(turn.Citations, found)
+
 	if usage != nil {
 		log.Printf("agent: chat %s: usage prompt=%d completion=%d total=%d (%d tool call(s))",
 			chatID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, len(toolCalls))
@@ -263,7 +305,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
-		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict, ToolCalls: toolCalls},
+		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict, ToolCalls: toolCalls, Sources: sources, Citations: citations},
 	)
 	if turn.Estimate != nil {
 		chat.setBranchEstimate(branchID, turn.Estimate)
@@ -296,6 +338,8 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
 	agentReply.InvariantConflict = turn.InvariantConflict
 	agentReply.ToolCalls = toolCalls
+	agentReply.Sources = sources
+	agentReply.Citations = citations
 	// The reply is final from here on; what follows only refreshes memory
 	// (and can take a while). Streaming clients can show it right away. A
 	// copy, since agentReply keeps being updated below.
