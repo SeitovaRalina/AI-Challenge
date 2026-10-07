@@ -119,9 +119,11 @@ type EvalQuestion struct {
 	ExpectedSources []string `json:"expected_sources"`
 }
 
-// EvalQuestionResult is one eval question run through both modes — the
-// actual day-22 deliverable ("агент с двумя режимами + 10 контрольных
-// вопросов и сравнение качества"), not the retrieval-only hit-rate below.
+// EvalQuestionResult is one eval question answered without RAG and with
+// baseline RAG (no rerank/rewrite/filter) always; ImprovedRagAnswer is
+// populated too, alongside them, when the run's RagOptions had at least
+// one enhancement on — one run, up to three comparable answers, not two
+// separate runs the caller has to eyeball against each other.
 type EvalQuestionResult struct {
 	EvalQuestion
 	NoRagAnswer         string           `json:"no_rag_answer"`
@@ -129,6 +131,9 @@ type EvalQuestionResult struct {
 	Retrieved           []RetrievedChunk `json:"retrieved"`
 	ExpectedSourceHit   bool             `json:"expected_source_hit"`
 	ExpectedSourceCheck bool             `json:"expected_source_check"` // false when ExpectedSources was empty — nothing to check
+	// Set only when the run requested rerank/rewrite/filtering.
+	ImprovedRagAnswer string           `json:"improved_rag_answer,omitempty"`
+	ImprovedRetrieved []RetrievedChunk `json:"improved_retrieved,omitempty"`
 }
 
 // EvalRunResult is the full day-22 RAG-vs-no-RAG run, all 10 questions,

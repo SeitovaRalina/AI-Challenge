@@ -117,6 +117,14 @@ type RagOptions struct {
 	MinScore float64 // 0 = no threshold; drop any final chunk scoring below this
 }
 
+// Enabled reports whether any enhancement is actually on — the zero value
+// (every field false/0) is "identical to baseline", so callers that build
+// a baseline-vs-enhanced comparison (RunEval) know when there's a second
+// answer worth computing at all.
+func (o RagOptions) Enabled() bool {
+	return o.Rerank || o.Rewrite || o.MinScore > 0
+}
+
 const rewriteSystemPrompt = `Переформулируй вопрос пользователя в короткий поисковый запрос для поиска по базе кратких технических заметок (оценки задач разработки: категория, сложность, часы, риски, допущения). Сохрани суть вопроса, но сформулируй ближе к стилю самих записей — коротко, по сути, без лишних слов и вопросительной формы. Ответь ТОЛЬКО переформулированным запросом, одной строкой, без кавычек и пояснений.`
 
 // rewriteQuery asks the LLM for a search-friendlier restatement of
