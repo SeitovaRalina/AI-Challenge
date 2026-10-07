@@ -88,10 +88,24 @@ type RetrievedChunk struct {
 // and Retrieved stay empty for mode "no_rag", which never touches the
 // index at all (the honest baseline day 22 compares RAG against).
 type RagAnswer struct {
-	Mode      string           `json:"mode"`
-	Strategy  ChunkStrategy    `json:"strategy,omitempty"`
-	Answer    string           `json:"answer"`
-	Retrieved []RetrievedChunk `json:"retrieved,omitempty"`
+	Mode     string        `json:"mode"`
+	Strategy ChunkStrategy `json:"strategy,omitempty"`
+	Answer   string        `json:"answer"`
+	// Retrieved is explicitly `[]` (not omitted) when filtering legitimately
+	// drops every candidate — "0 chunks passed" is a meaningful result the
+	// UI must be able to tell apart from "this field doesn't apply" (mode
+	// no_rag, where it really is omitted below in Query).
+	Retrieved []RetrievedChunk `json:"retrieved"`
+	// Day 23 additions, zero/empty unless the request opted into them.
+	RewrittenQuestion string `json:"rewritten_question,omitempty"`
+	// CandidateCount/FilteredCount are "топ-K до и после фильтрации":
+	// CandidateCount is how many chunks were considered (the cosine pool,
+	// widened for rerank), FilteredCount how many survived the min_score
+	// cutoff and actually grounded the answer — both NOT omitempty, since 0
+	// is a meaningful, distinct result ("everything got filtered out"), not
+	// the same as "this field wasn't computed".
+	CandidateCount int `json:"candidate_count"`
+	FilteredCount  int `json:"filtered_count"`
 }
 
 // EvalQuestion is one of the day-22 "10 контрольных вопросов" — hand-

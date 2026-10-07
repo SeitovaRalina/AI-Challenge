@@ -75,7 +75,8 @@ type EvalProgress struct {
 // an inline error string instead of aborting the rest of the batch — 20
 // sequential LLM calls is long enough that one flaky one is expected.
 // onProgress may be nil (the plain, non-streaming endpoint doesn't report).
-func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
+// opts is day 23's rerank/rewrite/filter — zero value reproduces day 22.
+func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, opts RagOptions, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
 	total := len(questions) * 2
 	step := 0
 	report := func(question, stage string) {
@@ -97,7 +98,7 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 		var retrieved []RetrievedChunk
 		var hit, applicable bool
 		rag, err := callWithRetry(func() (RagAnswer, error) {
-			return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK)
+			return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK, opts)
 		})
 		if err != nil {
 			ragAnswer = fmt.Sprintf("[ошибка: %v]", err)
