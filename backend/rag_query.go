@@ -24,10 +24,16 @@ const defaultTopK = 5
 const defaultCandidateK = 20
 
 // ragSystemPrompt instructs the model to answer only from the retrieved
-// excerpts — day 22 has no mandatory-citation/"не знаю" enforcement yet
-// (that's day 24), but asking it not to invent numbers keeps the RAG vs
-// no-RAG comparison meaningful rather than both sides just guessing.
-const ragSystemPrompt = `Ты отвечаешь на вопрос, используя приведённые ниже фрагменты из прошлых сессий оценки задач пользователя. Отвечай на русском языке, опираясь только на эти фрагменты — не придумывай цифры и факты, которых там нет. Если фрагментов недостаточно для ответа, прямо скажи об этом. Отвечай кратко и по существу — 2-4 предложения, без преамбул и длинных списков, если вопрос их прямо не требует.`
+// excerpts and, day 24, to return the answer as JSON with mandatory
+// citations — each one a verbatim substring of a given fragment, verified
+// server-side afterward (verifyCitations), never trusted on the model's
+// word alone.
+const ragSystemPrompt = `Ты отвечаешь на вопрос, используя приведённые ниже пронумерованные фрагменты из прошлых сессий оценки задач пользователя. Отвечай на русском языке, опираясь только на эти фрагменты — не придумывай цифры и факты, которых там нет. Если фрагментов недостаточно для ответа, прямо скажи об этом. Отвечай кратко и по существу — 2-4 предложения, без преамбул и длинных списков, если вопрос их прямо не требует.
+
+Ответь ТОЛЬКО одним JSON-объектом, без markdown-разметки и пояснений вокруг, строго такого вида:
+{"answer": "текст ответа на русском", "citations": [{"chunk_id": "ID фрагмента в квадратных скобках, из которого взята цитата", "text": "дословная цитата — точная подстрока текста этого фрагмента, без изменений и перефразирования"}]}
+
+Каждая цитата должна быть ТОЧНОЙ подстрокой текста указанного фрагмента и подтверждать конкретное утверждение в ответе. Если фрагменты не подтверждают ни одного утверждения в ответе, оставь "citations" пустым массивом — не придумывай цитаты, которых нет в тексте.`
 
 // noRagSystemPrompt is the honest baseline day 22 compares RAG against: a
 // plain assistant with explicitly NO access to the user's history, so a
@@ -84,13 +90,13 @@ func toRetrievedChunks(scored []scoredChunk) []RetrievedChunk {
 	return out
 }
 
-// buildRagPrompt numbers each retrieved chunk with its source session and
-// section so the model's answer can (informally, ahead of day 24's
-// enforced citations) refer back to "[2]" style markers.
+// buildRagPrompt tags each retrieved chunk with its stable chunk ID (not a
+// positional index) so a day-24 citation's "chunk_id" can be matched back
+// to the exact chunk it claims to quote, by verifyCitations.
 func buildRagPrompt(question string, scored []scoredChunk) []chatMessage {
 	var ctx strings.Builder
-	for i, s := range scored {
-		fmt.Fprintf(&ctx, "[%d] (сессия %s, %s)\n%s\n\n", i+1, s.SessionID, s.Section, s.Text)
+	for _, s := range scored {
+		fmt.Fprintf(&ctx, "[%s] (сессия %s, %s)\n%s\n\n", s.ID, s.SessionID, s.Section, s.Text)
 	}
 	return []chatMessage{
 		{Role: "system", Content: ragSystemPrompt},
@@ -220,7 +226,11 @@ func rerankLLM(ctx context.Context, client *LiteLLMClient, question string, cand
 	copy(reranked, candidates)
 	for i := range reranked {
 		if score, ok := byIndex[i+1]; ok {
-			reranked[i].Score = score
+			// Normalized to the same 0-1 scale as cosine similarity (the
+			// judge scores 0-10) — otherwise MinScore and day 24's
+			// minConfidenceScore would compare a 0-1 threshold against a
+			// 0-10 score whenever rerank is on, silently filtering nothing.
+			reranked[i].Score = score / 10
 		}
 	}
 	sort.SliceStable(reranked, func(i, j int) bool { return reranked[i].Score > reranked[j].Score })
@@ -244,10 +254,100 @@ func filterByThreshold(scored []scoredChunk, minScore float64) []scoredChunk {
 	return out
 }
 
+// minConfidenceScore is day 24's hard anti-hallucination floor. Unlike
+// opts.MinScore (day 23, a user-chosen preference that can legitimately be
+// 0), this always applies and is not a toggle: below it, AnswerRAG skips
+// the LLM call entirely and returns a fixed "не знаю" answer, so an honest
+// refusal never depends on the model choosing to say it. Directly motivated
+// by the day-23 "самая большая оценка" regression — rerank turned an
+// honest "не знаю" into a confident wrong answer because the reranker's
+// own 0-10 judge score (normalized above) still landed low for every
+// candidate, just not low enough for the model to say so on its own.
+// Normalized to the same 0-1 scale cosine and rerank scores share.
+const minConfidenceScore = 0.3
+
+const lowConfidenceAnswer = "Не знаю. Среди найденных фрагментов нет ни одного, достаточно релевантного вопросу, чтобы на него ответить. Уточните, пожалуйста, вопрос — например, назовите конкретную задачу, сессию оценки или более узкий период."
+
+// rawCitation is the LLM's claimed quote before server-side verification —
+// see ragLLMAnswer and verifyCitations.
+type rawCitation struct {
+	ChunkID string `json:"chunk_id"`
+	Text    string `json:"text"`
+}
+
+// ragLLMAnswer is the day-24 structured response AnswerRAG's LLM call must
+// return — ragSystemPrompt specifies this exact shape.
+type ragLLMAnswer struct {
+	Answer    string        `json:"answer"`
+	Citations []rawCitation `json:"citations"`
+}
+
+// normalizeForMatch collapses whitespace runs so a citation's verbatim
+// check isn't defeated by the model reflowing spacing/line breaks it copied
+// from the chunk — it still must match word-for-word, just not byte-for-byte.
+func normalizeForMatch(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// verifyCitations checks each citation's text against the actual chunk it
+// claims to quote, among final — never trusts the model's own word for it.
+// A chunk_id outside final (a hallucinated reference) or text that isn't a
+// real substring of that chunk comes back Verified: false, surfaced in the
+// UI rather than silently dropped or trusted.
+func verifyCitations(raw []rawCitation, final []scoredChunk) []Citation {
+	byID := make(map[string]string, len(final))
+	for _, c := range final {
+		byID[c.ID] = c.Text
+	}
+	out := make([]Citation, 0, len(raw))
+	for _, r := range raw {
+		citation := Citation{ChunkID: r.ChunkID, Text: r.Text}
+		// The prompt shows each chunk_id inside "[...]" (buildRagPrompt) and
+		// the model sometimes copies the brackets into its own chunk_id
+		// field verbatim instead of just the ID — seen directly on a live
+		// query. Strip them defensively rather than relying on prompt
+		// wording the model won't always follow.
+		id := strings.Trim(r.ChunkID, "[]")
+		if chunkText, ok := byID[id]; ok {
+			quote := strings.Trim(strings.TrimSpace(r.Text), `"'«»`)
+			citation.Verified = strings.Contains(normalizeForMatch(chunkText), normalizeForMatch(quote))
+		}
+		out = append(out, citation)
+	}
+	return out
+}
+
+// ragLLMResult pairs the two values answerWithCitations produces so they
+// can travel through callWithRetry's single-return-value signature together.
+type ragLLMResult struct {
+	answer    string
+	citations []Citation
+}
+
+// answerWithCitations asks the LLM for a structured {answer, citations}
+// response grounded in final and verifies every citation server-side.
+func answerWithCitations(ctx context.Context, client *LiteLLMClient, question string, final []scoredChunk) (ragLLMResult, error) {
+	// maxTokens generous for the same reason as rerankLLM/rewriteQuery: this
+	// reasoning model's hidden "thinking" tokens share the same budget as
+	// the visible JSON output.
+	raw, err := client.chatComplete(ctx, buildRagPrompt(question, final), 0.2, 8000, nil)
+	if err != nil {
+		return ragLLMResult{}, err
+	}
+	var parsed ragLLMAnswer
+	if err := json.Unmarshal([]byte(stripCodeFences(raw)), &parsed); err != nil {
+		return ragLLMResult{}, fmt.Errorf("rag answer: invalid response: %w (raw: %s)", err, truncateForLog(raw))
+	}
+	if parsed.Answer == "" {
+		return ragLLMResult{}, fmt.Errorf("rag answer: empty answer field (raw: %s)", truncateForLog(raw))
+	}
+	return ragLLMResult{answer: parsed.Answer, citations: verifyCitations(parsed.Citations, final)}, nil
+}
+
 // AnswerRAG embeds question via Ollama, retrieves and (per opts) rewrites/
 // reranks/filters chunks of strategy from idx, and answers grounded in
-// them via LiteLLM. With the zero-value RagOptions this is exactly day
-// 22's behavior (topK by cosine, nothing more).
+// them via LiteLLM — mandatory sources (Retrieved) and citations, plus
+// day 24's hard low-confidence gate, below which the LLM is never called.
 func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, question string, strategy ChunkStrategy, topK int, opts RagOptions) (RagAnswer, error) {
 	searchText := question
 	var rewritten string
@@ -291,22 +391,32 @@ func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient,
 	final := filterByThreshold(ranked, opts.MinScore)
 	filteredCount := len(final)
 
-	answer, err := client.chatComplete(ctx, buildRagPrompt(question, final), 0.2, 0, nil)
-	if err != nil {
-		return RagAnswer{}, err
-	}
-
 	result := RagAnswer{
 		Mode:           "rag",
 		Strategy:       strategy,
-		Answer:         answer,
 		Retrieved:      toRetrievedChunks(final),
 		CandidateCount: candidateCount,
 		FilteredCount:  filteredCount,
+		Citations:      []Citation{},
 	}
 	if rewritten != "" {
 		result.RewrittenQuestion = rewritten
 	}
+
+	// Hard rule, not model discretion: nothing cleared the floor, so don't
+	// even ask — see minConfidenceScore's doc comment.
+	if filteredCount == 0 || final[0].Score < minConfidenceScore {
+		result.Answer = lowConfidenceAnswer
+		result.LowConfidence = true
+		return result, nil
+	}
+
+	llmResult, err := callWithRetry(func() (ragLLMResult, error) { return answerWithCitations(ctx, client, question, final) })
+	if err != nil {
+		return RagAnswer{}, err
+	}
+	result.Answer = llmResult.answer
+	result.Citations = llmResult.citations
 	return result, nil
 }
 

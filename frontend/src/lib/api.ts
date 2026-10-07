@@ -1085,6 +1085,16 @@ export interface RetrievedChunk {
   text: string
 }
 
+// Citation is day 24's anti-hallucination check — a verbatim excerpt the
+// model claims backs a statement in its answer. verified is computed by
+// the backend, never by the model itself: true only when text is an exact
+// (whitespace-normalized) substring of the chunk chunk_id actually names.
+export interface Citation {
+  chunk_id: string
+  text: string
+  verified: boolean
+}
+
 export interface RagAnswer {
   mode: 'rag' | 'no_rag'
   strategy?: ChunkStrategy
@@ -1093,6 +1103,11 @@ export interface RagAnswer {
   rewritten_question?: string
   candidate_count?: number
   filtered_count?: number
+  citations?: Citation[]
+  // Day 24: true when the backend skipped the LLM call entirely because
+  // nothing retrieved cleared the hard relevance floor — answer is then
+  // the fixed "не знаю" text, not a model-generated one.
+  low_confidence?: boolean
 }
 
 // RagQueryOptions is day 23's rerank/rewrite/filter — all off reproduces
@@ -1136,11 +1151,15 @@ export interface EvalQuestionResult extends EvalQuestion {
   no_rag_answer: string
   rag_answer: string
   retrieved: RetrievedChunk[]
+  citations: Citation[]
+  low_confidence?: boolean
   expected_source_hit: boolean
   expected_source_check: boolean
   // Present only when the run had rerank/rewrite/filtering on.
   improved_rag_answer?: string
   improved_retrieved?: RetrievedChunk[]
+  improved_citations?: Citation[]
+  improved_low_confidence?: boolean
 }
 
 export interface EvalRunResult {

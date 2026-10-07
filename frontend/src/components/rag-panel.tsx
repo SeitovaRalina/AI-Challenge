@@ -15,8 +15,10 @@ import {
   runRetrievalEval,
   streamRunEval,
   type ChunkStrategy,
+  type Citation,
   type EvalProgress,
   type EvalQuestion,
+  type EvalQuestionResult,
   type IndexStatus,
   type RagAnswer,
   type RetrievedChunk,
@@ -326,9 +328,16 @@ function AnswerColumn({
           )}
         </div>
       )}
-      <div className="mt-1.5 text-sm text-foreground">
-        {answer ? <Markdown>{answer.answer}</Markdown> : <span className="text-muted-foreground">—</span>}
-      </div>
+      {answer?.low_confidence ? (
+        <div className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-sm text-amber-800 dark:text-amber-300">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span>{answer.answer}</span>
+        </div>
+      ) : (
+        <div className="mt-1.5 text-sm text-foreground">
+          {answer ? <Markdown>{answer.answer}</Markdown> : <span className="text-muted-foreground">—</span>}
+        </div>
+      )}
       {answer?.retrieved && answer.retrieved.length > 0 && (
         <div className="mt-2 border-t border-border/60 pt-2">
           <div className="text-xs text-muted-foreground">Источники:</div>
@@ -344,7 +353,44 @@ function AnswerColumn({
           </ul>
         </div>
       )}
+      {answer?.citations && (
+        <div className="mt-2 border-t border-border/60 pt-2">
+          <div className="text-xs text-muted-foreground">
+            Цитаты: {answer.citations.length === 0 ? 'нет' : `${answer.citations.filter((c) => c.verified).length}/${answer.citations.length} подтверждено`}
+          </div>
+          {answer.citations.length > 0 && (
+            <ul className="mt-1 flex flex-col gap-1">
+              {answer.citations.map((c, i) => <CitationItem key={i} citation={c} />)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
+  )
+}
+
+// CitationItem — day 24: one verbatim quote the model claims backs the
+// answer, with the server-side verification result (never the model's own
+// word) made visible rather than hidden — an unverified citation is itself
+// a finding, not noise to suppress.
+function CitationItem({ citation }: { citation: Citation }) {
+  return (
+    <li
+      className={cn(
+        'flex items-start gap-1.5 rounded border border-border/60 px-2 py-1.5',
+        citation.verified ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-red-500/40 bg-red-500/5',
+      )}
+    >
+      {citation.verified ? (
+        <Check className="mt-0.5 h-3 w-3 flex-shrink-0 text-emerald-600" />
+      ) : (
+        <X className="mt-0.5 h-3 w-3 flex-shrink-0 text-red-600" />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-xs italic text-foreground">«{citation.text}»</p>
+        <p className="font-mono text-[11px] text-muted-foreground">{citation.chunk_id}</p>
+      </div>
+    </li>
   )
 }
 
@@ -403,6 +449,56 @@ function SourceItem({
         </div>
       )}
     </li>
+  )
+}
+
+// CitationBadge — day-24 badge in the control-question list, baseline RAG
+// column only (same scope as "сессия найдена"). Three states, not a bare
+// N/M fraction: when every citation verified, N always equals M by
+// definition (the badge is only green when all verified), so showing "3/3"
+// is a meaningless-looking fraction — just the count. The fraction is kept
+// only for the one case it actually carries information: some citations
+// verified, some didn't. Zero citations is its own, neutral state — it
+// usually means an honest non-answer (nothing to cite), not a problem, so
+// it isn't colored as a failure the way an unverified citation is.
+function CitationBadge({ result }: { result: EvalQuestionResult }) {
+  if (result.low_confidence) {
+    return (
+      <Badge
+        className="bg-amber-500/15 text-amber-700 dark:text-amber-400"
+        title="Релевантность найденных фрагментов ниже порога — ответ не отправлялся модели, сработало жёсткое правило «не знаю»."
+      >
+        не знаю
+      </Badge>
+    )
+  }
+
+  const total = result.citations.length
+  if (total === 0) {
+    return (
+      <Badge
+        variant="secondary"
+        title="Ответ не содержит ни одной цитаты — обычно потому, что модель честно отказалась отвечать (нечего цитировать). Но это стоит открыть и проверить: иногда ответ называет цифру или факт без подтверждающей цитаты."
+      >
+        нет цитат
+      </Badge>
+    )
+  }
+
+  const verified = result.citations.filter((c) => c.verified).length
+  const allVerified = verified === total
+  return (
+    <Badge
+      title="Сколько цитат в ответе дословно подтвердилось текстом найденного фрагмента — проверяет бэкенд, не модель на слово."
+      className={cn(
+        allVerified
+          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+          : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+      )}
+    >
+      {allVerified ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+      {allVerified ? `цитаты: ${total}` : `цитаты: ${verified}/${total}`}
+    </Badge>
   )
 }
 
@@ -483,12 +579,15 @@ function EvalSection({
         </Button>
       </div>
       <p className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
-        Как это оценивается: единственная автоматическая метрика — попал ли среди топ-5
-        фрагментов обычного поиска (левый столбец) чанк из ожидаемой сессии (бейдж «сессия
-        найдена» ✓/✗ у вопроса; это проверка retrieval, не проверка того, что модель правильно
-        использовала найденный факт, и не зависит от режима — правый столбец она не описывает).
-        Качество самого текста ответа автоматически не оценивается — сравнивайте два столбца
-        глазами после разворота вопроса.
+        Автоматические проверки у вопроса (все — про обычный поиск, левый столбец; правый
+        столбец они не описывают): «сессия найдена» — попал ли в топ-5 чанк из ожидаемой сессии
+        (проверка retrieval, не того, что модель использовала найденный факт); «цитаты: N» —
+        все N цитат в ответе дословно подтвердились текстом найденного фрагмента, «цитаты:
+        N/M» — только N из M (проверяет бэкенд, не модель на слово), «нет цитат» — ответ вообще
+        без цитат (обычно честный отказ, но стоит открыть и проверить); «не знаю» —
+        релевантность была ниже порога, модель вообще не вызывалась. Совпадает ли
+        смысл ответа с цитатами и само качество текста автоматически не оцениваются — это
+        читается глазами после разворота вопроса.
       </p>
 
       {state.evalRunning && state.evalProgress && (
@@ -560,6 +659,7 @@ function EvalSection({
                           нет привязки к сессии
                         </Badge>
                       ))}
+                    {r && <CitationBadge result={r} />}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{q.expectation}</p>
                 </div>
@@ -572,13 +672,25 @@ function EvalSection({
                         <>
                           <AnswerColumn
                             title="RAG — обычный поиск"
-                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            answer={{
+                              mode: 'rag',
+                              answer: r.rag_answer,
+                              retrieved: r.retrieved,
+                              citations: r.citations,
+                              low_confidence: r.low_confidence,
+                            }}
                             onOpenSource={onOpenSource}
                             expectedSources={r.expected_sources}
                           />
                           <AnswerColumn
                             title="RAG — с улучшениями"
-                            answer={{ mode: 'rag', answer: r.improved_rag_answer, retrieved: r.improved_retrieved }}
+                            answer={{
+                              mode: 'rag',
+                              answer: r.improved_rag_answer,
+                              retrieved: r.improved_retrieved,
+                              citations: r.improved_citations,
+                              low_confidence: r.improved_low_confidence,
+                            }}
                             onOpenSource={onOpenSource}
                             expectedSources={r.expected_sources}
                           />
@@ -592,7 +704,13 @@ function EvalSection({
                           />
                           <AnswerColumn
                             title="С RAG"
-                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            answer={{
+                              mode: 'rag',
+                              answer: r.rag_answer,
+                              retrieved: r.retrieved,
+                              citations: r.citations,
+                              low_confidence: r.low_confidence,
+                            }}
                             onOpenSource={onOpenSource}
                             expectedSources={r.expected_sources}
                           />

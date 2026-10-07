@@ -29,11 +29,11 @@ import { TASK_STAGE_META } from '@/lib/task-state'
 export type DemoMode = 'estimate' | 'compare' | 'reasoning' | 'temperature' | 'models'
 
 const DEMO_LINKS: { mode: DemoMode; label: string }[] = [
-  { mode: 'estimate', label: 'День 1 — Оценка задачи' },
-  { mode: 'compare', label: 'День 2 — Форматы ответа' },
-  { mode: 'reasoning', label: 'День 3 — Способы рассуждения' },
-  { mode: 'temperature', label: 'День 4 — Температура' },
-  { mode: 'models', label: 'День 5 — Версии моделей' },
+  { mode: 'estimate', label: 'Оценка задачи' },
+  { mode: 'compare', label: 'Форматы ответа' },
+  { mode: 'reasoning', label: 'Способы рассуждения' },
+  { mode: 'temperature', label: 'Температура' },
+  { mode: 'models', label: 'Версии моделей' },
 ]
 
 const MIN_WIDTH = 220
@@ -415,7 +415,7 @@ export function Sidebar({
           onClick={() => setDemosOpen((open) => !open)}
           className="flex w-full items-center justify-between rounded-md px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground hover:text-foreground"
         >
-          День 1–5 (демо)
+          Демо-инструменты
           <ChevronDown
             className={cn('h-3.5 w-3.5 transition-transform', demosOpen && 'rotate-180')}
           />
