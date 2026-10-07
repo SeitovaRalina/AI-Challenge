@@ -288,6 +288,13 @@ export interface AgentMessage {
   // tool_calls (day 17): MCP tool calls the agent made while producing
   // this assistant message, in order.
   tool_calls?: ToolCallRecord[]
+  // sources/citations (day 25): set only when this turn's RAG grounding
+  // found something above the confidence floor. sources are the retrieved
+  // chunks verbatim (deterministic, never model-authored); citations are
+  // the model's own quoted excerpts from them, verified server-side —
+  // never trusted on the model's word alone.
+  sources?: RetrievedChunk[]
+  citations?: Citation[]
 }
 
 export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment' | 'meeting'
@@ -394,6 +401,8 @@ interface StrategyState {
   task?: TaskMemory
   profile?: UserProfile
   task_state: TaskState
+  // rag_enabled (day 25): this chat's own retrieval-grounding toggle.
+  rag_enabled: boolean
 }
 
 export interface ChatDetail extends StrategyState {
@@ -427,6 +436,8 @@ export interface AgentReply extends StrategyState {
   invariant_conflict?: string[]
   invariant_diff?: InvariantDiff
   tool_calls?: ToolCallRecord[]
+  sources?: RetrievedChunk[]
+  citations?: Citation[]
 }
 
 export interface ForceCompressResult {
@@ -565,6 +576,15 @@ export function setContextStrategy(
   return request<ChatDetail>(`/api/agent/chats/${chatId}/strategy`, {
     method: 'PATCH',
     body: { strategy },
+  })
+}
+
+// setRagEnabled (day 25) turns this chat's retrieval grounding on or off —
+// see Chat.RagEnabled's doc comment on the backend for the default.
+export function setRagEnabled(chatId: string, enabled: boolean): Promise<ChatDetail> {
+  return request<ChatDetail>(`/api/agent/chats/${chatId}/rag`, {
+    method: 'PATCH',
+    body: { enabled },
   })
 }
 
