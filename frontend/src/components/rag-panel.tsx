@@ -466,14 +466,18 @@ function EvalSection({
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Для каждого — ожидание и (если применимо) ожидаемый источник. Режим — {enhanced ? 'обычный поиск vs с улучшениями' : 'без RAG vs с RAG'} (переключается чекбоксами в панели справа).
           </p>
         </div>
-        <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
+        <Button
+          onClick={handleRun}
+          disabled={state.evalRunning || !status.exists || !questions?.length}
+          className="flex-shrink-0"
+        >
           {state.evalRunning && <Loader2 className="animate-spin" />}
           Прогнать все 10
         </Button>
@@ -638,8 +642,8 @@ function RetrievalCompareSection({
 
   return (
     <section className="rounded-lg border border-border bg-muted/20 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
           <h3 className="text-xs font-medium text-foreground">
             Доп.: какая нарезка на чанки точнее находит источник
           </h3>
@@ -650,7 +654,13 @@ function RetrievalCompareSection({
             вообще правильный источник.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleRun} disabled={state.retrievalLoading || !status.exists}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRun}
+          disabled={state.retrievalLoading || !status.exists}
+          className="flex-shrink-0"
+        >
           {state.retrievalLoading && <Loader2 className="animate-spin" />}
           Сравнить
         </Button>
