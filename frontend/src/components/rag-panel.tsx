@@ -4,6 +4,7 @@ import { AlertCircle, ArrowRight, Check, ChevronRight, Loader2, X } from 'lucide
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { InfoTooltip } from '@/components/info-tooltip'
 import { Markdown } from '@/components/markdown'
 import { cn } from 'cn'
 import {
@@ -85,29 +86,10 @@ export function RagPanel({ onOpenSource }: RagPanelProps) {
         <RetrievalCompareSection status={status} state={state} update={update} />
       </div>
 
-      <aside className="flex-shrink-0 lg:sticky lg:top-6 lg:w-64">
+      <aside className="flex-shrink-0 lg:sticky lg:top-0 lg:w-64">
         <RagSettingsPanel state={state} update={update} />
       </aside>
     </div>
-  )
-}
-
-function StrategySelect({
-  value,
-  onChange,
-}: {
-  value: ChunkStrategy
-  onChange: (s: ChunkStrategy) => void
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as ChunkStrategy)}
-      className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-    >
-      <option value="structural">{STRATEGY_LABEL.structural}</option>
-      <option value="fixed_size">{STRATEGY_LABEL.fixed_size}</option>
-    </select>
   )
 }
 
@@ -116,65 +98,84 @@ function StrategySelect({
 // и для прогона 10 контрольных вопросов ниже (оба читают один и тот же
 // RagPanelState) — вынесен в отдельную панель, а не продублирован в двух
 // карточках, чтобы было видно: это одна настройка на весь экран, не две
-// разные.
+// разные. Стиль полей — как в CompareOptionsForm (compare-options.tsx,
+// day 2): тот же "border + bg-transparent + font-mono для чисел" и тот же
+// однострочный чекбокс (size-3.5, accent-primary), а не изобретённый заново.
 function RagSettingsPanel({ state, update }: { state: RagState; update: RagUpdate }) {
   const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <h2 className="text-sm font-medium text-foreground">Настройки поиска</h2>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Действуют и на сравнение одного вопроса, и на прогон 10 контрольных вопросов.
-      </p>
-
-      <div className="mt-3 flex flex-col gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">Нарезка на чанки</span>
-          <StrategySelect value={state.strategy} onChange={(strategy) => update({ strategy })} />
-        </label>
-
-        <label className="flex items-start gap-2">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={state.rerankEnabled}
-            onChange={(e) => update({ rerankEnabled: e.target.checked })}
-          />
-          <span className="text-sm text-foreground">
-            Reranking
-            <span className="block text-xs text-muted-foreground">топ-20 → пересортировка LLM</span>
-          </span>
-        </label>
-
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={state.rewriteEnabled}
-            onChange={(e) => update({ rewriteEnabled: e.target.checked })}
-          />
-          <span className="text-sm text-foreground">Query rewrite</span>
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-muted-foreground">Порог similarity</span>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={state.minScore}
-            onChange={(e) => update({ minScore: Number(e.target.value) || 0 })}
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          />
-        </label>
-
-        {enhanced && (
-          <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
-            Включено хотя бы одно улучшение — сравнение вопроса покажет третью колонку, а прогон
-            10 вопросов учтёт эти настройки.
-          </p>
-        )}
+    <div className="flex flex-col gap-4 rounded-lg border border-border bg-card p-4 text-sm">
+      <div>
+        <h2 className="text-sm font-medium text-foreground">Настройки поиска</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Действуют и на сравнение одного вопроса, и на прогон 10 контрольных вопросов.
+        </p>
       </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="rag-strategy" className="text-xs text-muted-foreground">
+          Нарезка на чанки
+        </label>
+        <select
+          id="rag-strategy"
+          value={state.strategy}
+          onChange={(e) => update({ strategy: e.target.value as ChunkStrategy })}
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-sm text-foreground"
+        >
+          <option value="structural">{STRATEGY_LABEL.structural}</option>
+          <option value="fixed_size">{STRATEGY_LABEL.fixed_size}</option>
+        </select>
+      </div>
+
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={state.rerankEnabled}
+          onChange={(e) => update({ rerankEnabled: e.target.checked })}
+          className="size-3.5 rounded border-border accent-primary"
+        />
+        Reranking
+        <InfoTooltip label="Что такое reranking">
+          Топ-20 кандидатов вместо топ-5, LLM пересортировывает по релевантности.
+        </InfoTooltip>
+      </label>
+
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={state.rewriteEnabled}
+          onChange={(e) => update({ rewriteEnabled: e.target.checked })}
+          className="size-3.5 rounded border-border accent-primary"
+        />
+        Query rewrite
+        <InfoTooltip label="Что такое query rewrite">
+          LLM переформулирует вопрос в поисковый запрос перед эмбеддингом.
+        </InfoTooltip>
+      </label>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="rag-min-score" className="text-xs text-muted-foreground">
+          Порог similarity
+        </label>
+        <input
+          id="rag-min-score"
+          type="number"
+          min={0}
+          max={1}
+          step={0.05}
+          value={state.minScore}
+          onChange={(e) => update({ minScore: Number(e.target.value) || 0 })}
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
+        />
+      </div>
+
+      {enhanced && (
+        <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+          Включено хотя бы одно улучшение — сравнение вопроса покажет третью колонку, а прогон 10
+          вопросов учтёт эти настройки.
+        </p>
+      )}
     </div>
   )
 }
