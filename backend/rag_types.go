@@ -84,6 +84,19 @@ type RetrievedChunk struct {
 	Text string `json:"text"`
 }
 
+// Citation is one verbatim excerpt the model claims backs a statement in
+// its answer — day 24's anti-hallucination check. Verified is computed
+// server-side, never trusted from the model: true only when Text is an
+// exact (whitespace-normalized) substring of the chunk ChunkID names,
+// among the chunks actually given to the model. A citation that doesn't
+// verify is surfaced, not silently dropped — it's evidence the model
+// paraphrased or invented a quote instead of citing one.
+type Citation struct {
+	ChunkID  string `json:"chunk_id"`
+	Text     string `json:"text"`
+	Verified bool   `json:"verified"`
+}
+
 // RagAnswer is what POST /api/rag/query returns for either mode — Strategy
 // and Retrieved stay empty for mode "no_rag", which never touches the
 // index at all (the honest baseline day 22 compares RAG against).
@@ -106,6 +119,15 @@ type RagAnswer struct {
 	// the same as "this field wasn't computed".
 	CandidateCount int `json:"candidate_count"`
 	FilteredCount  int `json:"filtered_count"`
+	// Day 24: mandatory citations — NOT omitempty, same reasoning as
+	// Retrieved: an empty array IS the answer "no statement here is backed
+	// by a quoted fragment", distinct from "not computed" (mode no_rag).
+	Citations []Citation `json:"citations"`
+	// LowConfidence is day 24's hard "не знаю" rule: true when AnswerRAG
+	// skipped the LLM call entirely because nothing cleared
+	// minConfidenceScore — Answer is then the fixed refusal text, not a
+	// model-generated one.
+	LowConfidence bool `json:"low_confidence,omitempty"`
 }
 
 // EvalQuestion is one of the day-22 "10 контрольных вопросов" — hand-
@@ -131,9 +153,16 @@ type EvalQuestionResult struct {
 	Retrieved           []RetrievedChunk `json:"retrieved"`
 	ExpectedSourceHit   bool             `json:"expected_source_hit"`
 	ExpectedSourceCheck bool             `json:"expected_source_check"` // false when ExpectedSources was empty — nothing to check
+	// Day 24: mandatory citations and the low-confidence gate, for the
+	// same baseline RAG answer above. NOT omitempty, same reasoning as
+	// Retrieved.
+	Citations     []Citation `json:"citations"`
+	LowConfidence bool       `json:"low_confidence,omitempty"`
 	// Set only when the run requested rerank/rewrite/filtering.
-	ImprovedRagAnswer string           `json:"improved_rag_answer,omitempty"`
-	ImprovedRetrieved []RetrievedChunk `json:"improved_retrieved,omitempty"`
+	ImprovedRagAnswer     string           `json:"improved_rag_answer,omitempty"`
+	ImprovedRetrieved     []RetrievedChunk `json:"improved_retrieved,omitempty"`
+	ImprovedCitations     []Citation       `json:"improved_citations,omitempty"`
+	ImprovedLowConfidence bool             `json:"improved_low_confidence,omitempty"`
 }
 
 // EvalRunResult is the full day-22 RAG-vs-no-RAG run, all 10 questions,

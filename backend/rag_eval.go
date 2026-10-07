@@ -106,6 +106,8 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 
 		var ragAnswer string
 		var retrieved []RetrievedChunk
+		var citations []Citation
+		var lowConfidence bool
 		var hit, applicable bool
 		rag, err := callWithRetry(func() (RagAnswer, error) {
 			return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK, RagOptions{})
@@ -115,12 +117,16 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 		} else {
 			ragAnswer = rag.Answer
 			retrieved = rag.Retrieved
+			citations = rag.Citations
+			lowConfidence = rag.LowConfidence
 			hit, applicable = expectedSourceHit(q, rag.Retrieved)
 		}
 		report(q.Question, "rag")
 
 		var improvedAnswer string
 		var improvedRetrieved []RetrievedChunk
+		var improvedCitations []Citation
+		var improvedLowConfidence bool
 		if improved {
 			improvedRag, err := callWithRetry(func() (RagAnswer, error) {
 				return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK, opts)
@@ -130,19 +136,25 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 			} else {
 				improvedAnswer = improvedRag.Answer
 				improvedRetrieved = improvedRag.Retrieved
+				improvedCitations = improvedRag.Citations
+				improvedLowConfidence = improvedRag.LowConfidence
 			}
 			report(q.Question, "rag_improved")
 		}
 
 		results = append(results, EvalQuestionResult{
-			EvalQuestion:        q,
-			NoRagAnswer:         noRag,
-			RagAnswer:           ragAnswer,
-			Retrieved:           retrieved,
-			ExpectedSourceHit:   hit,
-			ExpectedSourceCheck: applicable,
-			ImprovedRagAnswer:   improvedAnswer,
-			ImprovedRetrieved:   improvedRetrieved,
+			EvalQuestion:          q,
+			NoRagAnswer:           noRag,
+			RagAnswer:             ragAnswer,
+			Retrieved:             retrieved,
+			Citations:             citations,
+			LowConfidence:         lowConfidence,
+			ExpectedSourceHit:     hit,
+			ExpectedSourceCheck:   applicable,
+			ImprovedRagAnswer:     improvedAnswer,
+			ImprovedRetrieved:     improvedRetrieved,
+			ImprovedCitations:     improvedCitations,
+			ImprovedLowConfidence: improvedLowConfidence,
 		})
 	}
 	return results, nil
