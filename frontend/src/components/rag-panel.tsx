@@ -122,16 +122,36 @@ function CompareSection({
   update: RagUpdate
   onOpenSource: (chatId: string, messageIndex: number | null) => void
 }) {
+  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
+
   async function handleCompare() {
     const q = state.compareQuestion.trim()
     if (!q) return
-    update({ compareLoading: true, compareError: null, compareNoRag: null, compareRag: null })
+    update({
+      compareLoading: true,
+      compareError: null,
+      compareNoRag: null,
+      compareRag: null,
+      compareRagImproved: null,
+    })
     try {
-      const [noRagRes, ragRes] = await Promise.all([
-        queryRag(q, 'no_rag'),
-        queryRag(q, 'rag', state.strategy),
-      ])
-      update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
+      const calls = [queryRag(q, 'no_rag'), queryRag(q, 'rag', state.strategy)]
+      if (enhanced) {
+        calls.push(
+          queryRag(q, 'rag', state.strategy, {
+            rerank: state.rerankEnabled,
+            rewrite: state.rewriteEnabled,
+            minScore: state.minScore,
+          }),
+        )
+      }
+      const results = await Promise.all(calls)
+      update({
+        compareNoRag: results[0],
+        compareRag: results[1],
+        compareRagImproved: enhanced ? results[2] : null,
+        compareLoading: false,
+      })
     } catch (err) {
       update({
         compareError: err instanceof ApiError ? err.message : 'Не удалось получить ответ',
@@ -168,6 +188,40 @@ function CompareSection({
         </div>
       </div>
 
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={state.rerankEnabled}
+            onChange={(e) => update({ rerankEnabled: e.target.checked })}
+          />
+          Reranking (топ-20 → пересортировка LLM)
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={state.rewriteEnabled}
+            onChange={(e) => update({ rewriteEnabled: e.target.checked })}
+          />
+          Query rewrite
+        </label>
+        <label className="flex items-center gap-1.5">
+          Порог similarity:
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={state.minScore}
+            onChange={(e) => update({ minScore: Number(e.target.value) || 0 })}
+            className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-foreground"
+          />
+        </label>
+        {enhanced && (
+          <span>→ третья колонка «С RAG (день 23)» появится после сравнения</span>
+        )}
+      </div>
+
       {state.compareError && (
         <Alert variant="destructive" className="mt-3">
           <AlertCircle />
@@ -176,9 +230,17 @@ function CompareSection({
       )}
 
       {(state.compareNoRag || state.compareRag) && (
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className={cn('mt-4 grid grid-cols-1 gap-3', state.compareRagImproved ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
           <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
-          <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
+          <AnswerColumn title="С RAG (день 22, база)" answer={state.compareRag} onOpenSource={onOpenSource} />
+          {state.compareRagImproved && (
+            <AnswerColumn
+              title="С RAG (день 23, улучшенный)"
+              answer={state.compareRagImproved}
+              onOpenSource={onOpenSource}
+              showDiagnostics
+            />
+          )}
         </div>
       )}
     </section>
@@ -190,15 +252,31 @@ function AnswerColumn({
   answer,
   onOpenSource,
   expectedSources,
+  showDiagnostics,
 }: {
   title: string
   answer: RagAnswer | null
   onOpenSource: (chatId: string, messageIndex: number | null) => void
   expectedSources?: string[]
+  showDiagnostics?: boolean
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 p-3">
       <div className="text-xs font-medium text-muted-foreground">{title}</div>
+      {showDiagnostics && answer && (answer.rewritten_question || answer.candidate_count != null) && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {answer.rewritten_question && (
+            <span>
+              Переформулировано: <span className="italic text-foreground">«{answer.rewritten_question}»</span>
+            </span>
+          )}
+          {answer.candidate_count != null && (
+            <span>
+              Кандидатов: {answer.candidate_count} → после фильтра: {answer.filtered_count}
+            </span>
+          )}
+        </div>
+      )}
       <div className="mt-1.5 text-sm text-foreground">
         {answer ? <Markdown>{answer.answer}</Markdown> : <span className="text-muted-foreground">—</span>}
       </div>
@@ -316,10 +394,16 @@ function EvalSection({
     })
   }
 
+  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
+
   async function handleRun() {
     update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
     try {
-      const result = await streamRunEval(state.strategy, (progress) => update({ evalProgress: progress }))
+      const result = await streamRunEval(
+        state.strategy,
+        (progress) => update({ evalProgress: progress }),
+        { rerank: state.rerankEnabled, rewrite: state.rewriteEnabled, minScore: state.minScore },
+      )
       update({ evalResult: result, evalRunning: false })
     } catch (err) {
       update({
@@ -337,7 +421,9 @@ function EvalSection({
         <div>
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Для каждого — ожидание и (если применимо) ожидаемый источник.
+            Для каждого — ожидание и (если применимо) ожидаемый источник. Режим RAG-стороны —{' '}
+            {enhanced ? 'улучшенный (день 23, см. чекбоксы выше)' : 'базовый (день 22)'} — запустите
+            дважды (чекбоксы выкл/вкл), чтобы сравнить два прогона.
           </p>
         </div>
         <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
