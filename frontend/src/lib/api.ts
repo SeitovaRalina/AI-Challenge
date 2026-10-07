@@ -1073,3 +1073,143 @@ export function getRagIndex(): Promise<IndexStatus> {
 export function reindexRag(): Promise<IndexStatus> {
   return request<IndexStatus>('/api/rag/reindex', { method: 'POST' })
 }
+
+// ---- Day 22: RAG query — question -> retrieval -> LLM, RAG vs no-RAG ----
+
+export interface RetrievedChunk {
+  session_id: string
+  title: string
+  section: string
+  chunk_id: string
+  score: number
+  text: string
+}
+
+export interface RagAnswer {
+  mode: 'rag' | 'no_rag'
+  strategy?: ChunkStrategy
+  answer: string
+  retrieved?: RetrievedChunk[]
+}
+
+// queryRag answers one question in either mode. strategy is required when
+// mode is 'rag'.
+export function queryRag(
+  question: string,
+  mode: 'rag' | 'no_rag',
+  strategy?: ChunkStrategy,
+): Promise<RagAnswer> {
+  return postJson<RagAnswer>('/api/rag/query', { question, mode, strategy })
+}
+
+export interface EvalQuestion {
+  question: string
+  expectation: string
+  expected_sources: string[]
+}
+
+// getEvalQuestions returns the day-22 control-question set.
+export function getEvalQuestions(): Promise<EvalQuestion[]> {
+  return request<EvalQuestion[]>('/api/rag/eval')
+}
+
+export interface EvalQuestionResult extends EvalQuestion {
+  no_rag_answer: string
+  rag_answer: string
+  retrieved: RetrievedChunk[]
+  expected_source_hit: boolean
+  expected_source_check: boolean
+}
+
+export interface EvalRunResult {
+  strategy: ChunkStrategy
+  results: EvalQuestionResult[]
+}
+
+// runEval answers all 10 control questions in both modes (RAG on
+// strategy, plus no-RAG) — this is day 22's actual "сравнение качества"
+// deliverable. Slow: ~20 LLM calls.
+export function runEval(strategy: ChunkStrategy): Promise<EvalRunResult> {
+  return postJson<EvalRunResult>('/api/rag/eval/run', { strategy })
+}
+
+export interface EvalProgress {
+  step: number
+  total: number
+  question: string
+  stage: 'no_rag' | 'rag'
+}
+
+// streamRunEval is runEval with progress: same request, same final
+// EvalRunResult, reporting each of the 20 calls as it completes (see
+// backend/rag_api.go's evalRunStreamHandler) — a multi-minute run needs a
+// real progress bar, not a bare spinner.
+export async function streamRunEval(
+  strategy: ChunkStrategy,
+  onProgress: (progress: EvalProgress) => void,
+): Promise<EvalRunResult> {
+  const response = await fetch('/api/rag/eval/run/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ strategy }),
+  })
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => null)
+    throw new ApiError(
+      body && typeof body.error === 'string'
+        ? body.error
+        : `Запрос завершился с ошибкой ${response.status}`,
+    )
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value
+    let boundary: number
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+      }
+      if (dataLines.length === 0) continue
+      const data = JSON.parse(dataLines.join('\n'))
+      if (event === 'done') return data as EvalRunResult
+      if (event === 'error') {
+        throw new ApiError(typeof data.error === 'string' ? data.error : 'Непредвиденная ошибка.')
+      }
+      if (event === 'progress') onProgress(data as EvalProgress)
+    }
+  }
+  throw new ApiError('Соединение прервалось до получения результата.')
+}
+
+export interface RetrievalQuestionResult {
+  question: string
+  checked: boolean
+  hits: Partial<Record<ChunkStrategy, boolean>>
+}
+
+export interface RetrievalHitRate {
+  strategy: ChunkStrategy
+  hits: number
+  total: number
+  hit_rate: number
+}
+
+export interface RetrievalEvalResult {
+  questions: RetrievalQuestionResult[]
+  strategies: RetrievalHitRate[]
+}
+
+// runRetrievalEval is the secondary, no-LLM comparison: does top-K
+// retrieval surface the expected source under each chunking strategy.
+export function runRetrievalEval(): Promise<RetrievalEvalResult> {
+  return postJson<RetrievalEvalResult>('/api/rag/eval/retrieval', {})
+}

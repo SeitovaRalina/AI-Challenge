@@ -18,6 +18,7 @@ import { Sidebar, type DemoMode } from '@/components/sidebar'
 import { SourcesPanel } from '@/components/sources-panel'
 import { ActivityPanel } from '@/components/activity-panel'
 import { AnalyticsPanel } from '@/components/analytics-panel'
+import { RagIndexPanel } from '@/components/rag-index-panel'
 import { RagPanel } from '@/components/rag-panel'
 import { TaskForm } from '@/components/task-form'
 import { TemperatureComparison } from '@/components/temperature-comparison'
@@ -66,7 +67,7 @@ import {
 import { applyTurnEvent, EMPTY_TURN_PROGRESS, type TurnProgress } from '@/lib/turn-progress'
 
 type Status = 'idle' | 'loading' | 'error' | 'success'
-type Mode = 'chat' | 'sources' | 'activity' | 'analytics' | 'rag' | DemoMode
+type Mode = 'chat' | 'sources' | 'activity' | 'analytics' | 'rag-index' | 'rag' | DemoMode
 
 // Identifies one send-like operation's target for the pendingKeys set below:
 // a chat by itself, or (for a branching chat) one specific branch within it —
@@ -107,10 +108,15 @@ const MODE_COPY: Record<Mode, { title: string; description: string }> = {
     description:
       'После каждого сбора события автоматически собираются в рабочие сессии (Worklog: list_events → build_sessions → save_sessions) — это и есть материал для графиков ниже. Просто счётчики и часы, без оценки продуктивности.',
   },
+  'rag-index': {
+    title: 'Индексация',
+    description:
+      'Локальная база знаний по вашим прошлым оценкам задач: построение индекса и сравнение двух способов разбиения текста на фрагменты. Инфраструктура для поиска — сам поиск на экране «Похожие задачи».',
+  },
   rag: {
     title: 'Похожие задачи',
     description:
-      'Ассистент строит локальную базу знаний по вашим прошлым оценкам задач, чтобы потом находить среди них похожие на новую задачу и давать более точный ответ. Ниже — что сейчас в этой базе и как текст сессий превращается в единицы поиска.',
+      'Вопрос → поиск релевантных фрагментов среди прошлых оценок задач → ответ модели. Сравнение с ответом без этого поиска — и 10 контрольных вопросов для проверки на реальных данных.',
   },
   chat: {
     title: 'Ассистент по оценке задач',
@@ -151,6 +157,7 @@ function App() {
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
+  const [highlightMessageIndex, setHighlightMessageIndex] = useState<number | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [projectMemoryPopupId, setProjectMemoryPopupId] = useState<string | null>(null)
   const [profile, setProfile] = useState<UserProfile | null>(null)
@@ -350,6 +357,15 @@ function App() {
         err instanceof ApiError ? err.message : 'Непредвиденная ошибка.',
       )
     }
+  }
+
+  // openChatMessage is the RAG screen's "перейти к сообщению" — opens the
+  // source session as a real chat and scrolls to the exact message a
+  // retrieved chunk came from (messageIndex null when the chunk isn't tied
+  // to one specific message, e.g. an estimate field).
+  async function openChatMessage(chatId: string, messageIndex: number | null) {
+    await handleSelectChat(chatId)
+    setHighlightMessageIndex(messageIndex)
   }
 
   async function handleRenameChat(id: string, title: string) {
@@ -784,7 +800,12 @@ function App() {
   }
 
   const activeDemo =
-    mode === 'chat' || mode === 'sources' || mode === 'activity' || mode === 'analytics' || mode === 'rag'
+    mode === 'chat' ||
+    mode === 'sources' ||
+    mode === 'activity' ||
+    mode === 'analytics' ||
+    mode === 'rag-index' ||
+    mode === 'rag'
       ? null
       : mode
 
@@ -828,6 +849,8 @@ function App() {
             onOpenActivity={() => setMode('activity')}
             analyticsActive={mode === 'analytics'}
             onOpenAnalytics={() => setMode('analytics')}
+            ragIndexActive={mode === 'rag-index'}
+            onOpenRagIndex={() => setMode('rag-index')}
             ragActive={mode === 'rag'}
             onOpenRag={() => setMode('rag')}
             onCollapse={() => setSidebarCollapsed(true)}
@@ -915,6 +938,7 @@ function App() {
                   ? () => setProjectMemoryPopupId(activeChat.project_id!)
                   : undefined
               }
+              highlightMessageIndex={highlightMessageIndex}
             />
           </main>
         ) : (
@@ -934,7 +958,9 @@ function App() {
 
           {mode === 'analytics' && <AnalyticsPanel />}
 
-          {mode === 'rag' && <RagPanel />}
+          {mode === 'rag-index' && <RagIndexPanel />}
+
+          {mode === 'rag' && <RagPanel onOpenSource={openChatMessage} />}
 
           {mode === 'estimate' && (
             <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
