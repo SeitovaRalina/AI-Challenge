@@ -17,6 +17,7 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
+import { CitationList, SourceList } from '@/components/rag-sources'
 import { RunningToolCall, ToolCallCard, ToolCallList } from '@/components/tool-call-card'
 import type { TurnProgress } from '@/lib/turn-progress'
 import { TaskStageHeader, TaskStateBadge } from '@/components/task-state-badge'
@@ -146,6 +147,12 @@ interface ChatPanelProps {
   // link (day 22) — scrolls that message into view and briefly highlights
   // it. null/undefined: no-op.
   highlightMessageIndex?: number | null
+  // Day 25: retrieval grounding toggle for this chat, plus the callback a
+  // message's source uses to jump to the real chat/message it came from —
+  // the same one the standalone «Похожие задачи» screen uses.
+  ragEnabled: boolean
+  onSetRagEnabled: (enabled: boolean) => void
+  onOpenSource: (chatId: string, messageIndex: number | null) => void
 }
 
 export function ChatPanel({
@@ -189,6 +196,9 @@ export function ChatPanel({
   onSetTaskDone,
   onOpenProjectMemory,
   highlightMessageIndex,
+  ragEnabled,
+  onSetRagEnabled,
+  onOpenSource,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   // null = no interview in progress; otherwise the index into INTERVIEW_STEPS
@@ -475,6 +485,7 @@ export function ChatPanel({
                       message={message}
                       showTaskStage={!isLabChat}
                       onOpenProjectMemory={onOpenProjectMemory}
+                      onOpenSource={onOpenSource}
                     />
                   )}
                 </div>
@@ -489,6 +500,7 @@ export function ChatPanel({
                 <TypingIndicator
                   taskState={isLabChat ? undefined : taskState}
                   progress={turnProgress}
+                  onOpenSource={onOpenSource}
                 />
               )}
             </div>
@@ -667,6 +679,23 @@ export function ChatPanel({
                 />
               )
             )}
+            {!isLabChat && (
+              <>
+                <span aria-hidden>·</span>
+                <label
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                  title="Перед каждым ответом ассистента искать похожие прошлые задачи и показывать источники."
+                >
+                  <input
+                    type="checkbox"
+                    checked={ragEnabled}
+                    onChange={(e) => onSetRagEnabled(e.target.checked)}
+                    className="size-3 rounded border-border accent-primary"
+                  />
+                  История
+                </label>
+              </>
+            )}
             {contextTokenLimit > 0 && !isLabCoordinator && (
               <>
                 <span aria-hidden>·</span>
@@ -723,10 +752,12 @@ function MessageBubble({
   message,
   showTaskStage,
   onOpenProjectMemory,
+  onOpenSource,
 }: {
   message: AgentMessage
   showTaskStage: boolean
   onOpenProjectMemory?: () => void
+  onOpenSource: (chatId: string, messageIndex: number | null) => void
 }) {
   const isUser = message.role === 'user'
   const tokenCount = isUser
@@ -785,6 +816,20 @@ function MessageBubble({
           </p>
         ) : (
           <Markdown>{message.content}</Markdown>
+        )}
+        {!isUser && message.sources && message.sources.length > 0 && (
+          <div className="mt-2 border-t border-border/60 pt-2">
+            <div className="text-xs text-muted-foreground">Источники:</div>
+            <SourceList sources={message.sources} onOpenSource={onOpenSource} />
+          </div>
+        )}
+        {!isUser && message.citations && message.citations.length > 0 && (
+          <div className="mt-2 border-t border-border/60 pt-2">
+            <div className="text-xs text-muted-foreground">
+              Цитаты: {message.citations.filter((c) => c.verified).length}/{message.citations.length} подтверждено
+            </div>
+            <CitationList citations={message.citations} />
+          </div>
         )}
         {!isUser &&
           message.invariant_diff &&
@@ -1042,7 +1087,15 @@ function formatTime(iso: string): string {
 // then the reply itself as soon as it's ready, while memory — the slow tail
 // of a turn — is still being updated. Once the turn calls a tool it's about
 // the user's activity, not the task, so the stage header is dropped.
-function TypingIndicator({ taskState, progress }: { taskState?: TaskState; progress?: TurnProgress }) {
+function TypingIndicator({
+  taskState,
+  progress,
+  onOpenSource,
+}: {
+  taskState?: TaskState
+  progress?: TurnProgress
+  onOpenSource: (chatId: string, messageIndex: number | null) => void
+}) {
   const calls = progress?.calls ?? []
   const answer = progress?.answer
   const usesTools = calls.length > 0 || Boolean(answer?.tool_calls?.length)
@@ -1053,6 +1106,20 @@ function TypingIndicator({ taskState, progress }: { taskState?: TaskState; progr
         <div className="rounded-xl border border-border bg-card px-4 py-2.5">
           {answer.tool_calls && answer.tool_calls.length > 0 && <ToolCallList calls={answer.tool_calls} />}
           <Markdown>{answer.reply}</Markdown>
+          {answer.sources && answer.sources.length > 0 && (
+            <div className="mt-2 border-t border-border/60 pt-2">
+              <div className="text-xs text-muted-foreground">Источники:</div>
+              <SourceList sources={answer.sources} onOpenSource={onOpenSource} />
+            </div>
+          )}
+          {answer.citations && answer.citations.length > 0 && (
+            <div className="mt-2 border-t border-border/60 pt-2">
+              <div className="text-xs text-muted-foreground">
+                Цитаты: {answer.citations.filter((c) => c.verified).length}/{answer.citations.length} подтверждено
+              </div>
+              <CitationList citations={answer.citations} />
+            </div>
+          )}
         </div>
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />

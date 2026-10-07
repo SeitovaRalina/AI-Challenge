@@ -48,6 +48,7 @@ import {
   renameChat,
   setActiveBranch,
   setContextStrategy,
+  setRagEnabled,
   setTaskDone,
   type ChatDetail,
   type ChatSummary,
@@ -278,6 +279,7 @@ function App() {
             summarized_message_count: 0,
             raw_message_count: 0,
             compression_events: [],
+            rag_enabled: true,
           })
           return
         }
@@ -335,6 +337,7 @@ function App() {
         summarized_message_count: 0,
         raw_message_count: 0,
         compression_events: [],
+        rag_enabled: true,
       })
       setChatError(null)
     } catch (err) {
@@ -549,6 +552,17 @@ function App() {
     const chatId = activeChatId
     try {
       const updated = await setContextStrategy(chatId, strategy)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleSetRagEnabled(enabled: boolean) {
+    if (!activeChatId) return
+    const chatId = activeChatId
+    try {
+      const updated = await setRagEnabled(chatId, enabled)
       setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
@@ -939,6 +953,9 @@ function App() {
                   : undefined
               }
               highlightMessageIndex={highlightMessageIndex}
+              ragEnabled={activeChat?.rag_enabled ?? false}
+              onSetRagEnabled={handleSetRagEnabled}
+              onOpenSource={openChatMessage}
             />
           </main>
         ) : (
