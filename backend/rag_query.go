@@ -302,7 +302,13 @@ func verifyCitations(raw []rawCitation, final []scoredChunk) []Citation {
 	out := make([]Citation, 0, len(raw))
 	for _, r := range raw {
 		citation := Citation{ChunkID: r.ChunkID, Text: r.Text}
-		if chunkText, ok := byID[r.ChunkID]; ok {
+		// The prompt shows each chunk_id inside "[...]" (buildRagPrompt) and
+		// the model sometimes copies the brackets into its own chunk_id
+		// field verbatim instead of just the ID — seen directly on a live
+		// query. Strip them defensively rather than relying on prompt
+		// wording the model won't always follow.
+		id := strings.Trim(r.ChunkID, "[]")
+		if chunkText, ok := byID[id]; ok {
 			quote := strings.Trim(strings.TrimSpace(r.Text), `"'«»`)
 			citation.Verified = strings.Contains(normalizeForMatch(chunkText), normalizeForMatch(quote))
 		}
