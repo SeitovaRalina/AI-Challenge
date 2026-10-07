@@ -15,6 +15,7 @@ import {
   runRetrievalEval,
   streamRunEval,
   type ChunkStrategy,
+  type EvalProgress,
   type EvalQuestion,
   type IndexStatus,
   type RagAnswer,
@@ -25,6 +26,12 @@ import { useRagPanelState } from '@/lib/rag-panel-state'
 const STRATEGY_LABEL: Record<ChunkStrategy, string> = {
   fixed_size: 'по фиксированному размеру',
   structural: 'по структуре',
+}
+
+const PROGRESS_STAGE_LABEL: Record<EvalProgress['stage'], string> = {
+  no_rag: 'без RAG',
+  rag: 'с RAG',
+  rag_improved: 'с RAG + улучшения',
 }
 
 // parseMessageIndex pulls the message index out of a structural chunk's
@@ -425,8 +432,6 @@ function EvalSection({
     })
   }
 
-  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
-
   async function handleRun() {
     update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
     try {
@@ -452,9 +457,8 @@ function EvalSection({
         <div>
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Для каждого — ожидание и (если применимо) ожидаемый источник. Режим RAG-стороны —{' '}
-            {enhanced ? 'с реранком/фильтром (панель справа)' : 'обычный поиск'} — запустите
-            дважды, переключив настройки справа, чтобы сравнить два прогона.
+            Для каждого — ожидание и (если применимо) ожидаемый источник. Если в панели справа
+            включено улучшение поиска, здесь появится третий столбец с ним.
           </p>
         </div>
         <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
@@ -479,8 +483,8 @@ function EvalSection({
             />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {state.evalProgress.step}/{state.evalProgress.total} —{' '}
-            {state.evalProgress.stage === 'rag' ? 'с RAG' : 'без RAG'}: {state.evalProgress.question}
+            {state.evalProgress.step}/{state.evalProgress.total} — {PROGRESS_STAGE_LABEL[state.evalProgress.stage]}:{' '}
+            {state.evalProgress.question}
           </p>
         </div>
       )}
@@ -546,7 +550,12 @@ function EvalSection({
               {open && (
                 <div className="px-6 pb-3">
                   {r ? (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div
+                      className={cn(
+                        'grid grid-cols-1 gap-2',
+                        r.improved_rag_answer ? 'sm:grid-cols-3' : 'sm:grid-cols-2',
+                      )}
+                    >
                       <AnswerColumn
                         title="Без RAG"
                         answer={{ mode: 'no_rag', answer: r.no_rag_answer }}
@@ -558,6 +567,14 @@ function EvalSection({
                         onOpenSource={onOpenSource}
                         expectedSources={r.expected_sources}
                       />
+                      {r.improved_rag_answer && (
+                        <AnswerColumn
+                          title="С RAG + реранк/фильтр"
+                          answer={{ mode: 'rag', answer: r.improved_rag_answer, retrieved: r.improved_retrieved }}
+                          onOpenSource={onOpenSource}
+                          expectedSources={r.expected_sources}
+                        />
+                      )}
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">

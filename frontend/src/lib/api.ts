@@ -1138,6 +1138,9 @@ export interface EvalQuestionResult extends EvalQuestion {
   retrieved: RetrievedChunk[]
   expected_source_hit: boolean
   expected_source_check: boolean
+  // Present only when the run had rerank/rewrite/filtering on.
+  improved_rag_answer?: string
+  improved_retrieved?: RetrievedChunk[]
 }
 
 export interface EvalRunResult {
@@ -1162,7 +1165,7 @@ export interface EvalProgress {
   step: number
   total: number
   question: string
-  stage: 'no_rag' | 'rag'
+  stage: 'no_rag' | 'rag' | 'rag_improved'
 }
 
 // streamRunEval is runEval with progress: same request, same final
