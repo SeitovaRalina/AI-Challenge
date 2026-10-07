@@ -18,6 +18,7 @@ import {
   type Citation,
   type EvalProgress,
   type EvalQuestion,
+  type EvalQuestionResult,
   type IndexStatus,
   type RagAnswer,
   type RetrievedChunk,
@@ -451,6 +452,56 @@ function SourceItem({
   )
 }
 
+// CitationBadge — day-24 badge in the control-question list, baseline RAG
+// column only (same scope as "сессия найдена"). Three states, not a bare
+// N/M fraction: when every citation verified, N always equals M by
+// definition (the badge is only green when all verified), so showing "3/3"
+// is a meaningless-looking fraction — just the count. The fraction is kept
+// only for the one case it actually carries information: some citations
+// verified, some didn't. Zero citations is its own, neutral state — it
+// usually means an honest non-answer (nothing to cite), not a problem, so
+// it isn't colored as a failure the way an unverified citation is.
+function CitationBadge({ result }: { result: EvalQuestionResult }) {
+  if (result.low_confidence) {
+    return (
+      <Badge
+        className="bg-amber-500/15 text-amber-700 dark:text-amber-400"
+        title="Релевантность найденных фрагментов ниже порога — ответ не отправлялся модели, сработало жёсткое правило «не знаю» (день 24)."
+      >
+        не знаю
+      </Badge>
+    )
+  }
+
+  const total = result.citations.length
+  if (total === 0) {
+    return (
+      <Badge
+        variant="secondary"
+        title="Ответ не содержит ни одной цитаты — обычно потому, что модель честно отказалась отвечать (нечего цитировать). Но это стоит открыть и проверить: иногда ответ называет цифру или факт без подтверждающей цитаты."
+      >
+        нет цитат
+      </Badge>
+    )
+  }
+
+  const verified = result.citations.filter((c) => c.verified).length
+  const allVerified = verified === total
+  return (
+    <Badge
+      title="Сколько цитат в ответе дословно подтвердилось текстом найденного фрагмента — проверяет бэкенд, не модель на слово."
+      className={cn(
+        allVerified
+          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+          : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+      )}
+    >
+      {allVerified ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+      {allVerified ? `цитаты: ${total}` : `цитаты: ${verified}/${total}`}
+    </Badge>
+  )
+}
+
 // EvalSection — day-22's deliverable over the full control set: all 10
 // questions, both modes, with whether retrieval actually found the
 // expected source. Единственная автоматическая метрика — попадание
@@ -530,11 +581,13 @@ function EvalSection({
       <p className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
         Автоматические проверки у вопроса (все — про обычный поиск, левый столбец; правый
         столбец они не описывают): «сессия найдена» — попал ли в топ-5 чанк из ожидаемой сессии
-        (проверка retrieval, не того, что модель использовала найденный факт); «цитаты N/M» —
-        сколько цитат в ответе дословно подтвердились текстом найденного фрагмента (проверяет
-        бэкенд, не модель на слово); «не знаю» — релевантность была ниже порога, модель вообще
-        не вызывалась (день 24). Совпадает ли смысл ответа с цитатами и само качество текста
-        автоматически не оцениваются — это читается глазами после разворота вопроса.
+        (проверка retrieval, не того, что модель использовала найденный факт); «цитаты: N» —
+        все N цитат в ответе дословно подтвердились текстом найденного фрагмента, «цитаты:
+        N/M» — только N из M (проверяет бэкенд, не модель на слово), «нет цитат» — ответ вообще
+        без цитат (обычно честный отказ, но стоит открыть и проверить); «не знаю» —
+        релевантность была ниже порога, модель вообще не вызывалась (день 24). Совпадает ли
+        смысл ответа с цитатами и само качество текста автоматически не оцениваются — это
+        читается глазами после разворота вопроса.
       </p>
 
       {state.evalRunning && state.evalProgress && (
@@ -606,31 +659,7 @@ function EvalSection({
                           нет привязки к сессии
                         </Badge>
                       ))}
-                    {r &&
-                      (r.low_confidence ? (
-                        <Badge
-                          className="bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                          title="Релевантность найденных фрагментов ниже порога — ответ не отправлялся модели, сработало жёсткое правило «не знаю» (день 24)."
-                        >
-                          не знаю
-                        </Badge>
-                      ) : (
-                        <Badge
-                          title="Источники и цитаты у обычного RAG-ответа (левый столбец при включённых улучшениях). Цифра после «/» — сколько цитат подтвердилось дословным совпадением с текстом найденного фрагмента, это проверяется на бэкенде, не на слово модели."
-                          className={cn(
-                            r.citations.length > 0 && r.citations.every((c) => c.verified)
-                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                              : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
-                          )}
-                        >
-                          {r.citations.length > 0 && r.citations.every((c) => c.verified) ? (
-                            <Check className="h-3 w-3" />
-                          ) : (
-                            <X className="h-3 w-3" />
-                          )}
-                          цитаты {r.citations.filter((c) => c.verified).length}/{r.citations.length}
-                        </Badge>
-                      ))}
+                    {r && <CitationBadge result={r} />}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{q.expectation}</p>
                 </div>
