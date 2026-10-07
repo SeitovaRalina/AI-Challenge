@@ -210,23 +210,26 @@ function CompareSection({
       compareRagImproved: null,
     })
     try {
-      const calls = [queryRag(q, 'no_rag'), queryRag(q, 'rag', state.strategy)]
-      if (enhanced) {
-        calls.push(
+      if (!enhanced) {
+        // Без улучшений: день-22 сравнение — без RAG vs обычный RAG.
+        const [noRagRes, ragRes] = await Promise.all([
+          queryRag(q, 'no_rag'),
+          queryRag(q, 'rag', state.strategy),
+        ])
+        update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
+      } else {
+        // С улучшениями: обычный RAG vs RAG с ними — без RAG здесь больше не
+        // интересен, это не то, с чем сравнивает улучшенный поиск.
+        const [ragRes, improvedRes] = await Promise.all([
+          queryRag(q, 'rag', state.strategy),
           queryRag(q, 'rag', state.strategy, {
             rerank: state.rerankEnabled,
             rewrite: state.rewriteEnabled,
             minScore: state.minScore,
           }),
-        )
+        ])
+        update({ compareRag: ragRes, compareRagImproved: improvedRes, compareLoading: false })
       }
-      const results = await Promise.all(calls)
-      update({
-        compareNoRag: results[0],
-        compareRag: results[1],
-        compareRagImproved: enhanced ? results[2] : null,
-        compareLoading: false,
-      })
     } catch (err) {
       update({
         compareError: err instanceof ApiError ? err.message : 'Не удалось получить ответ',
@@ -237,10 +240,14 @@ function CompareSection({
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
-      <h2 className="text-sm font-medium text-foreground">RAG vs без RAG</h2>
+      <h2 className="text-sm font-medium text-foreground">
+        {enhanced ? 'Обычный поиск vs с улучшениями' : 'RAG vs без RAG'}
+      </h2>
       <p className="mt-1 text-xs text-muted-foreground">
-        Один и тот же вопрос — модели без доступа к истории задач и модели, которой сначала нашли
-        ближайшие по смыслу фрагменты из ваших прошлых оценок. Настройки поиска — в панели справа.
+        {enhanced
+          ? 'Один и тот же вопрос — с обычным поиском (топ-5 по смыслу) и с включёнными в панели справа улучшениями.'
+          : 'Один и тот же вопрос — модели без доступа к истории задач и модели, которой сначала нашли ближайшие по смыслу фрагменты из ваших прошлых оценок.'}{' '}
+        Настройки поиска — в панели справа.
       </p>
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
@@ -267,19 +274,23 @@ function CompareSection({
         </Alert>
       )}
 
-      {(state.compareNoRag || state.compareRag) && (
-        <div className={cn('mt-4 grid grid-cols-1 gap-3', state.compareRagImproved ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
-          <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
-          <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
-          {state.compareRagImproved && (
-            <AnswerColumn
-              title="С RAG + реранк/фильтр"
-              answer={state.compareRagImproved}
-              onOpenSource={onOpenSource}
-              showDiagnostics
-            />
-          )}
+      {state.compareRagImproved ? (
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <AnswerColumn title="RAG — обычный поиск" answer={state.compareRag} onOpenSource={onOpenSource} />
+          <AnswerColumn
+            title="RAG — с улучшениями"
+            answer={state.compareRagImproved}
+            onOpenSource={onOpenSource}
+            showDiagnostics
+          />
         </div>
+      ) : (
+        (state.compareNoRag || state.compareRag) && (
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
+            <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
+          </div>
+        )
       )}
     </section>
   )
@@ -432,6 +443,8 @@ function EvalSection({
     })
   }
 
+  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
+
   async function handleRun() {
     update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
     try {
@@ -457,8 +470,7 @@ function EvalSection({
         <div>
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Для каждого — ожидание и (если применимо) ожидаемый источник. Если в панели справа
-            включено улучшение поиска, здесь появится третий столбец с ним.
+            Для каждого — ожидание и (если применимо) ожидаемый источник. Режим — {enhanced ? 'обычный поиск vs с улучшениями' : 'без RAG vs с RAG'} (переключается чекбоксами в панели справа).
           </p>
         </div>
         <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
@@ -550,30 +562,36 @@ function EvalSection({
               {open && (
                 <div className="px-6 pb-3">
                   {r ? (
-                    <div
-                      className={cn(
-                        'grid grid-cols-1 gap-2',
-                        r.improved_rag_answer ? 'sm:grid-cols-3' : 'sm:grid-cols-2',
-                      )}
-                    >
-                      <AnswerColumn
-                        title="Без RAG"
-                        answer={{ mode: 'no_rag', answer: r.no_rag_answer }}
-                        onOpenSource={onOpenSource}
-                      />
-                      <AnswerColumn
-                        title="С RAG"
-                        answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
-                        onOpenSource={onOpenSource}
-                        expectedSources={r.expected_sources}
-                      />
-                      {r.improved_rag_answer && (
-                        <AnswerColumn
-                          title="С RAG + реранк/фильтр"
-                          answer={{ mode: 'rag', answer: r.improved_rag_answer, retrieved: r.improved_retrieved }}
-                          onOpenSource={onOpenSource}
-                          expectedSources={r.expected_sources}
-                        />
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {r.improved_rag_answer ? (
+                        <>
+                          <AnswerColumn
+                            title="RAG — обычный поиск"
+                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                          <AnswerColumn
+                            title="RAG — с улучшениями"
+                            answer={{ mode: 'rag', answer: r.improved_rag_answer, retrieved: r.improved_retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <AnswerColumn
+                            title="Без RAG"
+                            answer={{ mode: 'no_rag', answer: r.no_rag_answer }}
+                            onOpenSource={onOpenSource}
+                          />
+                          <AnswerColumn
+                            title="С RAG"
+                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                        </>
                       )}
                     </div>
                   ) : (

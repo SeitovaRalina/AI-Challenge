@@ -68,22 +68,22 @@ type EvalProgress struct {
 	Stage    string `json:"stage"` // "no_rag" | "rag" | "rag_improved"
 }
 
-// RunEval answers every control question without RAG and with baseline RAG
-// always; when opts.Enabled(), it also answers with opts applied
-// (rerank/rewrite/filter) alongside them — one run produces every answer a
-// side-by-side comparison needs, instead of requiring opts off, then on,
-// in two separate runs the caller has to eyeball against each other. A
-// question whose call still fails after retry gets an inline error string
-// instead of aborting the rest of the batch — this many sequential LLM
-// calls is long enough that one flaky one is expected. onProgress may be
-// nil (the plain, non-streaming endpoint doesn't report).
+// RunEval answers every control question two ways — always two calls per
+// question, which pair depends on opts:
+//   - opts disabled (day-22 shape): без RAG vs обычный RAG. Comparing
+//     retrieval against nothing at all.
+//   - opts.Enabled() (day-23 shape): обычный RAG vs RAG с opts applied
+//     (rerank/rewrite/filter). The "без RAG" baseline isn't computed at
+//     all here — once you're testing whether rerank/filter helped, the
+//     no-context answer is no longer the relevant comparison (user
+//     feedback: "тебе уже по факту не нужен ответ без раг").
+//
+// A question whose call still fails after retry gets an inline error
+// string instead of aborting the rest of the batch. onProgress may be nil
+// (the plain, non-streaming endpoint doesn't report).
 func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, opts RagOptions, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
 	improved := opts.Enabled()
-	callsPerQuestion := 2
-	if improved {
-		callsPerQuestion = 3
-	}
-	total := len(questions) * callsPerQuestion
+	total := len(questions) * 2
 	step := 0
 	report := func(question, stage string) {
 		step++
@@ -94,11 +94,15 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 
 	results := make([]EvalQuestionResult, 0, len(questions))
 	for _, q := range questions {
-		noRag, err := callWithRetry(func() (string, error) { return AnswerNoRAG(ctx, client, q.Question) })
-		if err != nil {
-			noRag = fmt.Sprintf("[ошибка: %v]", err)
+		var noRag string
+		if !improved {
+			var err error
+			noRag, err = callWithRetry(func() (string, error) { return AnswerNoRAG(ctx, client, q.Question) })
+			if err != nil {
+				noRag = fmt.Sprintf("[ошибка: %v]", err)
+			}
+			report(q.Question, "no_rag")
 		}
-		report(q.Question, "no_rag")
 
 		var ragAnswer string
 		var retrieved []RetrievedChunk
