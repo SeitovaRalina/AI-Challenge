@@ -217,9 +217,7 @@ function CompareSection({
             className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-foreground"
           />
         </label>
-        {enhanced && (
-          <span>→ третья колонка «С RAG (день 23)» появится после сравнения</span>
-        )}
+        {enhanced && <span>→ после сравнения появится третья колонка с улучшенным поиском</span>}
       </div>
 
       {state.compareError && (
@@ -232,10 +230,10 @@ function CompareSection({
       {(state.compareNoRag || state.compareRag) && (
         <div className={cn('mt-4 grid grid-cols-1 gap-3', state.compareRagImproved ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
           <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
-          <AnswerColumn title="С RAG (день 22, база)" answer={state.compareRag} onOpenSource={onOpenSource} />
+          <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
           {state.compareRagImproved && (
             <AnswerColumn
-              title="С RAG (день 23, улучшенный)"
+              title="С RAG + реранк/фильтр"
               answer={state.compareRagImproved}
               onOpenSource={onOpenSource}
               showDiagnostics
@@ -422,8 +420,8 @@ function EvalSection({
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Для каждого — ожидание и (если применимо) ожидаемый источник. Режим RAG-стороны —{' '}
-            {enhanced ? 'улучшенный (день 23, см. чекбоксы выше)' : 'базовый (день 22)'} — запустите
-            дважды (чекбоксы выкл/вкл), чтобы сравнить два прогона.
+            {enhanced ? 'с реранком/фильтром (чекбоксы выше)' : 'обычный поиск'} — запустите дважды
+            (чекбоксы выкл/вкл), чтобы сравнить два прогона.
           </p>
         </div>
         <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
