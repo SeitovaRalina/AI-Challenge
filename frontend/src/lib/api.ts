@@ -1090,6 +1090,17 @@ export interface RagAnswer {
   strategy?: ChunkStrategy
   answer: string
   retrieved?: RetrievedChunk[]
+  rewritten_question?: string
+  candidate_count?: number
+  filtered_count?: number
+}
+
+// RagQueryOptions is day 23's rerank/rewrite/filter — all off reproduces
+// day 22's exact behavior.
+export interface RagQueryOptions {
+  rerank?: boolean
+  rewrite?: boolean
+  minScore?: number
 }
 
 // queryRag answers one question in either mode. strategy is required when
@@ -1098,8 +1109,16 @@ export function queryRag(
   question: string,
   mode: 'rag' | 'no_rag',
   strategy?: ChunkStrategy,
+  options?: RagQueryOptions,
 ): Promise<RagAnswer> {
-  return postJson<RagAnswer>('/api/rag/query', { question, mode, strategy })
+  return postJson<RagAnswer>('/api/rag/query', {
+    question,
+    mode,
+    strategy,
+    rerank: options?.rerank ?? false,
+    rewrite: options?.rewrite ?? false,
+    min_score: options?.minScore ?? 0,
+  })
 }
 
 export interface EvalQuestion {
@@ -1119,6 +1138,9 @@ export interface EvalQuestionResult extends EvalQuestion {
   retrieved: RetrievedChunk[]
   expected_source_hit: boolean
   expected_source_check: boolean
+  // Present only when the run had rerank/rewrite/filtering on.
+  improved_rag_answer?: string
+  improved_retrieved?: RetrievedChunk[]
 }
 
 export interface EvalRunResult {
@@ -1128,16 +1150,22 @@ export interface EvalRunResult {
 
 // runEval answers all 10 control questions in both modes (RAG on
 // strategy, plus no-RAG) — this is day 22's actual "сравнение качества"
-// deliverable. Slow: ~20 LLM calls.
-export function runEval(strategy: ChunkStrategy): Promise<EvalRunResult> {
-  return postJson<EvalRunResult>('/api/rag/eval/run', { strategy })
+// deliverable. Slow: ~20 LLM calls. options is day 23's rerank/rewrite/
+// filter, applied uniformly to the RAG side of every question.
+export function runEval(strategy: ChunkStrategy, options?: RagQueryOptions): Promise<EvalRunResult> {
+  return postJson<EvalRunResult>('/api/rag/eval/run', {
+    strategy,
+    rerank: options?.rerank ?? false,
+    rewrite: options?.rewrite ?? false,
+    min_score: options?.minScore ?? 0,
+  })
 }
 
 export interface EvalProgress {
   step: number
   total: number
   question: string
-  stage: 'no_rag' | 'rag'
+  stage: 'no_rag' | 'rag' | 'rag_improved'
 }
 
 // streamRunEval is runEval with progress: same request, same final
@@ -1147,11 +1175,17 @@ export interface EvalProgress {
 export async function streamRunEval(
   strategy: ChunkStrategy,
   onProgress: (progress: EvalProgress) => void,
+  options?: RagQueryOptions,
 ): Promise<EvalRunResult> {
   const response = await fetch('/api/rag/eval/run/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ strategy }),
+    body: JSON.stringify({
+      strategy,
+      rerank: options?.rerank ?? false,
+      rewrite: options?.rewrite ?? false,
+      min_score: options?.minScore ?? 0,
+    }),
   })
   if (!response.ok || !response.body) {
     const body = await response.json().catch(() => null)

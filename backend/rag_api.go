@@ -114,11 +114,16 @@ func chunksHandler(ragStore *RagStore) http.HandlerFunc {
 	}
 }
 
-// queryRequest is the payload accepted by POST /api/rag/query.
+// queryRequest is the payload accepted by POST /api/rag/query. Rerank/
+// Rewrite/MinScore are day 23's additions — all false/zero reproduces day
+// 22's exact behavior.
 type queryRequest struct {
-	Question string `json:"question"`
-	Mode     string `json:"mode"`     // "rag" | "no_rag"
-	Strategy string `json:"strategy"` // required when mode is "rag"
+	Question string  `json:"question"`
+	Mode     string  `json:"mode"`     // "rag" | "no_rag"
+	Strategy string  `json:"strategy"` // required when mode is "rag"
+	Rerank   bool    `json:"rerank"`
+	Rewrite  bool    `json:"rewrite"`
+	MinScore float64 `json:"min_score"`
 }
 
 // queryHandler answers one question in either mode — the single primitive
@@ -163,7 +168,8 @@ func queryHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStor
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer cancel()
 
-		answer, err := Query(ctx, client, ollama, idx, question, req.Mode, strategy, defaultTopK)
+		opts := RagOptions{Rerank: req.Rerank, Rewrite: req.Rewrite, MinScore: req.MinScore}
+		answer, err := Query(ctx, client, ollama, idx, question, req.Mode, strategy, defaultTopK, opts)
 		if err != nil {
 			writeRagQueryError(w, err)
 			return
@@ -186,9 +192,19 @@ func getEvalQuestionsHandler(evalPath string) http.HandlerFunc {
 	}
 }
 
-// evalRunRequest is the payload accepted by POST /api/rag/eval/run.
+// evalRunRequest is the payload accepted by POST /api/rag/eval/run and
+// /run/stream. Rerank/Rewrite/MinScore are day 23's additions, applied
+// uniformly to the RAG side of all 10 questions — run once with them off,
+// flip them on, run again, compare the two EvalRunResults.
 type evalRunRequest struct {
-	Strategy string `json:"strategy"`
+	Strategy string  `json:"strategy"`
+	Rerank   bool    `json:"rerank"`
+	Rewrite  bool    `json:"rewrite"`
+	MinScore float64 `json:"min_score"`
+}
+
+func (r evalRunRequest) options() RagOptions {
+	return RagOptions{Rerank: r.Rerank, Rewrite: r.Rewrite, MinScore: r.MinScore}
 }
 
 // evalRunHandler is day 22's actual deliverable: every control question
@@ -230,7 +246,7 @@ func evalRunHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagSt
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
 		defer cancel()
 
-		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, nil)
+		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, req.options(), nil)
 		if err != nil {
 			writeRagQueryError(w, err)
 			return
@@ -286,7 +302,7 @@ func evalRunStreamHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 
-		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, func(p EvalProgress) {
+		results, err := RunEval(ctx, client, ollama, idx, questions, strategy, req.options(), func(p EvalProgress) {
 			stream.send("progress", p)
 		})
 		if err != nil {

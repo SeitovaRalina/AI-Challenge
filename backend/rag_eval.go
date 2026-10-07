@@ -60,22 +60,29 @@ func expectedSourceHit(q EvalQuestion, retrieved []RetrievedChunk) (hit, applica
 }
 
 // EvalProgress is one step of a RunEval call — reported via onProgress so
-// a 20-call run (10 questions x 2 modes, sequential, a couple of minutes)
-// can show real progress instead of a bare spinner.
+// a multi-minute run can show real progress instead of a bare spinner.
 type EvalProgress struct {
 	Step     int    `json:"step"`
 	Total    int    `json:"total"`
 	Question string `json:"question"`
-	Stage    string `json:"stage"` // "no_rag" | "rag"
+	Stage    string `json:"stage"` // "no_rag" | "rag" | "rag_improved"
 }
 
-// RunEval is day 22's actual deliverable: every control question answered
-// both without RAG and with RAG (on one chosen strategy), so the two can
-// be read side by side. A question whose call still fails after retry gets
-// an inline error string instead of aborting the rest of the batch — 20
-// sequential LLM calls is long enough that one flaky one is expected.
-// onProgress may be nil (the plain, non-streaming endpoint doesn't report).
-func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
+// RunEval answers every control question two ways — always two calls per
+// question, which pair depends on opts:
+//   - opts disabled (day-22 shape): без RAG vs обычный RAG. Comparing
+//     retrieval against nothing at all.
+//   - opts.Enabled() (day-23 shape): обычный RAG vs RAG с opts applied
+//     (rerank/rewrite/filter). The "без RAG" baseline isn't computed at
+//     all here — once you're testing whether rerank/filter helped, the
+//     no-context answer is no longer the relevant comparison (user
+//     feedback: "тебе уже по факту не нужен ответ без раг").
+//
+// A question whose call still fails after retry gets an inline error
+// string instead of aborting the rest of the batch. onProgress may be nil
+// (the plain, non-streaming endpoint doesn't report).
+func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, questions []EvalQuestion, strategy ChunkStrategy, opts RagOptions, onProgress func(EvalProgress)) ([]EvalQuestionResult, error) {
+	improved := opts.Enabled()
 	total := len(questions) * 2
 	step := 0
 	report := func(question, stage string) {
@@ -87,17 +94,21 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 
 	results := make([]EvalQuestionResult, 0, len(questions))
 	for _, q := range questions {
-		noRag, err := callWithRetry(func() (string, error) { return AnswerNoRAG(ctx, client, q.Question) })
-		if err != nil {
-			noRag = fmt.Sprintf("[ошибка: %v]", err)
+		var noRag string
+		if !improved {
+			var err error
+			noRag, err = callWithRetry(func() (string, error) { return AnswerNoRAG(ctx, client, q.Question) })
+			if err != nil {
+				noRag = fmt.Sprintf("[ошибка: %v]", err)
+			}
+			report(q.Question, "no_rag")
 		}
-		report(q.Question, "no_rag")
 
 		var ragAnswer string
 		var retrieved []RetrievedChunk
 		var hit, applicable bool
 		rag, err := callWithRetry(func() (RagAnswer, error) {
-			return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK)
+			return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK, RagOptions{})
 		})
 		if err != nil {
 			ragAnswer = fmt.Sprintf("[ошибка: %v]", err)
@@ -108,6 +119,21 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 		}
 		report(q.Question, "rag")
 
+		var improvedAnswer string
+		var improvedRetrieved []RetrievedChunk
+		if improved {
+			improvedRag, err := callWithRetry(func() (RagAnswer, error) {
+				return AnswerRAG(ctx, client, ollama, idx, q.Question, strategy, defaultTopK, opts)
+			})
+			if err != nil {
+				improvedAnswer = fmt.Sprintf("[ошибка: %v]", err)
+			} else {
+				improvedAnswer = improvedRag.Answer
+				improvedRetrieved = improvedRag.Retrieved
+			}
+			report(q.Question, "rag_improved")
+		}
+
 		results = append(results, EvalQuestionResult{
 			EvalQuestion:        q,
 			NoRagAnswer:         noRag,
@@ -115,6 +141,8 @@ func RunEval(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, i
 			Retrieved:           retrieved,
 			ExpectedSourceHit:   hit,
 			ExpectedSourceCheck: applicable,
+			ImprovedRagAnswer:   improvedAnswer,
+			ImprovedRetrieved:   improvedRetrieved,
 		})
 	}
 	return results, nil

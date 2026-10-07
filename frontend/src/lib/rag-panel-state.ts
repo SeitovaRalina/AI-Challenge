@@ -14,11 +14,21 @@ import type {
 // result that took minutes to compute. Only a full page reload clears it.
 export interface RagPanelState {
   strategy: ChunkStrategy
+  // Day 23: rerank/rewrite/filter, shared by the compare tool and the
+  // eval run — a visible, deliberate choice (see StrategySelect's doc),
+  // not a hidden default.
+  rerankEnabled: boolean
+  rewriteEnabled: boolean
+  minScore: number
   compareQuestion: string
   compareLoading: boolean
   compareError: string | null
   compareNoRag: RagAnswer | null
   compareRag: RagAnswer | null
+  // compareRagImproved: the 3rd column, only populated when rerank/rewrite/
+  // minScore was active for that run — null means "not run with
+  // enhancements", not "enhancements found nothing".
+  compareRagImproved: RagAnswer | null
   evalRunning: boolean
   evalProgress: EvalProgress | null
   evalError: string | null
@@ -31,11 +41,15 @@ export interface RagPanelState {
 
 const defaultState: RagPanelState = {
   strategy: 'structural',
+  rerankEnabled: false,
+  rewriteEnabled: false,
+  minScore: 0,
   compareQuestion: '',
   compareLoading: false,
   compareError: null,
   compareNoRag: null,
   compareRag: null,
+  compareRagImproved: null,
   evalRunning: false,
   evalProgress: null,
   evalError: null,

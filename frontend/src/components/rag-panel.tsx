@@ -4,6 +4,7 @@ import { AlertCircle, ArrowRight, Check, ChevronRight, Loader2, X } from 'lucide
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { InfoTooltip } from '@/components/info-tooltip'
 import { Markdown } from '@/components/markdown'
 import { cn } from 'cn'
 import {
@@ -14,6 +15,7 @@ import {
   runRetrievalEval,
   streamRunEval,
   type ChunkStrategy,
+  type EvalProgress,
   type EvalQuestion,
   type IndexStatus,
   type RagAnswer,
@@ -24,6 +26,12 @@ import { useRagPanelState } from '@/lib/rag-panel-state'
 const STRATEGY_LABEL: Record<ChunkStrategy, string> = {
   fixed_size: 'по фиксированному размеру',
   structural: 'по структуре',
+}
+
+const PROGRESS_STAGE_LABEL: Record<EvalProgress['stage'], string> = {
+  no_rag: 'без RAG',
+  rag: 'с RAG',
+  rag_improved: 'с RAG + улучшения',
 }
 
 // parseMessageIndex pulls the message index out of a structural chunk's
@@ -68,40 +76,107 @@ export function RagPanel({ onOpenSource }: RagPanelProps) {
   }
 
   return (
-    <div className="flex max-w-3xl flex-col gap-4">
-      {!status.exists && (
-        <Alert>
-          <AlertCircle />
-          <AlertTitle>
-            Индекс ещё не построен — зайдите на экран «Индексация» и нажмите
-            «Переиндексировать».
-          </AlertTitle>
-        </Alert>
-      )}
+    <div className="flex max-w-6xl flex-col gap-4 lg:flex-row lg:items-start">
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
+        {!status.exists && (
+          <Alert>
+            <AlertCircle />
+            <AlertTitle>
+              Индекс ещё не построен — зайдите на экран «Индексация» и нажмите
+              «Переиндексировать».
+            </AlertTitle>
+          </Alert>
+        )}
 
-      <CompareSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
-      <EvalSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
-      <RetrievalCompareSection status={status} state={state} update={update} />
+        <CompareSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
+        <EvalSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
+        <RetrievalCompareSection status={status} state={state} update={update} />
+      </div>
+
+      <aside className="flex-shrink-0 lg:sticky lg:top-0 lg:w-64">
+        <RagSettingsPanel state={state} update={update} />
+      </aside>
     </div>
   )
 }
 
-function StrategySelect({
-  value,
-  onChange,
-}: {
-  value: ChunkStrategy
-  onChange: (s: ChunkStrategy) => void
-}) {
+// RagSettingsPanel — один источник правды для поиска: стратегия нарезки,
+// reranking, query rewrite, порог similarity. Общий для «RAG vs без RAG»
+// и для прогона 10 контрольных вопросов ниже (оба читают один и тот же
+// RagPanelState) — вынесен в отдельную панель, а не продублирован в двух
+// карточках, чтобы было видно: это одна настройка на весь экран, не две
+// разные. Стиль полей — как в CompareOptionsForm (compare-options.tsx,
+// day 2): тот же "border + bg-transparent + font-mono для чисел" и тот же
+// однострочный чекбокс (size-3.5, accent-primary), а не изобретённый заново.
+function RagSettingsPanel({ state, update }: { state: RagState; update: RagUpdate }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as ChunkStrategy)}
-      className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-    >
-      <option value="structural">Нарезка: {STRATEGY_LABEL.structural}</option>
-      <option value="fixed_size">Нарезка: {STRATEGY_LABEL.fixed_size}</option>
-    </select>
+    <div className="flex flex-col gap-5 rounded-lg border border-border bg-card p-4 text-sm">
+      <h2 className="text-sm font-medium text-foreground">Настройки поиска</h2>
+
+      <div className="flex flex-col gap-3">
+        <p className="text-xs font-medium tracking-wide text-muted-foreground">Чанкинг</p>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="rag-strategy" className="text-xs text-muted-foreground">
+            Нарезка на чанки
+          </label>
+          <select
+            id="rag-strategy"
+            value={state.strategy}
+            onChange={(e) => update({ strategy: e.target.value as ChunkStrategy })}
+            className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-sm text-foreground"
+          >
+            <option value="structural">{STRATEGY_LABEL.structural}</option>
+            <option value="fixed_size">{STRATEGY_LABEL.fixed_size}</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <p className="text-xs font-medium tracking-wide text-muted-foreground">Улучшения поиска</p>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={state.rerankEnabled}
+            onChange={(e) => update({ rerankEnabled: e.target.checked })}
+            className="size-3.5 rounded border-border accent-primary"
+          />
+          Reranking
+          <InfoTooltip label="Что такое reranking">
+            Топ-20 кандидатов вместо топ-5, LLM пересортировывает по релевантности.
+          </InfoTooltip>
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={state.rewriteEnabled}
+            onChange={(e) => update({ rewriteEnabled: e.target.checked })}
+            className="size-3.5 rounded border-border accent-primary"
+          />
+          Query rewrite
+          <InfoTooltip label="Что такое query rewrite">
+            LLM переформулирует вопрос в поисковый запрос перед эмбеддингом.
+          </InfoTooltip>
+        </label>
+
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="rag-min-score" className="text-xs text-muted-foreground">
+            Порог similarity
+          </label>
+          <input
+            id="rag-min-score"
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={state.minScore}
+            onChange={(e) => update({ minScore: Number(e.target.value) || 0 })}
+            className="w-full rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm text-foreground"
+          />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -122,16 +197,39 @@ function CompareSection({
   update: RagUpdate
   onOpenSource: (chatId: string, messageIndex: number | null) => void
 }) {
+  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
+
   async function handleCompare() {
     const q = state.compareQuestion.trim()
     if (!q) return
-    update({ compareLoading: true, compareError: null, compareNoRag: null, compareRag: null })
+    update({
+      compareLoading: true,
+      compareError: null,
+      compareNoRag: null,
+      compareRag: null,
+      compareRagImproved: null,
+    })
     try {
-      const [noRagRes, ragRes] = await Promise.all([
-        queryRag(q, 'no_rag'),
-        queryRag(q, 'rag', state.strategy),
-      ])
-      update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
+      if (!enhanced) {
+        // Без улучшений: день-22 сравнение — без RAG vs обычный RAG.
+        const [noRagRes, ragRes] = await Promise.all([
+          queryRag(q, 'no_rag'),
+          queryRag(q, 'rag', state.strategy),
+        ])
+        update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
+      } else {
+        // С улучшениями: обычный RAG vs RAG с ними — без RAG здесь больше не
+        // интересен, это не то, с чем сравнивает улучшенный поиск.
+        const [ragRes, improvedRes] = await Promise.all([
+          queryRag(q, 'rag', state.strategy),
+          queryRag(q, 'rag', state.strategy, {
+            rerank: state.rerankEnabled,
+            rewrite: state.rewriteEnabled,
+            minScore: state.minScore,
+          }),
+        ])
+        update({ compareRag: ragRes, compareRagImproved: improvedRes, compareLoading: false })
+      }
     } catch (err) {
       update({
         compareError: err instanceof ApiError ? err.message : 'Не удалось получить ответ',
@@ -142,13 +240,17 @@ function CompareSection({
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
-      <h2 className="text-sm font-medium text-foreground">RAG vs без RAG</h2>
+      <h2 className="text-sm font-medium text-foreground">
+        {enhanced ? 'Обычный поиск vs с улучшениями' : 'RAG vs без RAG'}
+      </h2>
       <p className="mt-1 text-xs text-muted-foreground">
-        Один и тот же вопрос — модели без доступа к истории задач и модели, которой сначала нашли
-        топ-5 ближайших по смыслу фрагментов из ваших прошлых оценок.
+        {enhanced
+          ? 'Один и тот же вопрос — с обычным поиском (топ-5 по смыслу) и с включёнными в панели справа улучшениями.'
+          : 'Один и тот же вопрос — модели без доступа к истории задач и модели, которой сначала нашли ближайшие по смыслу фрагменты из ваших прошлых оценок.'}{' '}
+        Настройки поиска — в панели справа.
       </p>
 
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
         <textarea
           value={state.compareQuestion}
           onChange={(e) => update({ compareQuestion: e.target.value })}
@@ -156,16 +258,13 @@ function CompareSection({
           rows={2}
           className="flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
         />
-        <div className="flex items-center gap-2">
-          <StrategySelect value={state.strategy} onChange={(strategy) => update({ strategy })} />
-          <Button
-            onClick={handleCompare}
-            disabled={state.compareLoading || !status.exists || !state.compareQuestion.trim()}
-          >
-            {state.compareLoading && <Loader2 className="animate-spin" />}
-            Сравнить
-          </Button>
-        </div>
+        <Button
+          onClick={handleCompare}
+          disabled={state.compareLoading || !status.exists || !state.compareQuestion.trim()}
+        >
+          {state.compareLoading && <Loader2 className="animate-spin" />}
+          Сравнить
+        </Button>
       </div>
 
       {state.compareError && (
@@ -175,11 +274,23 @@ function CompareSection({
         </Alert>
       )}
 
-      {(state.compareNoRag || state.compareRag) && (
+      {state.compareRagImproved ? (
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
-          <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
+          <AnswerColumn title="RAG — обычный поиск" answer={state.compareRag} onOpenSource={onOpenSource} />
+          <AnswerColumn
+            title="RAG — с улучшениями"
+            answer={state.compareRagImproved}
+            onOpenSource={onOpenSource}
+            showDiagnostics
+          />
         </div>
+      ) : (
+        (state.compareNoRag || state.compareRag) && (
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <AnswerColumn title="Без RAG" answer={state.compareNoRag} onOpenSource={onOpenSource} />
+            <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
+          </div>
+        )
       )}
     </section>
   )
@@ -190,15 +301,31 @@ function AnswerColumn({
   answer,
   onOpenSource,
   expectedSources,
+  showDiagnostics,
 }: {
   title: string
   answer: RagAnswer | null
   onOpenSource: (chatId: string, messageIndex: number | null) => void
   expectedSources?: string[]
+  showDiagnostics?: boolean
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 p-3">
       <div className="text-xs font-medium text-muted-foreground">{title}</div>
+      {showDiagnostics && answer && (answer.rewritten_question || answer.candidate_count != null) && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {answer.rewritten_question && (
+            <span>
+              Переформулировано: <span className="italic text-foreground">«{answer.rewritten_question}»</span>
+            </span>
+          )}
+          {answer.candidate_count != null && (
+            <span>
+              Кандидатов: {answer.candidate_count} → после фильтра: {answer.filtered_count}
+            </span>
+          )}
+        </div>
+      )}
       <div className="mt-1.5 text-sm text-foreground">
         {answer ? <Markdown>{answer.answer}</Markdown> : <span className="text-muted-foreground">—</span>}
       </div>
@@ -316,10 +443,16 @@ function EvalSection({
     })
   }
 
+  const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
+
   async function handleRun() {
     update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
     try {
-      const result = await streamRunEval(state.strategy, (progress) => update({ evalProgress: progress }))
+      const result = await streamRunEval(
+        state.strategy,
+        (progress) => update({ evalProgress: progress }),
+        { rerank: state.rerankEnabled, rewrite: state.rewriteEnabled, minScore: state.minScore },
+      )
       update({ evalResult: result, evalRunning: false })
     } catch (err) {
       update({
@@ -333,22 +466,27 @@ function EvalSection({
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Для каждого — ожидание и (если применимо) ожидаемый источник.
+            Для каждого — ожидание и (если применимо) ожидаемый источник. Режим — {enhanced ? 'обычный поиск vs с улучшениями' : 'без RAG vs с RAG'} (переключается чекбоксами в панели справа).
           </p>
         </div>
-        <Button onClick={handleRun} disabled={state.evalRunning || !status.exists || !questions?.length}>
+        <Button
+          onClick={handleRun}
+          disabled={state.evalRunning || !status.exists || !questions?.length}
+          className="flex-shrink-0"
+        >
           {state.evalRunning && <Loader2 className="animate-spin" />}
           Прогнать все 10
         </Button>
       </div>
       <p className="mt-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
         Как это оценивается: единственная автоматическая метрика — попал ли среди топ-5
-        найденных фрагментов чанк из ожидаемой сессии (бейдж «сессия найдена» ✓/✗ у вопроса; это
-        проверка retrieval, не проверка того, что модель правильно использовала найденный факт).
+        фрагментов обычного поиска (левый столбец) чанк из ожидаемой сессии (бейдж «сессия
+        найдена» ✓/✗ у вопроса; это проверка retrieval, не проверка того, что модель правильно
+        использовала найденный факт, и не зависит от режима — правый столбец она не описывает).
         Качество самого текста ответа автоматически не оценивается — сравнивайте два столбца
         глазами после разворота вопроса.
       </p>
@@ -362,8 +500,8 @@ function EvalSection({
             />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {state.evalProgress.step}/{state.evalProgress.total} —{' '}
-            {state.evalProgress.stage === 'rag' ? 'с RAG' : 'без RAG'}: {state.evalProgress.question}
+            {state.evalProgress.step}/{state.evalProgress.total} — {PROGRESS_STAGE_LABEL[state.evalProgress.stage]}:{' '}
+            {state.evalProgress.question}
           </p>
         </div>
       )}
@@ -430,17 +568,36 @@ function EvalSection({
                 <div className="px-6 pb-3">
                   {r ? (
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <AnswerColumn
-                        title="Без RAG"
-                        answer={{ mode: 'no_rag', answer: r.no_rag_answer }}
-                        onOpenSource={onOpenSource}
-                      />
-                      <AnswerColumn
-                        title="С RAG"
-                        answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
-                        onOpenSource={onOpenSource}
-                        expectedSources={r.expected_sources}
-                      />
+                      {r.improved_rag_answer ? (
+                        <>
+                          <AnswerColumn
+                            title="RAG — обычный поиск"
+                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                          <AnswerColumn
+                            title="RAG — с улучшениями"
+                            answer={{ mode: 'rag', answer: r.improved_rag_answer, retrieved: r.improved_retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <AnswerColumn
+                            title="Без RAG"
+                            answer={{ mode: 'no_rag', answer: r.no_rag_answer }}
+                            onOpenSource={onOpenSource}
+                          />
+                          <AnswerColumn
+                            title="С RAG"
+                            answer={{ mode: 'rag', answer: r.rag_answer, retrieved: r.retrieved }}
+                            onOpenSource={onOpenSource}
+                            expectedSources={r.expected_sources}
+                          />
+                        </>
+                      )}
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">
@@ -486,8 +643,8 @@ function RetrievalCompareSection({
 
   return (
     <section className="rounded-lg border border-border bg-muted/20 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
           <h3 className="text-xs font-medium text-foreground">
             Доп.: какая нарезка на чанки точнее находит источник
           </h3>
@@ -498,7 +655,13 @@ function RetrievalCompareSection({
             вообще правильный источник.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleRun} disabled={state.retrievalLoading || !status.exists}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRun}
+          disabled={state.retrievalLoading || !status.exists}
+          className="flex-shrink-0"
+        >
           {state.retrievalLoading && <Loader2 className="animate-spin" />}
           Сравнить
         </Button>
