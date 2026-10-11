@@ -118,17 +118,18 @@ func chunksHandler(ragStore *RagStore) http.HandlerFunc {
 // Rewrite/MinScore are day 23's additions — all false/zero reproduces day
 // 22's exact behavior.
 type queryRequest struct {
-	Question string  `json:"question"`
-	Mode     string  `json:"mode"`     // "rag" | "no_rag"
-	Strategy string  `json:"strategy"` // required when mode is "rag"
-	Rerank   bool    `json:"rerank"`
-	Rewrite  bool    `json:"rewrite"`
-	MinScore float64 `json:"min_score"`
+	Question string      `json:"question"`
+	Provider LLMProvider `json:"provider"`
+	Mode     string      `json:"mode"`     // "rag" | "no_rag"
+	Strategy string      `json:"strategy"` // required when mode is "rag"
+	Rerank   bool        `json:"rerank"`
+	Rewrite  bool        `json:"rewrite"`
+	MinScore float64     `json:"min_score"`
 }
 
 // queryHandler answers one question in either mode — the single primitive
 // the comparison UI and the eval runs below both build on.
-func queryHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStore) http.HandlerFunc {
+func queryHandler(agent *Agent, ollama *OllamaClient, ragStore *RagStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req queryRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -142,6 +143,11 @@ func queryHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStor
 		}
 		if req.Mode != "rag" && req.Mode != "no_rag" {
 			writeError(w, http.StatusBadRequest, "mode должен быть rag или no_rag")
+			return
+		}
+		client, err := agent.providerClient(req.Provider)
+		if err != nil {
+			writeAgentError(w, err)
 			return
 		}
 
@@ -197,10 +203,11 @@ func getEvalQuestionsHandler(evalPath string) http.HandlerFunc {
 // uniformly to the RAG side of all 10 questions — run once with them off,
 // flip them on, run again, compare the two EvalRunResults.
 type evalRunRequest struct {
-	Strategy string  `json:"strategy"`
-	Rerank   bool    `json:"rerank"`
-	Rewrite  bool    `json:"rewrite"`
-	MinScore float64 `json:"min_score"`
+	Strategy string      `json:"strategy"`
+	Provider LLMProvider `json:"provider"`
+	Rerank   bool        `json:"rerank"`
+	Rewrite  bool        `json:"rewrite"`
+	MinScore float64     `json:"min_score"`
 }
 
 func (r evalRunRequest) options() RagOptions {
@@ -210,7 +217,7 @@ func (r evalRunRequest) options() RagOptions {
 // evalRunHandler is day 22's actual deliverable: every control question
 // answered both without and with RAG (20 LLM calls total), so quality can
 // be compared question by question.
-func evalRunHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStore, evalPath string) http.HandlerFunc {
+func evalRunHandler(agent *Agent, ollama *OllamaClient, ragStore *RagStore, evalPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req evalRunRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -220,6 +227,11 @@ func evalRunHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagSt
 		strategy := ChunkStrategy(req.Strategy)
 		if strategy != ChunkStrategyFixed && strategy != ChunkStrategyStructural {
 			writeError(w, http.StatusBadRequest, "strategy должен быть fixed_size или structural")
+			return
+		}
+		client, err := agent.providerClient(req.Provider)
+		if err != nil {
+			writeAgentError(w, err)
 			return
 		}
 
@@ -259,7 +271,7 @@ func evalRunHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagSt
 // same final EvalRunResult (as the "done" event), reporting each of the 20
 // calls as it completes so the UI can show a real progress bar instead of
 // a bare spinner for what's typically a multi-minute run.
-func evalRunStreamHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore *RagStore, evalPath string) http.HandlerFunc {
+func evalRunStreamHandler(agent *Agent, ollama *OllamaClient, ragStore *RagStore, evalPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req evalRunRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -269,6 +281,11 @@ func evalRunStreamHandler(client *LiteLLMClient, ollama *OllamaClient, ragStore 
 		strategy := ChunkStrategy(req.Strategy)
 		if strategy != ChunkStrategyFixed && strategy != ChunkStrategyStructural {
 			writeError(w, http.StatusBadRequest, "strategy должен быть fixed_size или structural")
+			return
+		}
+		client, err := agent.providerClient(req.Provider)
+		if err != nil {
+			writeAgentError(w, err)
 			return
 		}
 

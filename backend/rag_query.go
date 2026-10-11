@@ -353,11 +353,14 @@ func answerWithCitations(ctx context.Context, client *LiteLLMClient, question st
 	return ragLLMResult{answer: parsed.Answer, citations: verifyCitations(parsed.Citations, final)}, nil
 }
 
-// AnswerRAG embeds question via Ollama, retrieves and (per opts) rewrites/
-// reranks/filters chunks of strategy from idx, and answers grounded in
-// them via LiteLLM — mandatory sources (Retrieved) and citations, plus
-// day 24's hard low-confidence gate, below which the LLM is never called.
-func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, question string, strategy ChunkStrategy, topK int, opts RagOptions) (RagAnswer, error) {
+type preparedRag struct {
+	answer RagAnswer
+	chunks []scoredChunk
+}
+
+// prepareRAG searches once. A provider comparison can then give both models
+// exactly the same chunks, even when rewrite or rerank is enabled.
+func prepareRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, question string, strategy ChunkStrategy, topK int, opts RagOptions) (preparedRag, error) {
 	searchText := question
 	var rewritten string
 	if opts.Rewrite {
@@ -375,7 +378,7 @@ func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient,
 
 	vectors, err := ollama.Embeddings(ctx, []string{searchText})
 	if err != nil {
-		return RagAnswer{}, err
+		return preparedRag{}, err
 	}
 
 	candidateK := topK
@@ -417,16 +420,33 @@ func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient,
 	if filteredCount == 0 || final[0].Score < minConfidenceScore {
 		result.Answer = lowConfidenceAnswer
 		result.LowConfidence = true
+		return preparedRag{answer: result, chunks: final}, nil
+	}
+	return preparedRag{answer: result, chunks: final}, nil
+}
+
+func generateRAG(ctx context.Context, client *LiteLLMClient, question string, prepared preparedRag) (RagAnswer, error) {
+	result := prepared.answer
+	if result.LowConfidence {
 		return result, nil
 	}
-
-	llmResult, err := callWithRetry(func() (ragLLMResult, error) { return answerWithCitations(ctx, client, question, final) })
+	llmResult, err := callWithRetry(func() (ragLLMResult, error) { return answerWithCitations(ctx, client, question, prepared.chunks) })
 	if err != nil {
 		return RagAnswer{}, err
 	}
 	result.Answer = llmResult.answer
 	result.Citations = llmResult.citations
 	return result, nil
+}
+
+// AnswerRAG keeps the existing one-provider API while sharing its retrieval
+// and generation steps with the provider comparison.
+func AnswerRAG(ctx context.Context, client *LiteLLMClient, ollama *OllamaClient, idx *RagIndex, question string, strategy ChunkStrategy, topK int, opts RagOptions) (RagAnswer, error) {
+	prepared, err := prepareRAG(ctx, client, ollama, idx, question, strategy, topK, opts)
+	if err != nil {
+		return RagAnswer{}, err
+	}
+	return generateRAG(ctx, client, question, prepared)
 }
 
 // Query dispatches to AnswerRAG or AnswerNoRAG — the single entry point

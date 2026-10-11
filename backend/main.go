@@ -244,10 +244,8 @@ func main() {
 	mux.HandleFunc("POST /api/mcp/servers/{id}/connect", connectMCPServerHandler(mcpRegistry))
 
 	// Day 21: RAG index over the chat agent's own historical task-estimation
-	// sessions. Embeddings come from a local Ollama (the company LiteLLM
-	// gateway has no embedding model routed for this key — verified
-	// directly, see ollama.go); everything else in the RAG pipeline (rerank,
-	// query rewrite, the final answer) stays on the existing LiteLLM client.
+	// sessions. Embeddings come from local Ollama; the selected provider now
+	// handles rewrite, rerank, and answer generation for standalone RAG.
 	ollamaURL := os.Getenv("OLLAMA_URL")
 	if ollamaURL == "" {
 		ollamaURL = "http://localhost:11434"
@@ -269,10 +267,11 @@ func main() {
 	// Day 22: question -> retrieval -> LLM, both modes, plus the 10 control
 	// questions run through both for a real quality comparison.
 	ragEvalPath := filepath.Join(filepath.Dir(dataDir), "rag_eval.json")
-	mux.HandleFunc("POST /api/rag/query", cloudOnly(client, queryHandler(client, ollamaClient, ragStore)))
+	mux.HandleFunc("POST /api/rag/query", queryHandler(agent, ollamaClient, ragStore))
+	mux.HandleFunc("POST /api/rag/compare/providers", compareProvidersHandler(agent, ollamaClient, ragStore))
 	mux.HandleFunc("GET /api/rag/eval", getEvalQuestionsHandler(ragEvalPath))
-	mux.HandleFunc("POST /api/rag/eval/run", cloudOnly(client, evalRunHandler(client, ollamaClient, ragStore, ragEvalPath)))
-	mux.HandleFunc("POST /api/rag/eval/run/stream", cloudOnly(client, evalRunStreamHandler(client, ollamaClient, ragStore, ragEvalPath)))
+	mux.HandleFunc("POST /api/rag/eval/run", evalRunHandler(agent, ollamaClient, ragStore, ragEvalPath))
+	mux.HandleFunc("POST /api/rag/eval/run/stream", evalRunStreamHandler(agent, ollamaClient, ragStore, ragEvalPath))
 	mux.HandleFunc("POST /api/rag/eval/retrieval", evalRetrievalHandler(ollamaClient, ragStore, ragEvalPath))
 
 	port := os.Getenv("PORT")
