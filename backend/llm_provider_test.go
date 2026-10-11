@@ -62,6 +62,20 @@ func TestLocalChatRoutesEveryCompletionLocallyAndPersistsProvider(t *testing.T) 
 	if err != nil || reloaded.Provider != ProviderOllama {
 		t.Fatalf("reloaded chat=%+v, error=%v", reloaded, err)
 	}
+	beforeLocal := localCalls.Load()
+	if _, err := agent.SetProvider(chat.ID, ProviderLiteLLM); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.PostMessage(context.Background(), chat.ID, "Уточнение", false); err != nil {
+		t.Fatal(err)
+	}
+	if cloudCalls.Load() == 0 || localCalls.Load() != beforeLocal {
+		t.Fatalf("after switching: local calls=%d, cloud calls=%d", localCalls.Load(), cloudCalls.Load())
+	}
+	reloaded, err = newAgent().GetChat(chat.ID)
+	if err != nil || reloaded.Provider != ProviderLiteLLM {
+		t.Fatalf("reloaded switched chat=%+v, error=%v", reloaded, err)
+	}
 }
 
 func TestBareEstimateResponseBecomesChatReply(t *testing.T) {
