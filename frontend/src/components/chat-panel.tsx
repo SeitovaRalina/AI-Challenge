@@ -32,6 +32,8 @@ import type {
   ContextStrategy,
   Estimate,
   FanOutStatus,
+  LLMProvider,
+  ProviderStatus,
   TaskMemory,
   TaskState,
   TokenUsage,
@@ -98,6 +100,9 @@ interface SlashCommand {
 }
 
 interface ChatPanelProps {
+  provider: LLMProvider
+  providerStatus: ProviderStatus | null
+  onSetProvider: (provider: LLMProvider) => void
   chatId: string
   messages: AgentMessage[]
   estimate: Estimate | null
@@ -156,6 +161,9 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({
+  provider,
+  providerStatus,
+  onSetProvider,
   chatId,
   messages,
   estimate,
@@ -682,6 +690,22 @@ export function ChatPanel({
             {!isLabChat && (
               <>
                 <span aria-hidden>·</span>
+                <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                  Модель
+                  <select
+                    aria-label="Провайдер модели"
+                    value={provider}
+                    disabled={isSending}
+                    onChange={(event) => onSetProvider(event.target.value as LLMProvider)}
+                    className="rounded-md border border-border bg-background px-1 py-0.5 text-foreground"
+                  >
+                    <option value="ollama">Локально · Ollama</option>
+                    <option value="litellm" disabled={!providerStatus?.cloud_configured}>
+                      Облако · LiteLLM
+                    </option>
+                  </select>
+                </label>
+                <span aria-hidden>·</span>
                 <label
                   className="flex items-center gap-1 text-[11px] text-muted-foreground"
                   title="Перед каждым ответом ассистента искать похожие прошлые задачи и показывать источники."
@@ -695,6 +719,9 @@ export function ChatPanel({
                   История
                 </label>
               </>
+            )}
+            {!isLabChat && provider === 'ollama' && providerStatus && !providerStatus.ollama_available && (
+              <span role="status" className="text-amber-600">Ollama недоступна или модель не установлена</span>
             )}
             {contextTokenLimit > 0 && !isLabCoordinator && (
               <>

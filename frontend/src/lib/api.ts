@@ -1,6 +1,17 @@
 import type { TurnStreamEvent } from '@/lib/turn-progress'
 
 export type Complexity = 'low' | 'medium' | 'high'
+export type LLMProvider = 'ollama' | 'litellm'
+
+export interface ProviderStatus {
+  ollama_available: boolean
+  ollama_model: string
+  cloud_configured: boolean
+}
+
+export function getProviderStatus(): Promise<ProviderStatus> {
+  return request<ProviderStatus>('/api/llm/providers')
+}
 
 export interface Subtask {
   name: string
@@ -219,6 +230,7 @@ export function compareModels(task: string): Promise<ModelComparison> {
 
 export interface ChatSummary {
   id: string
+  provider: LLMProvider
   title: string
   created_at: string
   lab_id?: string
@@ -386,6 +398,7 @@ export interface FanOutStatus {
 // state, always populated from live chat state regardless of which strategy
 // is actually active (empty/zero for the ones that don't apply).
 interface StrategyState {
+  provider: LLMProvider
   context_strategy: ContextStrategy
   history_keep_last_n: number
   summarized_message_count: number
@@ -478,8 +491,18 @@ export function listChats(): Promise<ChatSummary[]> {
   return request<ChatSummary[]>('/api/agent/chats')
 }
 
-export function createChat(projectId?: string): Promise<ChatSummary> {
-  return postJson<ChatSummary>('/api/agent/chats', projectId ? { project_id: projectId } : {})
+export function createChat(projectId?: string, provider?: LLMProvider): Promise<ChatSummary> {
+  return postJson<ChatSummary>('/api/agent/chats', {
+    ...(projectId ? { project_id: projectId } : {}),
+    ...(provider ? { provider } : {}),
+  })
+}
+
+export function setChatProvider(chatId: string, provider: LLMProvider): Promise<ChatDetail> {
+  return request<ChatDetail>(`/api/agent/chats/${chatId}/provider`, {
+    method: 'PATCH',
+    body: { provider },
+  })
 }
 
 export function getChat(chatId: string): Promise<ChatDetail> {
