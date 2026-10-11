@@ -32,6 +32,7 @@ export interface RagPanelState {
   // minScore was active for that run — null means "not run with
   // enhancements", not "enhancements found nothing".
   compareRagImproved: RagAnswer | null
+  compareRunProvider: LLMProvider | null
   providerQuestion: string
   providerLoading: boolean
   providerError: string | null
@@ -40,6 +41,7 @@ export interface RagPanelState {
   evalProgress: EvalProgress | null
   evalError: string | null
   evalResult: EvalRunResult | null
+  evalRunProvider: LLMProvider | null
   retrievalLoading: boolean
   retrievalError: string | null
   retrievalResult: RetrievalEvalResult | null
@@ -58,6 +60,7 @@ const defaultState: RagPanelState = {
   compareNoRag: null,
   compareRag: null,
   compareRagImproved: null,
+  compareRunProvider: null,
   providerQuestion: '',
   providerLoading: false,
   providerError: null,
@@ -66,6 +69,7 @@ const defaultState: RagPanelState = {
   evalProgress: null,
   evalError: null,
   evalResult: null,
+  evalRunProvider: null,
   retrievalLoading: false,
   retrievalError: null,
   retrievalResult: null,

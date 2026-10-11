@@ -214,6 +214,7 @@ function CompareSection({
       compareNoRag: null,
       compareRag: null,
       compareRagImproved: null,
+        compareRunProvider: state.provider,
     })
     try {
       if (!enhanced) {
@@ -279,6 +280,10 @@ function CompareSection({
           <AlertCircle />
           <AlertTitle>{state.compareError}</AlertTitle>
         </Alert>
+      )}
+
+      {(state.compareRag || state.compareRagImproved) && state.compareRunProvider && (
+        <p className="mt-2 text-xs text-muted-foreground">Модель: {state.compareRunProvider === 'ollama' ? 'Локально · Ollama' : 'Облако · LiteLLM'}</p>
       )}
 
       {state.compareRagImproved ? (
@@ -354,7 +359,7 @@ function ProviderCompareSection({ status, state, update, onOpenSource }: {
                 {generation.error ? (
                   <Alert variant="destructive"><AlertCircle /><AlertTitle>{generation.error}</AlertTitle></Alert>
                 ) : (
-                  <AnswerColumn title={title} answer={generation.answer ?? null} onOpenSource={onOpenSource} />
+                  <AnswerColumn title={title} answer={generation.answer ?? null} onOpenSource={onOpenSource} showSources={false} />
                 )}
               </div>
             ))}
@@ -377,12 +382,14 @@ function AnswerColumn({
   onOpenSource,
   expectedSources,
   showDiagnostics,
+  showSources = true,
 }: {
   title: string
   answer: RagAnswer | null
   onOpenSource: (chatId: string, messageIndex: number | null) => void
   expectedSources?: string[]
   showDiagnostics?: boolean
+  showSources?: boolean
 }) {
   return (
     <div className="rounded-md border border-border bg-muted/30 p-3">
@@ -411,7 +418,7 @@ function AnswerColumn({
           {answer ? <Markdown>{answer.answer}</Markdown> : <span className="text-muted-foreground">—</span>}
         </div>
       )}
-      {answer?.retrieved && answer.retrieved.length > 0 && (
+      {showSources && answer?.retrieved && answer.retrieved.length > 0 && (
         <div className="mt-2 border-t border-border/60 pt-2">
           <div className="text-xs text-muted-foreground">Источники:</div>
           <SourceList sources={answer.retrieved} onOpenSource={onOpenSource} expectedSources={expectedSources} />
@@ -519,7 +526,7 @@ function EvalSection({
   const enhanced = state.rerankEnabled || state.rewriteEnabled || state.minScore > 0
 
   async function handleRun() {
-    update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null })
+    update({ evalRunning: true, evalError: null, evalProgress: null, evalResult: null, evalRunProvider: state.provider })
     try {
       const result = await streamRunEval(
         state.strategy,
@@ -542,6 +549,9 @@ function EvalSection({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium text-foreground">10 контрольных вопросов</h2>
+          {state.evalResult && state.evalRunProvider && (
+            <p className="mt-1 text-xs text-muted-foreground">Модель прогона: {state.evalRunProvider === 'ollama' ? 'Локально · Ollama' : 'Облако · LiteLLM'}</p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             Для каждого — ожидание и (если применимо) ожидаемый источник. Режим — {enhanced ? 'обычный поиск vs с улучшениями' : 'без RAG vs с RAG'} (переключается чекбоксами в панели справа).
           </p>
