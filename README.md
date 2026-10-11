@@ -90,6 +90,22 @@ documentation is in English.
 - Go 1.22+
 - Node.js 20+
 
+## Local LLM proof (Day 26)
+
+The local generation model selected for this check is `qwen2.5:3b`, served by
+Ollama on this Windows development machine. It is separate from the existing
+`nomic-embed-text` model used for RAG embeddings. This day's proof exercises
+the model through Ollama's CLI and HTTP API with three software-task questions
+of increasing complexity; the reproducible requests and observed results are
+in [`docs/local-llm-day26.md`](docs/local-llm-day26.md). The application still
+uses its configured LiteLLM gateway for generated answers.
+
+Install Ollama, then download the chat model with `ollama pull qwen2.5:3b`.
+Keep the Ollama server bound to localhost for this local check. `ollama list`
+confirms the model is installed, and `ollama run qwen2.5:3b` opens its CLI.
+The HTTP check uses `POST http://localhost:11434/api/chat` with
+`"stream": false`; no API key or cloud model is involved.
+
 ## Running the project
 
 ### Backend
