@@ -43,6 +43,15 @@ type AgentMessage struct {
 	// ToolCalls (day 17) are the MCP tool calls the agent made while
 	// producing this assistant message, in order.
 	ToolCalls []ToolCallRecord `json:"tool_calls,omitempty"`
+	// Sources/Citations (day 25) are set only when this turn's RAG
+	// grounding (see rag_chat.go) found something above the confidence
+	// floor — nil otherwise, same as TaskState. Sources are the retrieved
+	// chunks verbatim (deterministic Go output, never model-authored);
+	// Citations are the model's own quoted excerpts from them, verified
+	// server-side exactly like the standalone RAG query endpoint
+	// (verifyCitations, day 24) — never trusted on the model's word alone.
+	Sources   []RetrievedChunk `json:"sources,omitempty"`
+	Citations []Citation       `json:"citations,omitempty"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
@@ -115,6 +124,18 @@ type Chat struct {
 	// persisting.
 	TaskDone          bool `json:"task_done,omitempty"`
 	EstimateRevisions int  `json:"estimate_revisions,omitempty"`
+
+	// RagEnabled (day 25) turns on retrieval grounding for this chat: every
+	// real, non-lab turn searches the RAG index (see rag_chat.go) before
+	// answering, and whatever clears the confidence floor is injected as
+	// context with mandatory, server-verified citations (PostMessage).
+	// Defaults true for new chats (newChatLocked) now that the retrieval/
+	// rerank/citation machinery (days 21-24) is proven on its own screen;
+	// defaults to Go's zero value (false) for chats persisted before this
+	// field existed — turning it on for an old chat is an explicit,
+	// visible opt-in (SetRagEnabled), not a silent behavior change to
+	// already-established conversations.
+	RagEnabled bool `json:"rag_enabled"`
 }
 
 // TaskMemory is one chat's working memory: data about the specific task this
@@ -304,6 +325,16 @@ type Agent struct {
 	// call: GitHub Activity (day 17) and Worklog (day 18). Empty disables
 	// tool use.
 	toolSources []toolSource
+
+	// ragStore/ragOllama (day 25) ground chat turns in the same RAG index
+	// the standalone «Похожие задачи» screen builds — wired in after
+	// construction via AddRagSource (rag_chat.go), mirroring AddToolSource:
+	// both ragStore and the Ollama client are built later in main.go than
+	// NewAgent is called (they read their own env vars). nil disables
+	// retrieval grounding entirely, same as an empty toolSources disables
+	// tool use.
+	ragStore  *RagStore
+	ragOllama *OllamaClient
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each
@@ -416,6 +447,9 @@ func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID, pro
 		ContextStrategy: strategy,
 		LabID:           labID,
 		ProjectID:       projectID,
+		// RagEnabled defaults on for a real (non-lab) chat — see the
+		// field's own doc comment on Chat.
+		RagEnabled: labID == "",
 	}
 	if strategy == StrategyBranching {
 		ensureBranchState(chat)
@@ -588,6 +622,10 @@ type AgentReply struct {
 	InvariantDiff     *InvariantDiff `json:"invariant_diff,omitempty"`
 	// ToolCalls (day 17) mirror this turn's assistant message's ToolCalls.
 	ToolCalls []ToolCallRecord `json:"tool_calls,omitempty"`
+	// Sources/Citations (day 25) mirror this turn's assistant message's
+	// own Sources/Citations — see AgentMessage's doc comment.
+	Sources   []RetrievedChunk `json:"sources,omitempty"`
+	Citations []Citation       `json:"citations,omitempty"`
 }
 
 // tokenUsageFrom converts the LiteLLM gateway's usage block into this app's
@@ -688,6 +726,9 @@ type ChatDetail struct {
 	// TaskState is day 13's task state machine — always populated, unlike
 	// Task/Profile which are nil until something exists to report.
 	TaskState TaskState `json:"task_state"`
+	// RagEnabled (day 25) is this chat's own retrieval-grounding toggle —
+	// see Chat.RagEnabled and SetRagEnabled (rag_chat.go).
+	RagEnabled bool `json:"rag_enabled"`
 }
 
 func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
@@ -718,5 +759,6 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 		ProjectID:              c.ProjectID,
 		Task:                   c.Task,
 		TaskState:              computeTaskState(c),
+		RagEnabled:             c.RagEnabled,
 	}
 }

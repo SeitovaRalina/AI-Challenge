@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, ArrowRight, Check, ChevronRight, Loader2, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronRight, Loader2, X } from 'lucide-react'
 
 import { Alert, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/info-tooltip'
 import { Markdown } from '@/components/markdown'
+import { CitationList, SourceList } from '@/components/rag-sources'
 import { cn } from 'cn'
 import {
   ApiError,
@@ -15,13 +16,11 @@ import {
   runRetrievalEval,
   streamRunEval,
   type ChunkStrategy,
-  type Citation,
   type EvalProgress,
   type EvalQuestion,
   type EvalQuestionResult,
   type IndexStatus,
   type RagAnswer,
-  type RetrievedChunk,
 } from '@/lib/api'
 import { useRagPanelState } from '@/lib/rag-panel-state'
 
@@ -34,16 +33,6 @@ const PROGRESS_STAGE_LABEL: Record<EvalProgress['stage'], string> = {
   no_rag: 'без RAG',
   rag: 'с RAG',
   rag_improved: 'с RAG + улучшения',
-}
-
-// parseMessageIndex pulls the message index out of a structural chunk's
-// section ("message[3].assistant" -> 3) so a source can link straight to
-// that message in the real chat — null for sections that aren't tied to
-// one specific message (title, estimate.*, task.*, or any fixed_size
-// window).
-function parseMessageIndex(section: string): number | null {
-  const m = /^message\[(\d+)\]/.exec(section)
-  return m ? Number(m[1]) : null
 }
 
 interface RagPanelProps {
@@ -341,16 +330,7 @@ function AnswerColumn({
       {answer?.retrieved && answer.retrieved.length > 0 && (
         <div className="mt-2 border-t border-border/60 pt-2">
           <div className="text-xs text-muted-foreground">Источники:</div>
-          <ul className="mt-1 flex flex-col gap-1">
-            {answer.retrieved.map((r) => (
-              <SourceItem
-                key={r.chunk_id}
-                chunk={r}
-                onOpenSource={onOpenSource}
-                isExpected={expectedSources?.includes(r.session_id) ?? false}
-              />
-            ))}
-          </ul>
+          <SourceList sources={answer.retrieved} onOpenSource={onOpenSource} expectedSources={expectedSources} />
         </div>
       )}
       {answer?.citations && (
@@ -358,97 +338,10 @@ function AnswerColumn({
           <div className="text-xs text-muted-foreground">
             Цитаты: {answer.citations.length === 0 ? 'нет' : `${answer.citations.filter((c) => c.verified).length}/${answer.citations.length} подтверждено`}
           </div>
-          {answer.citations.length > 0 && (
-            <ul className="mt-1 flex flex-col gap-1">
-              {answer.citations.map((c, i) => <CitationItem key={i} citation={c} />)}
-            </ul>
-          )}
+          {answer.citations.length > 0 && <CitationList citations={answer.citations} />}
         </div>
       )}
     </div>
-  )
-}
-
-// CitationItem — day 24: one verbatim quote the model claims backs the
-// answer, with the server-side verification result (never the model's own
-// word) made visible rather than hidden — an unverified citation is itself
-// a finding, not noise to suppress.
-function CitationItem({ citation }: { citation: Citation }) {
-  return (
-    <li
-      className={cn(
-        'flex items-start gap-1.5 rounded border border-border/60 px-2 py-1.5',
-        citation.verified ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-red-500/40 bg-red-500/5',
-      )}
-    >
-      {citation.verified ? (
-        <Check className="mt-0.5 h-3 w-3 flex-shrink-0 text-emerald-600" />
-      ) : (
-        <X className="mt-0.5 h-3 w-3 flex-shrink-0 text-red-600" />
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="text-xs italic text-foreground">«{citation.text}»</p>
-        <p className="font-mono text-[11px] text-muted-foreground">{citation.chunk_id}</p>
-      </div>
-    </li>
-  )
-}
-
-// SourceItem — свёрнутая строка (заголовок сессии, где внутри неё, score);
-// разворачивается в полный текст найденного чанка и кнопку перехода в
-// реальный чат, к конкретному сообщению, если секция к нему привязана.
-// isExpected (только в «10 контрольных вопросах») подсвечивает чанк,
-// из-за которого вопросу засчитан бейдж «сессия найдена» — иначе непонятно,
-// почему бейдж зелёный, если сам текст ответа этот факт не нашёл.
-function SourceItem({
-  chunk,
-  onOpenSource,
-  isExpected,
-}: {
-  chunk: RetrievedChunk
-  onOpenSource: (chatId: string, messageIndex: number | null) => void
-  isExpected?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const messageIndex = parseMessageIndex(chunk.section)
-
-  return (
-    <li className={cn('rounded border border-border/60', isExpected && 'border-emerald-500/50 bg-emerald-500/5')}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-1.5 px-2 py-1.5 text-left"
-      >
-        <ChevronRight
-          className={cn('mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
-            <span className="text-xs text-foreground">{chunk.title}</span>
-            <span className="font-mono text-xs text-muted-foreground">{chunk.section}</span>
-          </div>
-          {isExpected && (
-            <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">ожидаемая сессия</span>
-          )}
-        </div>
-        <span className="flex-shrink-0 text-xs text-muted-foreground">{chunk.score.toFixed(2)}</span>
-      </button>
-      {open && (
-        <div className="border-t border-border/60 px-2 py-1.5">
-          <p className="whitespace-pre-line text-xs text-foreground">{chunk.text}</p>
-          <Button
-            size="xs"
-            variant="outline"
-            className="mt-1.5"
-            onClick={() => onOpenSource(chunk.session_id, messageIndex)}
-          >
-            Перейти в чат
-            {messageIndex != null && ' → к сообщению'}
-            <ArrowRight />
-          </Button>
-        </div>
-      )}
-    </li>
   )
 }
 

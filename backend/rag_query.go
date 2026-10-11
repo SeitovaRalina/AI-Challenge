@@ -90,17 +90,26 @@ func toRetrievedChunks(scored []scoredChunk) []RetrievedChunk {
 	return out
 }
 
+// formatChunksForPrompt renders scored chunks in the "[chunk_id] (сессия
+// ..., section)\ntext" shape every citation-aware prompt uses — the stable
+// per-chunk marker verifyCitations later matches a citation's chunk_id
+// back against. Shared by buildRagPrompt (the standalone query endpoint)
+// and ragChatSystemPrompt (day 25's main-chat grounding, rag_chat.go).
+func formatChunksForPrompt(scored []scoredChunk) string {
+	var b strings.Builder
+	for _, s := range scored {
+		fmt.Fprintf(&b, "[%s] (сессия %s, %s)\n%s\n\n", s.ID, s.SessionID, s.Section, s.Text)
+	}
+	return b.String()
+}
+
 // buildRagPrompt tags each retrieved chunk with its stable chunk ID (not a
 // positional index) so a day-24 citation's "chunk_id" can be matched back
 // to the exact chunk it claims to quote, by verifyCitations.
 func buildRagPrompt(question string, scored []scoredChunk) []chatMessage {
-	var ctx strings.Builder
-	for _, s := range scored {
-		fmt.Fprintf(&ctx, "[%s] (сессия %s, %s)\n%s\n\n", s.ID, s.SessionID, s.Section, s.Text)
-	}
 	return []chatMessage{
 		{Role: "system", Content: ragSystemPrompt},
-		{Role: "user", Content: fmt.Sprintf("Фрагменты из прошлых задач:\n\n%sВопрос: %s", ctx.String(), question)},
+		{Role: "user", Content: fmt.Sprintf("Фрагменты из прошлых задач:\n\n%sВопрос: %s", formatChunksForPrompt(scored), question)},
 	}
 }
 

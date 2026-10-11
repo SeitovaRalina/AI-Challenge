@@ -235,6 +235,34 @@ func setStrategyHandler(agent *Agent) http.HandlerFunc {
 	}
 }
 
+// setRagEnabledRequest is the payload accepted by
+// PATCH /api/agent/chats/{id}/rag.
+type setRagEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// setRagEnabledHandler turns day 25's retrieval grounding on or off for one
+// chat — the explicit, visible counterpart to newChatLocked's default (see
+// Chat.RagEnabled's doc comment).
+func setRagEnabledHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID := r.PathValue("id")
+
+		var req setRagEnabledRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+
+		chat, err := agent.SetRagEnabled(chatID, req.Enabled)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
+	}
+}
+
 // forceCompressResponse reports whether the /compress command actually found
 // anything to fold (false when the raw tail is already at or below the
 // configured keep-window), alongside the chat's resulting full state.

@@ -122,6 +122,7 @@ func main() {
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages", postAgentMessageHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages/stream", streamAgentMessageHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/strategy", setStrategyHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/rag", setRagEnabledHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/checkpoints", createCheckpointHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/branches", createBranchHandler(agent))
@@ -231,6 +232,10 @@ func main() {
 	}
 	ollamaClient := NewOllamaClient(ollamaURL, ollamaEmbedModel)
 	ragStore := NewRagStore(filepath.Join(filepath.Dir(dataDir), "rag_index.json"))
+	// Day 25: the main chat grounds its own turns in this same index — see
+	// rag_chat.go for why this is a direct Go wire-up, not another MCP tool
+	// source like AddToolSource above.
+	agent.AddRagSource(ragStore, ollamaClient)
 	mux.HandleFunc("POST /api/rag/reindex", reindexHandler(agent, ragStore, ollamaClient, ollamaEmbedModel))
 	mux.HandleFunc("GET /api/rag/index", getIndexHandler(ragStore))
 	mux.HandleFunc("GET /api/rag/chunks", chunksHandler(ragStore))
