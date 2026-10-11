@@ -10,6 +10,7 @@ Challenge details: https://mobiledeveloper.tech/ai_advent_9
 - Each day gets its own branch `feature/wNN-dDD-slug` (e.g. `feature/w01-d02-structured-output`), merged into `main` via a Pull Request.
 - The day's assignment text lives in `days/wNN-dDD-slug.md` (in Russian, verbatim from the challenge).
 - The PR description records what was specifically implemented for that day's assignment.
+- `backend/tests/` contains black-box backend integration tests; `go test ./...` runs them with the other Go packages.
 
 ---
 
