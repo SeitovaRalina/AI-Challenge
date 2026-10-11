@@ -59,7 +59,8 @@ func (a *Agent) updateTaskMemory(ctx context.Context, prior *TaskMemory, userMes
 	// output — 2000 leaves enough room for that plus the JSON itself while
 	// still being far below "unlimited".
 	const taskMemoryMaxTokens = 2000
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, taskMemoryMaxTokens, nil)
+	client := a.clientFor(ctx)
+	completion, err := client.doChatCompletion(ctx, client.model, messages, 0.2, taskMemoryMaxTokens, nil)
 	if err != nil {
 		return nil, nil, err
 	}

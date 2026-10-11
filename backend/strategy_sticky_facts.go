@@ -43,7 +43,8 @@ func (a *Agent) updateFacts(ctx context.Context, priorFacts map[string]string, u
 		{Role: "user", Content: "Обнови факты по правилам выше и верни JSON-объект целиком."},
 	}
 
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, 0, nil)
+	client := a.clientFor(ctx)
+	completion, err := client.doChatCompletion(ctx, client.model, messages, 0.2, 0, nil)
 	if err != nil {
 		return nil, nil, err
 	}

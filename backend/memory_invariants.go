@@ -86,7 +86,8 @@ func (a *Agent) updateInvariants(ctx context.Context, prior []string, userMessag
 
 	// Same bound as updateProjectMemory — see its own comment.
 	const invariantsMaxTokens = 2000
-	completion, callErr := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, invariantsMaxTokens, nil)
+	client := a.clientFor(ctx)
+	completion, callErr := client.doChatCompletion(ctx, client.model, messages, 0.2, invariantsMaxTokens, nil)
 	if callErr != nil {
 		return nil, nil, callErr
 	}

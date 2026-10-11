@@ -76,6 +76,7 @@ type AgentMessage struct {
 // trims or deletes a message — they only control what's resent to the model.
 type Chat struct {
 	ID                    string            `json:"id"`
+	Provider              LLMProvider       `json:"provider"`
 	Title                 string            `json:"title"`
 	CreatedAt             time.Time         `json:"created_at"`
 	Messages              []AgentMessage    `json:"messages"`
@@ -289,6 +290,7 @@ func (c *Chat) addUsage(usage *TokenUsage) {
 // detail.
 type ChatSummary struct {
 	ID               string          `json:"id"`
+	Provider         LLMProvider     `json:"provider"`
 	Title            string          `json:"title"`
 	CreatedAt        time.Time       `json:"created_at"`
 	LabID            string          `json:"lab_id,omitempty"`
@@ -304,6 +306,7 @@ type ChatSummary struct {
 // methods; they never call the LLM client directly.
 type Agent struct {
 	client            *LiteLLMClient
+	localClient       *LiteLLMClient
 	store             *ChatStore
 	labStore          *LabStore
 	projectStore      *ProjectStore
@@ -370,6 +373,9 @@ func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, proje
 		return agent
 	}
 	for _, chat := range chats {
+		if chat.Provider == "" {
+			chat.Provider = ProviderLiteLLM
+		}
 		if chat.ContextStrategy == "" {
 			chat.ContextStrategy = StrategySlidingWindow
 		}
@@ -439,8 +445,13 @@ func newChatID() string {
 // a lab) and CreateLab (one call per strategy chat in the lab, never in a
 // project — labID and projectID are never both non-empty).
 func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID, projectID string) *Chat {
+	provider := ProviderLiteLLM
+	if a.client == nil {
+		provider = ProviderOllama
+	}
 	chat := &Chat{
 		ID:              newChatID(),
+		Provider:        provider,
 		Title:           title,
 		CreatedAt:       time.Now(),
 		Messages:        []AgentMessage{},
@@ -468,8 +479,17 @@ func (a *Agent) newChatLocked(title string, strategy ContextStrategy, labID, pro
 // strategy, optionally scoped to an existing project (empty projectID means
 // no project), and returns its summary.
 func (a *Agent) CreateChat(projectID string) (ChatSummary, error) {
+	return a.CreateChatWithProvider(projectID, "")
+}
+
+func (a *Agent) CreateChatWithProvider(projectID string, provider LLMProvider) (ChatSummary, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if provider != "" {
+		if _, err := a.providerClient(provider); err != nil {
+			return ChatSummary{}, err
+		}
+	}
 
 	if projectID != "" {
 		if _, ok := a.projects[projectID]; !ok {
@@ -478,7 +498,36 @@ func (a *Agent) CreateChat(projectID string) (ChatSummary, error) {
 	}
 
 	chat := a.newChatLocked("Новый чат", a.contextStrategyDefault, "", projectID)
+	if provider != "" && chat.Provider != provider {
+		chat.Provider = provider
+		if err := a.store.Save(chat); err != nil {
+			log.Printf("agent: failed to persist chat %s provider: %v", chat.ID, err)
+		}
+	}
 	return chatSummary(chat, a.labs), nil
+}
+
+func (a *Agent) SetProvider(chatID string, provider LLMProvider) (*Chat, error) {
+	if !provider.Valid() {
+		return nil, ErrInvalidProvider
+	}
+	if _, err := a.providerClient(provider); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	chat, ok := a.chats[chatID]
+	if !ok {
+		return nil, ErrChatNotFound
+	}
+	if chat.LabID != "" {
+		return nil, ErrWrongStrategy
+	}
+	chat.Provider = provider
+	if err := a.store.Save(chat); err != nil {
+		return nil, err
+	}
+	return copyChat(chat), nil
 }
 
 // ListChats returns every chat's summary, oldest first.
@@ -588,6 +637,7 @@ func (a *Agent) GetChat(chatID string) (*Chat, error) {
 // Day 8/9 already learned the hard way.
 type AgentReply struct {
 	Reply                     string            `json:"reply"`
+	Provider                  LLMProvider       `json:"provider"`
 	Estimate                  *EstimateResponse `json:"estimate"`
 	Title                     string            `json:"title"`
 	Usage                     *TokenUsage       `json:"usage"`
@@ -675,6 +725,7 @@ func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
 	}
 	return ChatSummary{
 		ID:               c.ID,
+		Provider:         c.Provider,
 		Title:            c.Title,
 		CreatedAt:        c.CreatedAt,
 		LabID:            c.LabID,
@@ -693,6 +744,7 @@ func chatSummary(c *Chat, labs map[string]*Lab) ChatSummary {
 // branch's messages, not the whole chat's.
 type ChatDetail struct {
 	ID                     string             `json:"id"`
+	Provider               LLMProvider        `json:"provider"`
 	Title                  string             `json:"title"`
 	CreatedAt              time.Time          `json:"created_at"`
 	Messages               []AgentMessage     `json:"messages"`
@@ -738,6 +790,7 @@ func chatDetail(c *Chat, contextTokenLimit, historyKeepLastN int) ChatDetail {
 	}
 	return ChatDetail{
 		ID:                     c.ID,
+		Provider:               c.Provider,
 		Title:                  c.Title,
 		CreatedAt:              c.CreatedAt,
 		Messages:               c.activeMessages(),

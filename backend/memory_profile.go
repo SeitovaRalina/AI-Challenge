@@ -56,7 +56,8 @@ func (a *Agent) updateProfile(ctx context.Context, prior *UserProfile, userMessa
 	// the entire budget as hidden reasoning tokens, leaving nothing for the
 	// JSON itself. 4000 leaves real headroom for that harder case.
 	const profileMaxTokens = 4000
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, profileMaxTokens, nil)
+	client := a.clientFor(ctx)
+	completion, err := client.doChatCompletion(ctx, client.model, messages, 0.2, profileMaxTokens, nil)
 	if err != nil {
 		return nil, nil, err
 	}
