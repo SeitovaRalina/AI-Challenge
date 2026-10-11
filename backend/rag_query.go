@@ -317,6 +317,12 @@ func verifyCitations(raw []rawCitation, final []scoredChunk) []Citation {
 		// query. Strip them defensively rather than relying on prompt
 		// wording the model won't always follow.
 		id := strings.Trim(r.ChunkID, "[]")
+		if strings.HasPrefix(r.ChunkID, "[") {
+			if end := strings.IndexByte(r.ChunkID, ']'); end > 1 {
+				id = r.ChunkID[1:end]
+			}
+		}
+		citation.ChunkID = id
 		if chunkText, ok := byID[id]; ok {
 			quote := strings.Trim(strings.TrimSpace(r.Text), `"'«»`)
 			citation.Verified = strings.Contains(normalizeForMatch(chunkText), normalizeForMatch(quote))

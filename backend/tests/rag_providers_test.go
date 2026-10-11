@@ -30,7 +30,7 @@ func TestRagProviderComparisonSharesRetrievalAndWorksOffline(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": [][]float32{{1, 0}}})
 		case "/v1/chat/completions":
 			localCalls.Add(1)
-			writeCompletion(t, w, `{"answer":"Локально: два часа.","citations":[{"chunk_id":"c1","text":"два часа"}]}`)
+			writeCompletion(t, w, `{"answer":"Локально: два часа.","citations":[{"chunk_id":"[c1] (сессия synthetic, estimate)","text":"два часа"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
