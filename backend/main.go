@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -41,8 +42,8 @@ func main() {
 
 	apiKey := os.Getenv("LITELLM_API_KEY")
 	model := os.Getenv("LITELLM_MODEL")
-	if apiKey == "" || model == "" {
-		log.Fatal("LITELLM_API_KEY and LITELLM_MODEL must be set")
+	if (apiKey == "") != (model == "") {
+		log.Fatal("LITELLM_API_KEY and LITELLM_MODEL must both be set, or both be empty")
 	}
 
 	baseURL := os.Getenv("LITELLM_BASE_URL")
@@ -97,7 +98,27 @@ func main() {
 	}
 	log.Printf("context strategies: keep last %d message(s) raw/windowed, new chats default to %s", historyKeepLastN, contextStrategyDefault)
 
-	client := NewLiteLLMClient(baseURL, apiKey, model)
+	var client *LiteLLMClient
+	if apiKey != "" {
+		client = NewLiteLLMClient(baseURL, apiKey, model)
+	}
+	ollamaChatURL := os.Getenv("OLLAMA_CHAT_URL")
+	if ollamaChatURL == "" {
+		ollamaChatURL = "http://localhost:11434"
+	}
+	var localURLErr error
+	ollamaChatURL, localURLErr = localOllamaURL(ollamaChatURL)
+	if localURLErr != nil {
+		log.Fatal(localURLErr)
+	}
+	ollamaChatModel := os.Getenv("OLLAMA_CHAT_MODEL")
+	if ollamaChatModel == "" {
+		ollamaChatModel = "qwen2.5:3b"
+	}
+	if strings.HasSuffix(ollamaChatModel, ":cloud") {
+		log.Fatal("OLLAMA_CHAT_MODEL must be a locally installed model")
+	}
+	localClient := NewLiteLLMClient(ollamaChatURL, "ollama", ollamaChatModel)
 	// Labs and projects get their own sibling directories rather than
 	// sharing dataDir: ChatStore.LoadAll globs every *.json file in its
 	// directory as a chat, so a labs/projects file sitting next to it would
@@ -106,14 +127,16 @@ func main() {
 	projectsDir := filepath.Join(filepath.Dir(dataDir), "projects")
 	profilePath := filepath.Join(filepath.Dir(dataDir), "profile.json")
 	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), NewProfileStore(profilePath), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
+	agent.localClient = localClient
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/estimate", estimateHandler(client))
-	mux.HandleFunc("/api/compare", compareHandler(client))
-	mux.HandleFunc("/api/compare/controlled", compareControlledHandler(client))
-	mux.HandleFunc("/api/reasoning", reasoningHandler(client))
-	mux.HandleFunc("/api/temperature", temperatureHandler(client))
-	mux.HandleFunc("/api/models", modelsHandler(client))
+	mux.HandleFunc("GET /api/llm/providers", providerStatusHandler(client != nil, ollamaChatURL, ollamaChatModel))
+	mux.HandleFunc("/api/estimate", cloudOnly(client, estimateHandler(client)))
+	mux.HandleFunc("/api/compare", cloudOnly(client, compareHandler(client)))
+	mux.HandleFunc("/api/compare/controlled", cloudOnly(client, compareControlledHandler(client)))
+	mux.HandleFunc("/api/reasoning", cloudOnly(client, reasoningHandler(client)))
+	mux.HandleFunc("/api/temperature", cloudOnly(client, temperatureHandler(client)))
+	mux.HandleFunc("/api/models", cloudOnly(client, modelsHandler(client)))
 	mux.HandleFunc("GET /api/agent/chats", listChatsHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats", createChatHandler(agent))
 	mux.HandleFunc("GET /api/agent/chats/{id}", getChatHandler(agent))
@@ -123,12 +146,13 @@ func main() {
 	mux.HandleFunc("POST /api/agent/chats/{id}/messages/stream", streamAgentMessageHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/strategy", setStrategyHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/rag", setRagEnabledHandler(agent))
+	mux.HandleFunc("PATCH /api/agent/chats/{id}/provider", setProviderHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/compress", compressChatHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/checkpoints", createCheckpointHandler(agent))
 	mux.HandleFunc("POST /api/agent/chats/{id}/branches", createBranchHandler(agent))
 	mux.HandleFunc("PATCH /api/agent/chats/{id}/active-branch", setActiveBranchHandler(agent))
-	mux.HandleFunc("POST /api/labs", createLabHandler(agent))
-	mux.HandleFunc("POST /api/labs/{id}/analyze", analyzeLabHandler(agent))
+	mux.HandleFunc("POST /api/labs", cloudOnly(client, createLabHandler(agent)))
+	mux.HandleFunc("POST /api/labs/{id}/analyze", cloudOnly(client, analyzeLabHandler(agent)))
 	mux.HandleFunc("DELETE /api/labs/{id}", deleteLabHandler(agent))
 	mux.HandleFunc("GET /api/projects", listProjectsHandler(agent))
 	mux.HandleFunc("POST /api/projects", createProjectHandler(agent))
@@ -210,8 +234,10 @@ func main() {
 	weeklySummaries := NewWeeklySummaryStore(filepath.Join(filepath.Dir(dataDir), "weekly_summary.json"))
 	weeklyGen := &WeeklySummaryGenerator{client: client, worklog: worklogConn, profile: agent.profileStore, store: weeklySummaries}
 	mux.HandleFunc("GET /api/analytics/weekly-summary", getWeeklySummaryHandler(weeklySummaries))
-	mux.HandleFunc("POST /api/analytics/weekly-summary", generateWeeklySummaryHandler(weeklyGen))
-	startWeeklySummarySchedule(context.Background(), weeklyGen)
+	mux.HandleFunc("POST /api/analytics/weekly-summary", cloudOnly(client, generateWeeklySummaryHandler(weeklyGen)))
+	if client != nil {
+		startWeeklySummarySchedule(context.Background(), weeklyGen)
+	}
 
 	mcpRegistry := NewMCPRegistry(append(registryServers, mcpclient.DefaultServers()...))
 	mux.HandleFunc("GET /api/mcp/servers", listMCPServersHandler(mcpRegistry))
@@ -243,10 +269,10 @@ func main() {
 	// Day 22: question -> retrieval -> LLM, both modes, plus the 10 control
 	// questions run through both for a real quality comparison.
 	ragEvalPath := filepath.Join(filepath.Dir(dataDir), "rag_eval.json")
-	mux.HandleFunc("POST /api/rag/query", queryHandler(client, ollamaClient, ragStore))
+	mux.HandleFunc("POST /api/rag/query", cloudOnly(client, queryHandler(client, ollamaClient, ragStore)))
 	mux.HandleFunc("GET /api/rag/eval", getEvalQuestionsHandler(ragEvalPath))
-	mux.HandleFunc("POST /api/rag/eval/run", evalRunHandler(client, ollamaClient, ragStore, ragEvalPath))
-	mux.HandleFunc("POST /api/rag/eval/run/stream", evalRunStreamHandler(client, ollamaClient, ragStore, ragEvalPath))
+	mux.HandleFunc("POST /api/rag/eval/run", cloudOnly(client, evalRunHandler(client, ollamaClient, ragStore, ragEvalPath)))
+	mux.HandleFunc("POST /api/rag/eval/run/stream", cloudOnly(client, evalRunStreamHandler(client, ollamaClient, ragStore, ragEvalPath)))
 	mux.HandleFunc("POST /api/rag/eval/retrieval", evalRetrievalHandler(ollamaClient, ragStore, ragEvalPath))
 
 	port := os.Getenv("PORT")

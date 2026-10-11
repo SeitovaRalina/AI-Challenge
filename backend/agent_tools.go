@@ -231,7 +231,7 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 
 	emitTurnEvent(ctx, "answering", struct{}{})
 	for attempt := 0; ; attempt++ {
-		completion, err = a.client.doChatCompletionWithTools(ctx, answerMessages, 0.2, maxTokens, answerTools, toolChoice)
+		completion, err = a.clientFor(ctx).doChatCompletionWithTools(ctx, answerMessages, 0.2, maxTokens, answerTools, toolChoice)
 		if err != nil {
 			return nil, records, usage, contextTokens, err
 		}
@@ -272,7 +272,7 @@ func (a *Agent) routeTools(ctx context.Context, chatID string, messages []chatMe
 	answered := map[string]string{}
 	for round := 0; round < maxRoutingRounds; round++ {
 		emitTurnEvent(ctx, "routing", map[string]int{"round": round + 1})
-		completion, err := a.client.doChatCompletionWithTools(ctx, routing, 0, routingMaxTokens, tools, "")
+		completion, err := a.clientFor(ctx).doChatCompletionWithTools(ctx, routing, 0, routingMaxTokens, tools, "")
 		if err != nil {
 			log.Printf("agent: chat %s: tool routing failed, answering without tools: %v", chatID, err)
 			return transcript, records, usage

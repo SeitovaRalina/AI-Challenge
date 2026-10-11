@@ -57,7 +57,8 @@ func (a *Agent) summarizeHistory(ctx context.Context, priorSummary string, segme
 		Content: "Сформируй одно обновлённое резюме, объединив текущее резюме (если оно было) с этим фрагментом диалога.",
 	})
 
-	completion, err := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, 0, nil)
+	client := a.clientFor(ctx)
+	completion, err := client.doChatCompletion(ctx, client.model, messages, 0.2, 0, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -177,7 +178,13 @@ func (a *Agent) ForceCompress(ctx context.Context, chatID string) (bool, error) 
 	foldEnd := total - n
 	segment := append([]AgentMessage(nil), chat.Messages[summarizedThrough:foldEnd]...)
 	priorSummary := chat.Summary
+	provider := chat.Provider
 	a.mu.Unlock()
+	client, err := a.providerClient(provider)
+	if err != nil {
+		return false, err
+	}
+	ctx = withProvider(ctx, client)
 
 	if _, err := a.runCompression(ctx, chatID, priorSummary, segment, foldEnd, true); err != nil {
 		return false, err

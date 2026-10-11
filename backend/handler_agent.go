@@ -44,6 +44,10 @@ func agentErrorResponse(err error) (int, string) {
 		return http.StatusBadRequest, "оценка ещё не сформирована"
 	case errors.Is(err, ErrTaskNotAccepted):
 		return http.StatusBadRequest, "задача ещё не принята — нечего возобновлять"
+	case errors.Is(err, ErrInvalidProvider):
+		return http.StatusBadRequest, "неизвестный провайдер LLM"
+	case errors.Is(err, ErrProviderUnavailable):
+		return http.StatusServiceUnavailable, "выбранный провайдер LLM не настроен"
 	default:
 		return llmErrorResponse(err)
 	}
@@ -79,7 +83,8 @@ type agentMessageRequest struct {
 // ProjectID is optional — empty means the new chat belongs to no project,
 // exactly like before day 11.
 type createChatRequest struct {
-	ProjectID string `json:"project_id,omitempty"`
+	ProjectID string      `json:"project_id,omitempty"`
+	Provider  LLMProvider `json:"provider,omitempty"`
 }
 
 // createChatHandler starts a new, empty chat — optionally scoped to an
@@ -92,12 +97,30 @@ func createChatHandler(agent *Agent) http.HandlerFunc {
 			return
 		}
 
-		summary, err := agent.CreateChat(strings.TrimSpace(req.ProjectID))
+		summary, err := agent.CreateChatWithProvider(strings.TrimSpace(req.ProjectID), req.Provider)
 		if err != nil {
 			writeAgentError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, summary)
+	}
+}
+
+func setProviderHandler(agent *Agent) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Provider LLMProvider `json:"provider"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+		chat, err := agent.SetProvider(r.PathValue("id"), req.Provider)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, chatDetailWithLab(agent, chat))
 	}
 }
 

@@ -8,6 +8,8 @@ frontend/dist/
 backend/backend
 backend/backend.exe
 backend/data/
+backend/.go-cache/
+.scratch/
 
 # Agent Skills (regenerable via `npx skills experimental_install` + skills-lock.json)
 .agents/

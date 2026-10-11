@@ -61,7 +61,8 @@ func (a *Agent) updateProjectMemory(ctx context.Context, priorStack, priorNotes,
 	// 500 was cutting the JSON off mid-object; 2000 leaves room for hidden
 	// reasoning tokens plus the JSON itself.
 	const projectMemoryMaxTokens = 2000
-	completion, callErr := a.client.doChatCompletion(ctx, a.client.model, messages, 0.2, projectMemoryMaxTokens, nil)
+	client := a.clientFor(ctx)
+	completion, callErr := client.doChatCompletion(ctx, client.model, messages, 0.2, projectMemoryMaxTokens, nil)
 	if callErr != nil {
 		return nil, nil, nil, callErr
 	}

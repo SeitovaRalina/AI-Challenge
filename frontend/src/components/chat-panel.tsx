@@ -32,6 +32,8 @@ import type {
   ContextStrategy,
   Estimate,
   FanOutStatus,
+  LLMProvider,
+  ProviderStatus,
   TaskMemory,
   TaskState,
   TokenUsage,
@@ -98,6 +100,9 @@ interface SlashCommand {
 }
 
 interface ChatPanelProps {
+  provider: LLMProvider
+  providerStatus: ProviderStatus | null
+  onSetProvider: (provider: LLMProvider) => void
   chatId: string
   messages: AgentMessage[]
   estimate: Estimate | null
@@ -156,6 +161,9 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({
+  provider,
+  providerStatus,
+  onSetProvider,
   chatId,
   messages,
   estimate,
@@ -658,32 +666,47 @@ export function ChatPanel({
             </div>
           </form>
 
-          <div className="flex items-center justify-center gap-2 px-6 pt-1.5 text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 px-6 pt-2 text-[11px] text-muted-foreground">
             {!isLabChat && (
-              <>
+              <span className="shrink-0 whitespace-nowrap">
                 <TaskStateBadge stage={taskState.stage} />
-                <span aria-hidden>·</span>
-              </>
+              </span>
             )}
             {isLabCoordinator ? (
-              <span className="rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-primary">
+              <span className="shrink-0 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-primary">
                 Координатор
               </span>
             ) : (
               isRealStrategy(contextStrategy) && (
-                <ContextStrategySelect
-                  value={contextStrategy}
-                  historyKeepLastN={historyKeepLastN}
-                  disabled={isLabChat}
-                  onChange={onSetContextStrategy}
-                />
+                <span className="shrink-0">
+                  <ContextStrategySelect
+                    value={contextStrategy}
+                    historyKeepLastN={historyKeepLastN}
+                    disabled={isLabChat}
+                    onChange={onSetContextStrategy}
+                  />
+                </span>
               )
             )}
             {!isLabChat && (
               <>
-                <span aria-hidden>·</span>
+                <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                  Модель
+                  <select
+                    aria-label="Провайдер модели"
+                    value={provider}
+                    disabled={isSending}
+                    onChange={(event) => onSetProvider(event.target.value as LLMProvider)}
+                    className="rounded-md border border-border bg-background px-1 py-0.5 text-foreground"
+                  >
+                    <option value="ollama">Локально · Ollama</option>
+                    <option value="litellm" disabled={!providerStatus?.cloud_configured}>
+                      Облако · LiteLLM
+                    </option>
+                  </select>
+                </label>
                 <label
-                  className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                  className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
                   title="Перед каждым ответом ассистента искать похожие прошлые задачи и показывать источники."
                 >
                   <input
@@ -696,20 +719,17 @@ export function ChatPanel({
                 </label>
               </>
             )}
+            {!isLabChat && provider === 'ollama' && providerStatus && !providerStatus.ollama_available && (
+              <span role="status" className="basis-full text-amber-600">Ollama недоступна или модель не установлена</span>
+            )}
             {contextTokenLimit > 0 && !isLabCoordinator && (
-              <>
-                <span aria-hidden>·</span>
-                <span>
-                  Контекст: {lastContextTokens.toLocaleString('ru-RU')} /{' '}
-                  {contextTokenLimit.toLocaleString('ru-RU')}
-                </span>
-              </>
+              <span className="shrink-0 whitespace-nowrap">
+                Контекст: {lastContextTokens.toLocaleString('ru-RU')} /{' '}
+                {contextTokenLimit.toLocaleString('ru-RU')}
+              </span>
             )}
             {cumulativeCostUsd != null && (
-              <>
-                <span aria-hidden>·</span>
-                <span>${cumulativeCostUsd.toFixed(4)}</span>
-              </>
+              <span className="shrink-0 whitespace-nowrap">${cumulativeCostUsd.toFixed(4)}</span>
             )}
           </div>
         </div>

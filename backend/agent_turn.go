@@ -69,6 +69,14 @@ with the current subtasks: if the user asks how long a specific subtask will
 take, answer from its exact estimated_hours_min/estimated_hours_max instead
 of guessing.`
 
+// Small local models follow this shorter contract more reliably than the
+// full gateway prompt while producing the same validated response schema.
+const localAgentSystemPrompt = `Ты помощник по предварительной оценке задач разработки. Отвечай по-русски одним JSON-объектом без Markdown и текста вокруг:
+{"reply":"ответ пользователю","estimate":null,"invariant_conflict":[],"citations":[]}
+Если пользователь описывает задачу или меняет её условия, estimate ОБЯЗАТЕЛЬНО объект:
+{"summary":"краткое описание","category":"тип задачи","complexity":"low","estimated_hours_min":1,"estimated_hours_max":3,"risks":[],"assumptions":[],"subtasks":[]}
+complexity: только low, medium или high. Часы: числа, минимум не больше максимума. Для небольшой задачи subtasks пустой. Для большой задачи у каждой подзадачи нужны name, description, estimated_hours_min, estimated_hours_max; общие часы равны сумме подзадач. При обычном вопросе без изменения задачи estimate=null. Не выдавай общую оценку за персональную. Если даны обязательные ограничения проекта, соблюдай их и укажи нарушенные дословно в invariant_conflict. Если используешь найденный контекст прошлых задач, цитируй точный фрагмент через citations: [{"chunk_id":"ID","text":"дословный фрагмент"}]; иначе citations=[].`
+
 // agentTurn is the envelope the agent asks the model for on every turn.
 type agentTurn struct {
 	Reply             string            `json:"reply"`
@@ -130,6 +138,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	summarizedThrough := chat.SummarizedThrough
 	task := chat.Task
 	ragEnabled := chat.RagEnabled
+	provider := chat.Provider
 	// Snapshot BEFORE this turn runs — the stage as the conversation stood
 	// when the user sent this message, used only for prompt injection below.
 	// buildAgentReplyLocked recomputes it fresh AFTER the turn mutates chat,
@@ -149,6 +158,11 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	// the user has switched to in the meantime.
 	branchID := chat.ActiveBranchID
 	a.mu.Unlock()
+	providerClient, err := a.providerClient(provider)
+	if err != nil {
+		return nil, err
+	}
+	ctx = withProvider(ctx, providerClient)
 
 	log.Printf("agent: chat %s: turn %d, strategy %s, message length %d", chatID, len(history)/2+1, strategy, len(userMessage))
 
@@ -194,7 +208,14 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 
 	messages := make([]chatMessage, 0, len(history)+5)
-	messages = append(messages, chatMessage{Role: "system", Content: agentSystemPrompt})
+	prompt := agentSystemPrompt
+	if provider == ProviderOllama {
+		prompt = localAgentSystemPrompt
+	}
+	messages = append(messages, chatMessage{Role: "system", Content: prompt})
+	if provider == ProviderOllama && len(history) == 0 && !interviewMode {
+		messages = append(messages, chatMessage{Role: "system", Content: "Это первое сообщение чата. Если оно описывает задачу разработки, верни estimate как полный объект, не null."})
+	}
 	if interviewMode {
 		messages = append(messages, chatMessage{Role: "system", Content: interviewModeSystemPrompt})
 	}
@@ -392,7 +413,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		var updatedProfile *UserProfile
 		var invariantDiff *InvariantDiff
 
-		memCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		memCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancel()
 
 		wg.Add(1)
@@ -496,6 +517,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 	}
 	return &AgentReply{
 		Reply:                     reply,
+		Provider:                  chat.Provider,
 		Estimate:                  chat.branchEstimate(branchID),
 		Title:                     chat.Title,
 		Usage:                     usage,
@@ -697,6 +719,16 @@ func parseAgentTurn(raw string) (*agentTurn, error) {
 		return &agentTurn{Reply: trimmed}, nil
 	}
 	if strings.TrimSpace(turn.Reply) == "" {
+		// Small local models sometimes return the estimate object directly,
+		// despite the chat envelope request. Keep the useful validated estimate
+		// and synthesize only the short visible reply.
+		if estimate, _, err := parseEstimateJSON(cleaned); err == nil {
+			estimate.ReconcileWithSubtasks()
+			return &agentTurn{
+				Reply:    fmt.Sprintf("Предварительная оценка: %s — %.1f–%.1f ч.", estimate.Summary, estimate.EstimatedHoursMin, estimate.EstimatedHoursMax),
+				Estimate: estimate,
+			}, nil
+		}
 		return nil, fmt.Errorf("%w: reply must not be empty", ErrInvalidOutput)
 	}
 	if turn.Estimate != nil {

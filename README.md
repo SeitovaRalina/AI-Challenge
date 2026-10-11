@@ -10,6 +10,7 @@ Challenge details: https://mobiledeveloper.tech/ai_advent_9
 - Each day gets its own branch `feature/wNN-dDD-slug` (e.g. `feature/w01-d02-structured-output`), merged into `main` via a Pull Request.
 - The day's assignment text lives in `days/wNN-dDD-slug.md` (in Russian, verbatim from the challenge).
 - The PR description records what was specifically implemented for that day's assignment.
+- `backend/tests/` contains black-box backend integration tests; `go test ./...` runs them with the other Go packages.
 
 ---
 
@@ -18,8 +19,9 @@ Challenge details: https://mobiledeveloper.tech/ai_advent_9
 Software Task → AI Preliminary Estimate.
 
 The user describes a development task in a chat interface; a Go-side `Agent`
-entity (`backend/agent.go`) owns the conversation, calls the company LiteLLM
-gateway, validates the model's JSON response against the app schema, and
+entity (`backend/agent.go`) owns the conversation, calls the selected local
+Ollama model or company LiteLLM gateway, validates the model's JSON response
+against the app schema, and
 returns a preliminary estimate (summary, category, complexity, hour range,
 risks, assumptions, and — for large enough tasks — a subtask breakdown with
 its own per-subtask hour range) plus a conversational reply. Follow-up
@@ -82,8 +84,8 @@ documentation is in English.
 
 - Backend: Go (standard library `net/http`, no framework)
 - Frontend: React + TypeScript + Vite, Tailwind CSS v4, shadcn/ui
-- LLM: company LiteLLM gateway (`https://llm.effective.land`),
-  OpenAI-compatible `/v1/chat/completions` endpoint
+- LLM: local Ollama (`qwen2.5:3b`) or company LiteLLM gateway
+  (`https://llm.effective.land`), both through `/v1/chat/completions`
 
 ## Requirements
 
@@ -97,8 +99,28 @@ Ollama on this Windows development machine. It is separate from the existing
 `nomic-embed-text` model used for RAG embeddings. This day's proof exercises
 the model through Ollama's CLI and HTTP API with three software-task questions
 of increasing complexity; the reproducible requests and observed results are
-in [`docs/local-llm-day26.md`](docs/local-llm-day26.md). The application still
-uses its configured LiteLLM gateway for generated answers.
+in [`docs/local-llm-day26.md`](docs/local-llm-day26.md). At the time of this
+proof, the application still used LiteLLM for generated answers.
+
+## Local model in the application (Day 27)
+
+The main task-estimation chat can use the locally installed `qwen2.5:3b` via
+Ollama. Select **«Локально · Ollama»** in a chat to route its answer, tool
+routing, memory updates, and context compression to that model. The selected
+provider is stored with the chat and restored after a restart; existing chats
+default to LiteLLM. A failed local request never falls back to the cloud.
+
+The backend starts without LiteLLM credentials. Pull `qwen2.5:3b`, start
+Ollama on this computer, and leave `LITELLM_API_KEY` and `LITELLM_MODEL` empty
+for a local-only instance. `OLLAMA_CHAT_MODEL` changes the installed chat model
+name; `OLLAMA_CHAT_URL` changes its loopback HTTP origin (default
+`http://localhost:11434`). The separate `OLLAMA_URL` and `OLLAMA_EMBED_MODEL`
+settings continue to control embeddings for chat history retrieval. When
+LiteLLM credentials are present, the chat selector also offers
+**«Облако · LiteLLM»**. Older one-shot demos, standalone generated RAG
+answers, and weekly summary generation require LiteLLM; their cloud-only
+actions are unavailable without credentials. The local provider reports
+tokens when Ollama supplies usage data; no cloud cost is charged for it.
 
 Install Ollama, then download the chat model with `ollama pull qwen2.5:3b`.
 Keep the Ollama server bound to localhost for this local check. `ollama list`
@@ -115,7 +137,7 @@ cd backend
 cp .env.example .env
 ```
 
-Fill in `backend/.env`:
+For cloud access, fill in `backend/.env`:
 
 ```
 LITELLM_API_KEY=your-key

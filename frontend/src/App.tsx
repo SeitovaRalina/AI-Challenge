@@ -42,6 +42,7 @@ import {
   forceCompress,
   getChat,
   getProfile,
+  getProviderStatus,
   listChats,
   listProjects,
   streamAgentMessage,
@@ -49,6 +50,7 @@ import {
   setActiveBranch,
   setContextStrategy,
   setRagEnabled,
+  setChatProvider,
   setTaskDone,
   type ChatDetail,
   type ChatSummary,
@@ -56,6 +58,8 @@ import {
   type CompareOptions,
   type ContextStrategy,
   type Estimate,
+  type LLMProvider,
+  type ProviderStatus,
   type ModelComparison as ModelComparisonData,
   type Project,
   type RawResult,
@@ -158,6 +162,7 @@ function App() {
   const [chats, setChats] = useState<ChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null)
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null)
   const [highlightMessageIndex, setHighlightMessageIndex] = useState<number | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [projectMemoryPopupId, setProjectMemoryPopupId] = useState<string | null>(null)
@@ -255,6 +260,7 @@ function App() {
   // On first load, resume the most recently created chat, or start a fresh
   // one if none exist yet.
   useEffect(() => {
+    getProviderStatus().then(setProviderStatus).catch(() => setProviderStatus(null))
     async function init() {
       try {
         const existingProjects = await listProjects()
@@ -322,7 +328,7 @@ function App() {
   async function handleNewChat(projectId?: string) {
     setMode('chat')
     try {
-      const created = await createChat(projectId)
+      const created = await createChat(projectId, activeChat?.provider)
       setChats((prev) => [...prev, created])
       setActiveChatId(created.id)
       setActiveChat({
@@ -564,6 +570,20 @@ function App() {
     try {
       const updated = await setRagEnabled(chatId, enabled)
       setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+    } catch (err) {
+      setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
+    }
+  }
+
+  async function handleSetProvider(provider: LLMProvider) {
+    if (!activeChatId || pendingKeys.has(chatKey(activeChatId, activeChat?.active_branch_id))) return
+    const chatId = activeChatId
+    try {
+      const updated = await setChatProvider(chatId, provider)
+      setActiveChat((prev) => (prev && prev.id === chatId ? updated : prev))
+      setChats((prev) => prev.map((chat) => chat.id === chatId ? { ...chat, provider } : chat))
+      setChatError(null)
+      getProviderStatus().then(setProviderStatus).catch(() => setProviderStatus(null))
     } catch (err) {
       setChatError(err instanceof ApiError ? err.message : 'Непредвиденная ошибка.')
     }
@@ -900,6 +920,9 @@ function App() {
         {mode === 'chat' ? (
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatPanel
+              provider={activeChat?.provider ?? 'ollama'}
+              providerStatus={providerStatus}
+              onSetProvider={handleSetProvider}
               chatId={activeChatId ?? ''}
               messages={activeChat?.messages ?? []}
               estimate={activeChat?.estimate ?? null}
@@ -969,6 +992,12 @@ function App() {
               </p>
             </div>
 
+          {providerStatus && !providerStatus.cloud_configured &&
+            (mode === 'rag' || mode === 'estimate' || mode === 'compare' || mode === 'reasoning' || mode === 'temperature' || mode === 'models') ? (
+              <p role="status" className="max-w-2xl rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+                Этот экран использует LiteLLM. Облако не настроено; локальный чат доступен в разделе «Ассистент».
+              </p>
+            ) : <>
           {mode === 'sources' && <SourcesPanel />}
 
           {mode === 'activity' && <ActivityPanel />}
@@ -1086,6 +1115,7 @@ function App() {
               />
             </div>
           )}
+          </>}
           </main>
         )}
       </div>
