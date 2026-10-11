@@ -4,6 +4,8 @@ import type {
   ChunkStrategy,
   EvalProgress,
   EvalRunResult,
+  LLMProvider,
+  ProviderComparison,
   RagAnswer,
   RetrievalEvalResult,
 } from '@/lib/api'
@@ -14,6 +16,7 @@ import type {
 // result that took minutes to compute. Only a full page reload clears it.
 export interface RagPanelState {
   strategy: ChunkStrategy
+  provider: LLMProvider
   // Day 23: rerank/rewrite/filter, shared by the compare tool and the
   // eval run — a visible, deliberate choice (see StrategySelect's doc),
   // not a hidden default.
@@ -29,6 +32,10 @@ export interface RagPanelState {
   // minScore was active for that run — null means "not run with
   // enhancements", not "enhancements found nothing".
   compareRagImproved: RagAnswer | null
+  providerQuestion: string
+  providerLoading: boolean
+  providerError: string | null
+  providerResult: ProviderComparison | null
   evalRunning: boolean
   evalProgress: EvalProgress | null
   evalError: string | null
@@ -41,6 +48,7 @@ export interface RagPanelState {
 
 const defaultState: RagPanelState = {
   strategy: 'structural',
+  provider: 'ollama',
   rerankEnabled: false,
   rewriteEnabled: false,
   minScore: 0,
@@ -50,6 +58,10 @@ const defaultState: RagPanelState = {
   compareNoRag: null,
   compareRag: null,
   compareRagImproved: null,
+  providerQuestion: '',
+  providerLoading: false,
+  providerError: null,
+  providerResult: null,
   evalRunning: false,
   evalProgress: null,
   evalError: null,

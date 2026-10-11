@@ -10,6 +10,7 @@ import { CitationList, SourceList } from '@/components/rag-sources'
 import { cn } from 'cn'
 import {
   ApiError,
+  compareRagProviders,
   getEvalQuestions,
   getRagIndex,
   queryRag,
@@ -80,6 +81,7 @@ export function RagPanel({ onOpenSource }: RagPanelProps) {
         )}
 
         <CompareSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
+        <ProviderCompareSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
         <EvalSection status={status} state={state} update={update} onOpenSource={onOpenSource} />
         <RetrievalCompareSection status={status} state={state} update={update} />
       </div>
@@ -103,6 +105,19 @@ function RagSettingsPanel({ state, update }: { state: RagState; update: RagUpdat
   return (
     <div className="flex flex-col gap-5 rounded-lg border border-border bg-card p-4 text-sm">
       <h2 className="text-sm font-medium text-foreground">Настройки поиска</h2>
+
+      <label className="flex flex-col gap-1.5 text-xs text-muted-foreground" htmlFor="rag-provider">
+        Модель для RAG и контрольных вопросов
+        <select
+          id="rag-provider"
+          value={state.provider}
+          onChange={(e) => update({ provider: e.target.value as RagState['provider'] })}
+          className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-sm text-foreground"
+        >
+          <option value="ollama">Локально · Ollama</option>
+          <option value="litellm">Облако · LiteLLM</option>
+        </select>
+      </label>
 
       <div className="flex flex-col gap-3">
         <p className="text-xs font-medium tracking-wide text-muted-foreground">Чанкинг</p>
@@ -204,19 +219,20 @@ function CompareSection({
       if (!enhanced) {
         // Без улучшений: день-22 сравнение — без RAG vs обычный RAG.
         const [noRagRes, ragRes] = await Promise.all([
-          queryRag(q, 'no_rag'),
-          queryRag(q, 'rag', state.strategy),
+          queryRag(q, 'no_rag', undefined, { provider: state.provider }),
+          queryRag(q, 'rag', state.strategy, { provider: state.provider }),
         ])
         update({ compareNoRag: noRagRes, compareRag: ragRes, compareLoading: false })
       } else {
         // С улучшениями: обычный RAG vs RAG с ними — без RAG здесь больше не
         // интересен, это не то, с чем сравнивает улучшенный поиск.
         const [ragRes, improvedRes] = await Promise.all([
-          queryRag(q, 'rag', state.strategy),
+          queryRag(q, 'rag', state.strategy, { provider: state.provider }),
           queryRag(q, 'rag', state.strategy, {
             rerank: state.rerankEnabled,
             rewrite: state.rewriteEnabled,
             minScore: state.minScore,
+            provider: state.provider,
           }),
         ])
         update({ compareRag: ragRes, compareRagImproved: improvedRes, compareLoading: false })
@@ -282,6 +298,74 @@ function CompareSection({
             <AnswerColumn title="С RAG" answer={state.compareRag} onOpenSource={onOpenSource} />
           </div>
         )
+      )}
+    </section>
+  )
+}
+
+function ProviderCompareSection({ status, state, update, onOpenSource }: {
+  status: IndexStatus
+  state: RagState
+  update: RagUpdate
+  onOpenSource: (chatId: string, messageIndex: number | null) => void
+}) {
+  async function handleCompare() {
+    const question = state.providerQuestion.trim()
+    if (!question) return
+    update({ providerLoading: true, providerError: null, providerResult: null })
+    try {
+      const result = await compareRagProviders(question, state.strategy, {
+        rerank: state.rerankEnabled,
+        rewrite: state.rewriteEnabled,
+        minScore: state.minScore,
+      })
+      update({ providerResult: result, providerLoading: false })
+    } catch (err) {
+      update({ providerError: err instanceof ApiError ? err.message : 'Не удалось сравнить модели', providerLoading: false })
+    }
+  }
+
+  const result = state.providerResult
+  return (
+    <section className="rounded-lg border border-border bg-card p-4">
+      <h2 className="text-sm font-medium text-foreground">Локальная модель vs облако</h2>
+      <p className="mt-1 text-xs text-muted-foreground">Один локальный поиск и одинаковые фрагменты для обеих моделей. Настройки поиска — справа.</p>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
+        <textarea
+          value={state.providerQuestion}
+          onChange={(e) => update({ providerQuestion: e.target.value })}
+          placeholder="Например: сколько часов заняла похожая задача?"
+          rows={2}
+          className="flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+        />
+        <Button onClick={handleCompare} disabled={state.providerLoading || !status.exists || !state.providerQuestion.trim()}>
+          {state.providerLoading && <Loader2 className="animate-spin" />}
+          Сравнить модели
+        </Button>
+      </div>
+      {state.providerError && <Alert variant="destructive" className="mt-3"><AlertCircle /><AlertTitle>{state.providerError}</AlertTitle></Alert>}
+      {result && (
+        <>
+          <p className="mt-3 text-xs text-muted-foreground">Локальный поиск: {result.retrieval_ms} мс · общих фрагментов: {result.retrieved.length}</p>
+          <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {([['Локально · Ollama', result.local], ['Облако · LiteLLM', result.cloud]] as const).map(([title, generation]) => (
+              <div key={title}>
+                <p className="mb-1 text-xs text-muted-foreground">{title} · генерация: {generation.duration_ms} мс</p>
+                {generation.error ? (
+                  <Alert variant="destructive"><AlertCircle /><AlertTitle>{generation.error}</AlertTitle></Alert>
+                ) : (
+                  <AnswerColumn title={title} answer={generation.answer ?? null} onOpenSource={onOpenSource} />
+                )}
+              </div>
+            ))}
+          </div>
+          {result.retrieved.length > 0 && (
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-1 text-xs text-muted-foreground">Общие источники</p>
+              <SourceList sources={result.retrieved} onOpenSource={onOpenSource} />
+            </div>
+          )}
+        </>
       )}
     </section>
   )
@@ -440,7 +524,7 @@ function EvalSection({
       const result = await streamRunEval(
         state.strategy,
         (progress) => update({ evalProgress: progress }),
-        { rerank: state.rerankEnabled, rewrite: state.rewriteEnabled, minScore: state.minScore },
+        { rerank: state.rerankEnabled, rewrite: state.rewriteEnabled, minScore: state.minScore, provider: state.provider },
       )
       update({ evalResult: result, evalRunning: false })
     } catch (err) {
