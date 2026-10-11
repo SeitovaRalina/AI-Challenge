@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // profileSystemPrompt asks for the single global user profile — name, stack,
@@ -96,7 +97,11 @@ func (a *Agent) updateProfileAfterTurn(ctx context.Context, chatID, userMessage,
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.profile = updated
+	if a.profile != prior {
+		log.Printf("agent: profile changed while update was in flight, keeping newer version")
+		return nil
+	}
+	a.profile = mergeProfileUpdate(prior, updated)
 	if err := a.profileStore.Save(a.profile); err != nil {
 		log.Printf("agent: failed to persist profile after update: %v", err)
 	}
@@ -106,6 +111,40 @@ func (a *Agent) updateProfileAfterTurn(ctx context.Context, chatID, userMessage,
 			log.Printf("agent: failed to persist chat %s after profile update: %v", chatID, err)
 		}
 	}
-	log.Printf("agent: profile updated (name=%q, %d stack item(s), %d constraint(s))", updated.Name, len(updated.Stack), len(updated.Constraints))
+	log.Printf("agent: profile updated (name=%q, %d stack item(s), %d constraint(s))", a.profile.Name, len(a.profile.Stack), len(a.profile.Constraints))
 	return profileCopy(a.profile)
+}
+
+// A model may omit a known field while returning a complete profile. Only a
+// manual edit can remove saved profile data; automatic updates may add or
+// replace non-empty scalar values and append new list entries.
+func mergeProfileUpdate(prior, proposed *UserProfile) *UserProfile {
+	merged := profileCopy(prior)
+	if name := strings.TrimSpace(proposed.Name); name != "" {
+		merged.Name = name
+	}
+	if style := strings.TrimSpace(proposed.Style); style != "" {
+		merged.Style = style
+	}
+	if format := strings.TrimSpace(proposed.Format); format != "" {
+		merged.Format = format
+	}
+	merged.Stack = appendNewProfileEntries(merged.Stack, proposed.Stack)
+	merged.Constraints = appendNewProfileEntries(merged.Constraints, proposed.Constraints)
+	return merged
+}
+
+func appendNewProfileEntries(existing, proposed []string) []string {
+	seen := make(map[string]bool, len(existing)+len(proposed))
+	for _, entry := range existing {
+		seen[strings.ToLower(strings.TrimSpace(entry))] = true
+	}
+	for _, entry := range proposed {
+		key := strings.ToLower(strings.TrimSpace(entry))
+		if key != "" && !seen[key] {
+			existing = append(existing, entry)
+			seen[key] = true
+		}
+	}
+	return existing
 }
