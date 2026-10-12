@@ -76,6 +76,7 @@ const localAgentSystemPrompt = `Ты помощник по предварите�
 Если пользователь описывает задачу или меняет её условия, estimate ОБЯЗАТЕЛЬНО объект:
 {"summary":"краткое описание","category":"тип задачи","complexity":"low","estimated_hours_min":1,"estimated_hours_max":3,"risks":[],"assumptions":[],"subtasks":[]}
 Ключи JSON пиши точно как в образцах: "citations" и "invariant_conflict" — отдельные ключи, все ключи в двойных кавычках. Не добавляй текст после закрывающей скобки.
+Если вопрос о прошлой похожей задаче или о том, сколько часов она заняла, это запрос к найденной истории, а не просьба создать новую оценку: estimate=null. Найди в фрагменте точные часы, укажи их в reply и процитируй этот же фрагмент с его chunk_id в citations. Прошлая предварительная оценка не означает фактически затраченное время; если фактических часов в источнике нет, так и скажи.
 complexity: только low, medium или high. Часы: числа, минимум не больше максимума. Для небольшой задачи subtasks пустой. Для большой задачи у каждой подзадачи нужны name, description, estimated_hours_min, estimated_hours_max; общие часы равны сумме подзадач. При обычном вопросе без изменения задачи estimate=null. Не выдавай общую оценку за персональную. Если даны обязательные ограничения проекта, соблюдай их и укажи нарушенные дословно в invariant_conflict. Если используешь найденный контекст прошлых задач, цитируй точный фрагмент через citations: [{"chunk_id":"ID","text":"дословный фрагмент"}]; иначе citations=[]. Числа и факты из прошлых задач бери только из найденных фрагментов, не додумывай.`
 
 // agentTurn is the envelope the agent asks the model for on every turn.
@@ -313,6 +314,9 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		return nil, err
 	}
 	assistantSentAt := time.Now()
+	if provider == ProviderOllama && len(found) > 0 {
+		groundHistoricalHours(userMessage, found, turn)
+	}
 	modelName := providerClient.model
 	performance := &TurnPerformance{Provider: provider, Model: modelName, DurationMS: assistantSentAt.Sub(userSentAt).Milliseconds()}
 
