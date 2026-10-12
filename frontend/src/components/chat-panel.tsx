@@ -691,8 +691,8 @@ export function ChatPanel({
                 size="sm"
                 disabled={
                   !draft.trim() ||
-                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND) ||
-                  (!canSendMessages && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND)
+                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND && draft.trim() !== PERF_COMMAND) ||
+                  (!canSendMessages && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND && draft.trim() !== PERF_COMMAND)
                 }
                 className="absolute right-1.5 bottom-1.5"
               >
