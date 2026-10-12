@@ -32,14 +32,15 @@ import (
 // caused the agent to record, distinct from InvariantConflict (which is
 // about violating EXISTING invariants, not detecting new ones).
 type AgentMessage struct {
-	Role              string         `json:"role"`
-	Content           string         `json:"content"`
-	CreatedAt         time.Time      `json:"created_at"`
-	Usage             *TokenUsage    `json:"usage,omitempty"`
-	IsLabAnalysis     bool           `json:"is_lab_analysis,omitempty"`
-	TaskState         *TaskState     `json:"task_state,omitempty"`
-	InvariantConflict []string       `json:"invariant_conflict,omitempty"`
-	InvariantDiff     *InvariantDiff `json:"invariant_diff,omitempty"`
+	Role              string           `json:"role"`
+	Content           string           `json:"content"`
+	CreatedAt         time.Time        `json:"created_at"`
+	Usage             *TokenUsage      `json:"usage,omitempty"`
+	Performance       *TurnPerformance `json:"performance,omitempty"`
+	IsLabAnalysis     bool             `json:"is_lab_analysis,omitempty"`
+	TaskState         *TaskState       `json:"task_state,omitempty"`
+	InvariantConflict []string         `json:"invariant_conflict,omitempty"`
+	InvariantDiff     *InvariantDiff   `json:"invariant_diff,omitempty"`
 	// ToolCalls (day 17) are the MCP tool calls the agent made while
 	// producing this assistant message, in order.
 	ToolCalls []ToolCallRecord `json:"tool_calls,omitempty"`
@@ -52,6 +53,15 @@ type AgentMessage struct {
 	// (verifyCitations, day 24) — never trusted on the model's word alone.
 	Sources   []RetrievedChunk `json:"sources,omitempty"`
 	Citations []Citation       `json:"citations,omitempty"`
+}
+
+// TurnPerformance is persisted on the assistant message so /perf survives a
+// reload. Duration covers retrieval, tool routing, and the answer; background
+// memory updates happen afterward and are not included.
+type TurnPerformance struct {
+	Provider   LLMProvider `json:"provider"`
+	Model      string      `json:"model"`
+	DurationMS int64       `json:"duration_ms"`
 }
 
 // Chat is one independent conversation the Agent holds in memory: its own
@@ -307,6 +317,7 @@ type ChatSummary struct {
 type Agent struct {
 	client            *LiteLLMClient
 	localClient       *LiteLLMClient
+	localConfig       LocalLLMConfig
 	store             *ChatStore
 	labStore          *LabStore
 	projectStore      *ProjectStore
@@ -353,6 +364,7 @@ type Agent struct {
 func NewAgent(client *LiteLLMClient, store *ChatStore, labStore *LabStore, projectStore *ProjectStore, profileStore *ProfileStore, contextTokenLimit, historyKeepLastN int, contextStrategyDefault ContextStrategy) *Agent {
 	agent := &Agent{
 		client:                 client,
+		localConfig:            defaultLocalLLMConfig(),
 		store:                  store,
 		labStore:               labStore,
 		projectStore:           projectStore,
@@ -641,6 +653,7 @@ type AgentReply struct {
 	Estimate                  *EstimateResponse `json:"estimate"`
 	Title                     string            `json:"title"`
 	Usage                     *TokenUsage       `json:"usage"`
+	Performance               *TurnPerformance  `json:"performance,omitempty"`
 	UserMessageCreatedAt      time.Time         `json:"user_message_created_at"`
 	AssistantMessageCreatedAt time.Time         `json:"assistant_message_created_at"`
 	LastContextTokens         int               `json:"last_context_tokens"`

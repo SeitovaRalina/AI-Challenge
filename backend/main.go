@@ -128,9 +128,12 @@ func main() {
 	profilePath := filepath.Join(filepath.Dir(dataDir), "profile.json")
 	agent := NewAgent(client, NewChatStore(dataDir), NewLabStore(labsDir), NewProjectStore(projectsDir), NewProfileStore(profilePath), contextTokenLimit, historyKeepLastN, contextStrategyDefault)
 	agent.localClient = localClient
+	agent.localConfig = localLLMConfigFromEnv()
+	log.Printf("local chat: model=%s temperature=%.2f max_tokens=%d context_budget=%d", ollamaChatModel, agent.localConfig.Temperature, agent.localConfig.MaxTokens, agent.localConfig.ContextWindow)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/llm/providers", providerStatusHandler(client != nil, ollamaChatURL, ollamaChatModel))
+	mux.HandleFunc("GET /api/llm/performance", localModelPerformanceHandler(ollamaChatURL, ollamaChatModel, agent.localConfig))
 	mux.HandleFunc("/api/estimate", cloudOnly(client, estimateHandler(client)))
 	mux.HandleFunc("/api/compare", cloudOnly(client, compareHandler(client)))
 	mux.HandleFunc("/api/compare/controlled", cloudOnly(client, compareControlledHandler(client)))

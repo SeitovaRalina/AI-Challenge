@@ -137,6 +137,27 @@ const routingHistoryMessages = 6
 // answering, so this leaves room for that plus a tool call.
 const routingMaxTokens = 4096
 
+// isClearEstimationTurn avoids a costly model-based tool decision only for
+// explicit task-estimation requests. Ambiguous follow-ups still use routing,
+// preserving activity and calendar questions.
+func isClearEstimationTurn(messages []chatMessage) bool {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+		return false
+	}
+	last := strings.ToLower(strings.TrimSpace(messages[len(messages)-1].Content))
+	for _, activity := range []string{"вчера", "сегодня", "недел", "месяц", "коммит", "github", "репозитор", "встреч", "календар", "работал", "работала", "активност", "pull request", " pr "} {
+		if strings.Contains(last, activity) {
+			return false
+		}
+	}
+	for _, estimate := range []string{"оцени ", "оценить ", "оценка задач", "измени оценку", "уточни оценку", "добавь колонку", "добавь поле", "разработать ", "реализовать ", "сделать экспорт", "сколько часов на "} {
+		if strings.Contains(last, estimate) {
+			return true
+		}
+	}
+	return false
+}
+
 func localTimeLine(now time.Time) string {
 	zone, offset := now.Zone()
 	return fmt.Sprintf("Current local date and time: %s (%s), timezone %s (UTC%+03d:%02d). Weeks start on Monday.",
@@ -210,7 +231,8 @@ func abs(n int) int {
 // prompt actually got).
 func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages []chatMessage, maxTokens int, tools []llmTool) (completion *chatCompletionResponse, records []ToolCallRecord, usage *TokenUsage, contextTokens int, err error) {
 	var transcript []chatMessage
-	if len(tools) > 0 {
+	local := a.localClient != nil && a.clientFor(ctx) == a.localClient
+	if len(tools) > 0 && !(local && isClearEstimationTurn(messages)) {
 		transcript, records, usage = a.routeTools(ctx, chatID, messages, tools)
 	}
 
@@ -230,8 +252,12 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 	}
 
 	emitTurnEvent(ctx, "answering", struct{}{})
+	temperature := 0.2
+	if local {
+		temperature = a.localConfig.Temperature
+	}
 	for attempt := 0; ; attempt++ {
-		completion, err = a.clientFor(ctx).doChatCompletionWithTools(ctx, answerMessages, 0.2, maxTokens, answerTools, toolChoice)
+		completion, err = a.clientFor(ctx).doChatCompletionWithTools(ctx, answerMessages, temperature, maxTokens, answerTools, toolChoice, local)
 		if err != nil {
 			return nil, records, usage, contextTokens, err
 		}
@@ -270,9 +296,13 @@ func (a *Agent) routeTools(ctx context.Context, chatID string, messages []chatMe
 	// turn, an identical call (same tool, same arguments in any key order)
 	// reuses the first result instead of hitting the server again.
 	answered := map[string]string{}
+	maxTokens := routingMaxTokens
+	if a.localClient != nil && a.clientFor(ctx) == a.localClient {
+		maxTokens = 512
+	}
 	for round := 0; round < maxRoutingRounds; round++ {
 		emitTurnEvent(ctx, "routing", map[string]int{"round": round + 1})
-		completion, err := a.clientFor(ctx).doChatCompletionWithTools(ctx, routing, 0, routingMaxTokens, tools, "")
+		completion, err := a.clientFor(ctx).doChatCompletionWithTools(ctx, routing, 0, maxTokens, tools, "", false)
 		if err != nil {
 			log.Printf("agent: chat %s: tool routing failed, answering without tools: %v", chatID, err)
 			return transcript, records, usage

@@ -75,7 +75,8 @@ const localAgentSystemPrompt = `Ты помощник по предварите�
 {"reply":"ответ пользователю","estimate":null,"invariant_conflict":[],"citations":[]}
 Если пользователь описывает задачу или меняет её условия, estimate ОБЯЗАТЕЛЬНО объект:
 {"summary":"краткое описание","category":"тип задачи","complexity":"low","estimated_hours_min":1,"estimated_hours_max":3,"risks":[],"assumptions":[],"subtasks":[]}
-complexity: только low, medium или high. Часы: числа, минимум не больше максимума. Для небольшой задачи subtasks пустой. Для большой задачи у каждой подзадачи нужны name, description, estimated_hours_min, estimated_hours_max; общие часы равны сумме подзадач. При обычном вопросе без изменения задачи estimate=null. Не выдавай общую оценку за персональную. Если даны обязательные ограничения проекта, соблюдай их и укажи нарушенные дословно в invariant_conflict. Если используешь найденный контекст прошлых задач, цитируй точный фрагмент через citations: [{"chunk_id":"ID","text":"дословный фрагмент"}]; иначе citations=[].`
+Ключи JSON пиши точно как в образцах: "citations" и "invariant_conflict" — отдельные ключи, все ключи в двойных кавычках. Не добавляй текст после закрывающей скобки.
+complexity: только low, medium или high. Часы: числа, минимум не больше максимума. Для небольшой задачи subtasks пустой. Для большой задачи у каждой подзадачи нужны name, description, estimated_hours_min, estimated_hours_max; общие часы равны сумме подзадач. При обычном вопросе без изменения задачи estimate=null. Не выдавай общую оценку за персональную. Если даны обязательные ограничения проекта, соблюдай их и укажи нарушенные дословно в invariant_conflict. Если используешь найденный контекст прошлых задач, цитируй точный фрагмент через citations: [{"chunk_id":"ID","text":"дословный фрагмент"}]; иначе citations=[]. Числа и факты из прошлых задач бери только из найденных фрагментов, не додумывай.`
 
 // agentTurn is the envelope the agent asks the model for on every turn.
 type agentTurn struct {
@@ -182,14 +183,15 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	// minCompletionBudget there isn't enough room left for a coherent reply,
 	// so that case still skips the call entirely.
 	const minCompletionBudget = 64
+	contextLimit := a.effectiveContextLimit(provider)
 	remainingBudget := 0
-	if a.contextTokenLimit > 0 {
-		remainingBudget = a.contextTokenLimit - lastContextTokens
+	if contextLimit > 0 {
+		remainingBudget = contextLimit - lastContextTokens
 	}
-	if a.contextTokenLimit > 0 && remainingBudget < minCompletionBudget {
+	if contextLimit > 0 && remainingBudget < minCompletionBudget {
 		log.Printf("agent: chat %s: context limit reached (%d/%d tokens, %d left), skipping LLM call",
-			chatID, lastContextTokens, a.contextTokenLimit, remainingBudget)
-		reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
+			chatID, lastContextTokens, contextLimit, remainingBudget)
+		reply := contextFullReplyText(lastContextTokens, contextLimit)
 		return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 	}
 
@@ -263,8 +265,11 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	messages = append(messages, chatMessage{Role: "user", Content: userMessage})
 
 	maxTokens := 0
-	if a.contextTokenLimit > 0 {
+	if contextLimit > 0 {
 		maxTokens = remainingBudget
+	}
+	if provider == ProviderOllama && (maxTokens == 0 || maxTokens > a.localConfig.MaxTokens) {
+		maxTokens = a.localConfig.MaxTokens
 	}
 
 	callStart := time.Now()
@@ -275,7 +280,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		// surfacing as a 502 to the user.
 		if errors.Is(err, ErrContextOverflow) {
 			log.Printf("agent: chat %s: model rejected the request as over its context length: %v", chatID, err)
-			reply := contextFullReplyText(lastContextTokens, a.contextTokenLimit)
+			reply := contextFullReplyText(lastContextTokens, contextLimit)
 			return a.finishGracefulTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil)
 		}
 		log.Printf("agent: chat %s: LLM call failed after %s: %v", chatID, time.Since(callStart).Round(time.Millisecond), err)
@@ -308,6 +313,8 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 		return nil, err
 	}
 	assistantSentAt := time.Now()
+	modelName := providerClient.model
+	performance := &TurnPerformance{Provider: provider, Model: modelName, DurationMS: assistantSentAt.Sub(userSentAt).Milliseconds()}
 
 	// Day 25: never trust the model's own claimed quotes — verify each one
 	// against the actual chunk text, exactly like the standalone RAG query
@@ -326,7 +333,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	chat.appendToBranch(branchID,
 		AgentMessage{Role: "user", Content: userMessage, CreatedAt: userSentAt, Usage: usage},
-		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, InvariantConflict: turn.InvariantConflict, ToolCalls: toolCalls, Sources: sources, Citations: citations},
+		AgentMessage{Role: "assistant", Content: turn.Reply, CreatedAt: assistantSentAt, Usage: usage, Performance: performance, InvariantConflict: turn.InvariantConflict, ToolCalls: toolCalls, Sources: sources, Citations: citations},
 	)
 	if turn.Estimate != nil {
 		chat.setBranchEstimate(branchID, turn.Estimate)
@@ -357,6 +364,7 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	}
 
 	agentReply := a.buildAgentReplyLocked(chat, branchID, turn.Reply, usage, userSentAt, assistantSentAt)
+	agentReply.Performance = performance
 	agentReply.InvariantConflict = turn.InvariantConflict
 	agentReply.ToolCalls = toolCalls
 	agentReply.Sources = sources
@@ -526,7 +534,7 @@ func (a *Agent) buildAgentReplyLocked(chat *Chat, branchID, reply string, usage 
 		LastContextTokens:         chat.branchLastContextTokens(branchID),
 		CumulativeTotalTokens:     chat.CumulativeTotalTokens,
 		CumulativeCostUsd:         chat.CumulativeCostUsd,
-		ContextTokenLimit:         a.contextTokenLimit,
+		ContextTokenLimit:         a.effectiveContextLimit(chat.Provider),
 		ContextStrategy:           chat.ContextStrategy,
 		HistoryKeepLastN:          a.historyKeepLastN,
 		SummarizedMessageCount:    chat.SummarizedThrough,

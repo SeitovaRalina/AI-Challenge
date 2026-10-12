@@ -28,8 +28,23 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/tags":
 			_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]string{"name": "local-model"}}})
+		case "/api/ps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]any{"name": "local-model", "size": 2000000000, "size_vram": 0, "context_length": 4096, "details": map[string]string{"quantization_level": "Q4_K_M"}}}})
 		case "/v1/chat/completions":
 			localCalls.Add(1)
+			var payload struct {
+				MaxTokens      int     `json:"max_tokens"`
+				Temperature    float64 `json:"temperature"`
+				ResponseFormat *struct {
+					Type string `json:"type"`
+				} `json:"response_format"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode local request: %v", err)
+			}
+			if payload.MaxTokens == 1024 && (payload.ResponseFormat == nil || payload.ResponseFormat.Type != "json_object" || payload.Temperature != 0.1) {
+				t.Errorf("local answer settings: %+v", payload)
+			}
 			writeCompletion(t, w, bareEstimate)
 		default:
 			t.Errorf("unexpected Ollama path: %s", r.URL.Path)
@@ -160,6 +175,26 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 	messagePath := "/api/agent/chats/" + created.ID + "/messages"
 	if status := request(base, http.MethodPost, messagePath, map[string]string{"message": "Оцени экспорт CSV"}, &reply); status != http.StatusOK || reply.Provider != "ollama" || string(reply.Estimate) == "null" {
 		t.Fatalf("local estimate: status=%d reply=%+v", status, reply)
+	}
+	var performance struct {
+		Loaded        bool   `json:"loaded"`
+		Quantization  string `json:"quantization"`
+		ContextLength int    `json:"context_length"`
+	}
+	if status := request(base, http.MethodGet, "/api/llm/performance", nil, &performance); status != http.StatusOK || !performance.Loaded || performance.Quantization != "Q4_K_M" || performance.ContextLength != 4096 {
+		t.Fatalf("local performance: status=%d details=%+v", status, performance)
+	}
+	var withPerformance struct {
+		ContextTokenLimit int `json:"context_token_limit"`
+		Messages          []struct {
+			Performance *struct {
+				Provider   string `json:"provider"`
+				DurationMS int64  `json:"duration_ms"`
+			} `json:"performance"`
+		} `json:"messages"`
+	}
+	if status := request(base, http.MethodGet, "/api/agent/chats/"+created.ID, nil, &withPerformance); status != http.StatusOK || withPerformance.ContextTokenLimit != 4096 || len(withPerformance.Messages) != 2 || withPerformance.Messages[1].Performance == nil || withPerformance.Messages[1].Performance.Provider != "ollama" {
+		t.Fatalf("persisted local performance: status=%d chat=%+v", status, withPerformance)
 	}
 	if localCalls.Load() < 2 || cloudCalls.Load() != 0 {
 		t.Fatalf("local turn: local calls=%d cloud calls=%d", localCalls.Load(), cloudCalls.Load())
