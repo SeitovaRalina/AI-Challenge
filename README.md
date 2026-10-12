@@ -117,9 +117,9 @@ name; `OLLAMA_CHAT_URL` changes its loopback HTTP origin (default
 `http://localhost:11434`). The separate `OLLAMA_URL` and `OLLAMA_EMBED_MODEL`
 settings continue to control embeddings for chat history retrieval. When
 LiteLLM credentials are present, the chat selector also offers
-**«Облако · LiteLLM»**. Older one-shot demos, standalone generated RAG
-answers, and weekly summary generation require LiteLLM; their cloud-only
-actions are unavailable without credentials. The local provider reports
+**«Облако · LiteLLM»**. Older one-shot demos and weekly summary generation
+require LiteLLM; their cloud-only actions are unavailable without credentials.
+The local provider reports
 tokens when Ollama supplies usage data; no cloud cost is charged for it.
 
 Install Ollama, then download the chat model with `ollama pull qwen2.5:3b`.
@@ -127,6 +127,24 @@ Keep the Ollama server bound to localhost for this local check. `ollama list`
 confirms the model is installed, and `ollama run qwen2.5:3b` opens its CLI.
 The HTTP check uses `POST http://localhost:11434/api/chat` with
 `"stream": false`; no API key or cloud model is involved.
+
+## Local RAG and provider comparison (Day 28)
+
+The **«Похожие задачи»** screen can answer questions and run its control
+questions through either local Ollama or cloud LiteLLM. The model selector
+defaults to Ollama. Embeddings and nearest-neighbor retrieval use the existing
+Week 5 index and local `nomic-embed-text` model; query rewrite and reranking
+use the selected provider. The RAG screen opens without cloud credentials.
+
+**«Локальная модель vs облако»** sends one question to
+`POST /api/rag/compare/providers`. The server performs local retrieval once,
+then gives the same five or fewer chunks to both generators. Each result
+reports its answer, server-verified citations, generation time, or error;
+retrieval time and sources are shared. If LiteLLM is unconfigured or fails,
+the local answer remains available. The existing `/api/rag/query` and eval
+endpoints accept optional `provider: "ollama" | "litellm"`; omitted provider
+keeps their prior LiteLLM default for API callers. See
+[`docs/local-rag-day28.md`](docs/local-rag-day28.md) for checks and comparison.
 
 ## Running the project
 

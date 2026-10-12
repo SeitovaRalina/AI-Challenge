@@ -993,7 +993,7 @@ function App() {
             </div>
 
           {providerStatus && !providerStatus.cloud_configured &&
-            (mode === 'rag' || mode === 'estimate' || mode === 'compare' || mode === 'reasoning' || mode === 'temperature' || mode === 'models') ? (
+            (mode === 'estimate' || mode === 'compare' || mode === 'reasoning' || mode === 'temperature' || mode === 'models') ? (
               <p role="status" className="max-w-2xl rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
                 Этот экран использует LiteLLM. Облако не настроено; локальный чат доступен в разделе «Ассистент».
               </p>

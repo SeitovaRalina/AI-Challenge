@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 // A chat turn with MCP tool calls takes tens of seconds (model → tool →
@@ -111,10 +110,10 @@ func streamAgentMessageHandler(agent *Agent) http.HandlerFunc {
 		stream := &sseWriter{w: w, rc: http.NewResponseController(w)}
 		stream.err = stream.rc.Flush()
 
-		// Same 120s budget as the plain endpoint. Deliberately not derived
+		// Same provider-specific budget as the plain endpoint. Deliberately not derived
 		// from r.Context(): if the browser tab closes mid-turn, the turn
 		// still finishes and is saved — it simply stops being reported.
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), agent.chatTurnTimeout(chatID))
 		defer cancel()
 		ctx = withTurnEvents(ctx, stream.send)
 

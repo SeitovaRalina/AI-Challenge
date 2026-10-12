@@ -1159,6 +1159,7 @@ export interface RagQueryOptions {
   rerank?: boolean
   rewrite?: boolean
   minScore?: number
+  provider?: LLMProvider
 }
 
 // queryRag answers one question in either mode. strategy is required when
@@ -1172,6 +1173,30 @@ export function queryRag(
   return postJson<RagAnswer>('/api/rag/query', {
     question,
     mode,
+    strategy,
+    rerank: options?.rerank ?? false,
+    rewrite: options?.rewrite ?? false,
+    min_score: options?.minScore ?? 0,
+    provider: options?.provider,
+  })
+}
+
+export interface ProviderGeneration {
+  answer?: RagAnswer
+  duration_ms: number
+  error?: string
+}
+
+export interface ProviderComparison {
+  retrieved: RetrievedChunk[]
+  retrieval_ms: number
+  local: ProviderGeneration
+  cloud: ProviderGeneration
+}
+
+export function compareRagProviders(question: string, strategy: ChunkStrategy, options?: RagQueryOptions): Promise<ProviderComparison> {
+  return postJson<ProviderComparison>('/api/rag/compare/providers', {
+    question,
     strategy,
     rerank: options?.rerank ?? false,
     rewrite: options?.rewrite ?? false,
@@ -1220,6 +1245,7 @@ export function runEval(strategy: ChunkStrategy, options?: RagQueryOptions): Pro
     rerank: options?.rerank ?? false,
     rewrite: options?.rewrite ?? false,
     min_score: options?.minScore ?? 0,
+    provider: options?.provider,
   })
 }
 
@@ -1247,6 +1273,7 @@ export async function streamRunEval(
       rerank: options?.rerank ?? false,
       rewrite: options?.rewrite ?? false,
       min_score: options?.minScore ?? 0,
+      provider: options?.provider,
     }),
   })
   if (!response.ok || !response.body) {
