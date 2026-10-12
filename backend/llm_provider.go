@@ -95,6 +95,57 @@ type providerStatus struct {
 	CloudConfigured bool   `json:"cloud_configured"`
 }
 
+type localModelPerformance struct {
+	Model            string  `json:"model"`
+	Loaded           bool    `json:"loaded"`
+	LoadedSizeBytes  int64   `json:"loaded_size_bytes,omitempty"`
+	VRAMBytes        int64   `json:"vram_bytes,omitempty"`
+	ContextLength    int     `json:"context_length,omitempty"`
+	Quantization     string  `json:"quantization,omitempty"`
+	Temperature      float64 `json:"temperature"`
+	MaxTokens        int     `json:"max_tokens"`
+	AppContextBudget int     `json:"app_context_budget"`
+}
+
+func localModelPerformanceHandler(ollamaURL, model string, cfg LocalLLMConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result := localModelPerformance{Model: model, Temperature: cfg.Temperature, MaxTokens: cfg.MaxTokens, AppContextBudget: cfg.ContextWindow}
+		client := &http.Client{Timeout: 2 * time.Second}
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(ollamaURL, "/")+"/api/ps", nil)
+		if err != nil {
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			defer response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				var loaded struct {
+					Models []struct {
+						Name          string `json:"name"`
+						Size          int64  `json:"size"`
+						SizeVRAM      int64  `json:"size_vram"`
+						ContextLength int    `json:"context_length"`
+						Details       struct {
+							Quantization string `json:"quantization_level"`
+						} `json:"details"`
+					} `json:"models"`
+				}
+				if json.NewDecoder(response.Body).Decode(&loaded) == nil {
+					for _, item := range loaded.Models {
+						if item.Name == model {
+							result.Loaded, result.LoadedSizeBytes, result.VRAMBytes = true, item.Size, item.SizeVRAM
+							result.ContextLength, result.Quantization = item.ContextLength, item.Details.Quantization
+							break
+						}
+					}
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func providerStatusHandler(cloudConfigured bool, ollamaURL, model string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := providerStatus{OllamaModel: model, CloudConfigured: cloudConfigured}

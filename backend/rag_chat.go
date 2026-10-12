@@ -2,9 +2,39 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"regexp"
 	"strings"
 )
+
+var historicalHoursRange = regexp.MustCompile(`(?i)\d+(?:[.,]\d+)?\s*[–-]\s*\d+(?:[.,]\d+)?\s*(?:ч\.?|час(?:а|ов)?)`)
+
+// groundHistoricalHours gives a precise source-backed answer when a small
+// local model treats a question about an old estimate as a new task, or quotes
+// a chunk without the relevant hours. It only applies to explicit similar-
+// task duration questions and a retrieved preliminary-estimate range.
+func groundHistoricalHours(question string, found []scoredChunk, turn *agentTurn) bool {
+	query := strings.ToLower(question)
+	if !strings.Contains(query, "похож") || !strings.Contains(query, "час") {
+		return false
+	}
+	for _, chunk := range found {
+		if !strings.Contains(strings.ToLower(chunk.Text), "предварительная оценка") {
+			continue
+		}
+		hours := historicalHoursRange.FindString(chunk.Text)
+		if hours == "" {
+			continue
+		}
+		hours = strings.TrimSuffix(hours, ".")
+		turn.Reply = fmt.Sprintf("В прошлой переписке похожую задачу предварительно оценили в %s. Фактически затраченное время в источнике не указано.", hours)
+		turn.Estimate = nil
+		turn.Citations = []rawCitation{{ChunkID: chunk.ID, Text: chunk.Text}}
+		return true
+	}
+	return false
+}
 
 // Day 25: the main "Ассистент по оценке задач" chat grounds itself in the
 // same RAG index the standalone «Похожие задачи» screen (days 21-24)
@@ -56,7 +86,7 @@ func retrieveForChat(ctx context.Context, ollama *OllamaClient, idx *RagIndex, q
 func ragChatSystemPrompt(found []scoredChunk) string {
 	return "Найденный контекст из истории прошлых задач, релевантный текущему вопросу пользователя:\n\n" +
 		formatChunksForPrompt(found) +
-		"Используй его в ответе ТОЛЬКО если он реально относится к текущему вопросу, и в этом случае обязательно процитируй в поле \"citations\" своего JSON-ответа дословный фрагмент, на который опираешься (см. системный промпт выше). Если ничего из этого не относится к вопросу — не упоминай это и оставь \"citations\" пустым массивом."
+		"Используй его в ответе ТОЛЬКО если он реально относится к текущему вопросу, и в этом случае обязательно процитируй в поле \"citations\" своего JSON-ответа дословный фрагмент, на который опираешься (см. системный промпт выше). Если вопрос о часах прошлой задачи, найди фрагмент, в котором прямо указаны часы; перепиши эти часы в естественном ответе reply и цитируй именно этот фрагмент с числом. Если указана только предварительная оценка, не называй её фактическим временем. Никогда не пиши строку \"estimate=null\" как ответ пользователю. Если ничего из этого не относится к вопросу — не упоминай это и оставь \"citations\" пустым массивом."
 }
 
 // AddRagSource wires the RAG index/embedder into chat turns — called once

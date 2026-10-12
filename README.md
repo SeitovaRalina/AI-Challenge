@@ -146,6 +146,28 @@ endpoints accept optional `provider: "ollama" | "litellm"`; omitted provider
 keeps their prior LiteLLM default for API callers. See
 [`docs/local-rag-day28.md`](docs/local-rag-day28.md) for checks and comparison.
 
+## Local LLM optimization (Day 29)
+
+The Ollama chat uses a separate answer temperature (default `0.1`), response
+cap (default `1024` tokens), and application context budget (default `4096`
+tokens). Set `OLLAMA_CHAT_TEMPERATURE`, `OLLAMA_CHAT_MAX_TOKENS`, and
+`OLLAMA_CHAT_CONTEXT_WINDOW` to change them. The context budget limits the
+application's requests; configure Ollama's actual `num_ctx` separately and
+check its loaded value in `/perf` before raising the budget. Cloud settings
+are unaffected. Local answer requests use Ollama's JSON mode, and explicit
+task-estimation requests bypass unnecessary MCP tool routing.
+For a specific question about hours in a similar past task, a verified
+retrieved estimate supplies the range and citation; the reply labels it as
+a preliminary estimate rather than completed work time.
+
+Type `/perf` in a normal chat to inspect the last answer's provider, latency,
+tokens, and end-to-end token rate, plus median latency by provider over the
+last ten measured answers. It also reports the loaded Ollama model's
+quantization, context, allocated size, and VRAM. Model allocation is not the
+host's total RAM use; CPU and process RAM measurements require an external
+benchmark. See [`docs/local-llm-day29.md`](docs/local-llm-day29.md) for the
+controlled comparison and its limits.
+
 ## Running the project
 
 ### Backend

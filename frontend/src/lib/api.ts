@@ -13,6 +13,22 @@ export function getProviderStatus(): Promise<ProviderStatus> {
   return request<ProviderStatus>('/api/llm/providers')
 }
 
+export interface LocalModelPerformance {
+  model: string
+  loaded: boolean
+  loaded_size_bytes?: number
+  vram_bytes?: number
+  context_length?: number
+  quantization?: string
+  temperature: number
+  max_tokens: number
+  app_context_budget: number
+}
+
+export function getLocalModelPerformance(): Promise<LocalModelPerformance> {
+  return request<LocalModelPerformance>('/api/llm/performance')
+}
+
 export interface Subtask {
   name: string
   description: string
@@ -284,6 +300,7 @@ export interface AgentMessage {
   content: string
   created_at: string
   usage?: TokenUsage
+  performance?: TurnPerformance
   is_lab_analysis?: boolean
   // Set only on assistant messages from a real turn — the stage as of
   // right after that reply, durable across reload (see task_state.go).
@@ -307,6 +324,12 @@ export interface AgentMessage {
   // never trusted on the model's word alone.
   sources?: RetrievedChunk[]
   citations?: Citation[]
+}
+
+export interface TurnPerformance {
+  provider: LLMProvider
+  model: string
+  duration_ms: number
 }
 
 export type ActivityKind = 'commit' | 'pr_opened' | 'pr_merged' | 'review' | 'issue_comment' | 'meeting'
@@ -437,6 +460,7 @@ export interface AgentReply extends StrategyState {
   estimate: Estimate | null
   title: string
   usage: TokenUsage | null
+  performance?: TurnPerformance
   user_message_created_at: string
   assistant_message_created_at: string
   last_context_tokens: number

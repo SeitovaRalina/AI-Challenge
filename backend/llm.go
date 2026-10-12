@@ -120,13 +120,16 @@ type llmTool struct {
 }
 
 type chatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stop        []string      `json:"stop,omitempty"`
-	Tools       []llmTool     `json:"tools,omitempty"`
-	ToolChoice  string        `json:"tool_choice,omitempty"`
+	Model          string        `json:"model"`
+	Messages       []chatMessage `json:"messages"`
+	Temperature    float64       `json:"temperature"`
+	MaxTokens      int           `json:"max_tokens,omitempty"`
+	Stop           []string      `json:"stop,omitempty"`
+	Tools          []llmTool     `json:"tools,omitempty"`
+	ToolChoice     string        `json:"tool_choice,omitempty"`
+	ResponseFormat *struct {
+		Type string `json:"type"`
+	} `json:"response_format,omitempty"`
 }
 
 // chatCompletionUsage is the token/cost accounting the LiteLLM gateway
@@ -167,7 +170,7 @@ func (c *LiteLLMClient) doChatCompletion(ctx context.Context, model string, mess
 // answer (finish_reason "tool_calls").
 // toolChoice "none" still describes the tools (required once the history
 // contains tool calls) but forbids calling them; "" leaves it to the model.
-func (c *LiteLLMClient) doChatCompletionWithTools(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, tools []llmTool, toolChoice string) (*chatCompletionResponse, error) {
+func (c *LiteLLMClient) doChatCompletionWithTools(ctx context.Context, messages []chatMessage, temperature float64, maxTokens int, tools []llmTool, toolChoice string, jsonMode bool) (*chatCompletionResponse, error) {
 	req := chatCompletionRequest{
 		Model:       c.model,
 		Messages:    messages,
@@ -177,6 +180,11 @@ func (c *LiteLLMClient) doChatCompletionWithTools(ctx context.Context, messages 
 	}
 	if len(tools) > 0 && toolChoice != "" {
 		req.ToolChoice = toolChoice
+	}
+	if jsonMode {
+		req.ResponseFormat = &struct {
+			Type string `json:"type"`
+		}{Type: "json_object"}
 	}
 	return c.complete(ctx, req)
 }

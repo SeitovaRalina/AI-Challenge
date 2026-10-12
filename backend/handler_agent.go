@@ -57,7 +57,7 @@ func agentErrorResponse(err error) (int, string) {
 // every handler below that returns a ChatDetail uses this instead of calling
 // chatDetail directly, so that field is never forgotten on one path.
 func chatDetailWithLab(agent *Agent, chat *Chat) ChatDetail {
-	detail := chatDetail(chat, agent.contextTokenLimit, agent.historyKeepLastN)
+	detail := chatDetail(chat, agent.effectiveContextLimit(chat.Provider), agent.historyKeepLastN)
 	detail.IsLabCoordinator = agent.IsLabCoordinator(chat.LabID, chat.ID)
 	if detail.IsLabCoordinator {
 		detail.FanOut = agent.FanOutStatus(chat.LabID)

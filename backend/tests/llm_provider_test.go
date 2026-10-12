@@ -23,13 +23,32 @@ const bareEstimate = `{"summary":"Экспорт CSV","category":"функция
 // This package lives outside package main, so it checks the real HTTP
 // contract and persisted files without depending on unexported app details.
 func TestChatProviderRoutingAndPersistence(t *testing.T) {
-	var localCalls, cloudCalls atomic.Int32
+	var localCalls, cloudCalls, localRoutingCalls atomic.Int32
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
 			_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]string{"name": "local-model"}}})
+		case "/api/ps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{map[string]any{"name": "local-model", "size": 2000000000, "size_vram": 0, "context_length": 4096, "details": map[string]string{"quantization_level": "Q4_K_M"}}}})
 		case "/v1/chat/completions":
 			localCalls.Add(1)
+			var payload struct {
+				MaxTokens      int               `json:"max_tokens"`
+				Temperature    float64           `json:"temperature"`
+				Tools          []json.RawMessage `json:"tools"`
+				ResponseFormat *struct {
+					Type string `json:"type"`
+				} `json:"response_format"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode local request: %v", err)
+			}
+			if payload.MaxTokens == 1024 && (payload.ResponseFormat == nil || payload.ResponseFormat.Type != "json_object" || payload.Temperature != 0.1) {
+				t.Errorf("local answer settings: %+v", payload)
+			}
+			if payload.MaxTokens == 512 && len(payload.Tools) > 0 {
+				localRoutingCalls.Add(1)
+			}
 			writeCompletion(t, w, bareEstimate)
 		default:
 			t.Errorf("unexpected Ollama path: %s", r.URL.Path)
@@ -62,6 +81,15 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build backend: %v\n%s", err, output)
 	}
+	worklogBinary := filepath.Join(workDir, "mcp-worklog")
+	if runtime.GOOS == "windows" {
+		worklogBinary += ".exe"
+	}
+	buildWorklog := exec.Command("go", "build", "-o", worklogBinary, "./cmd/mcp-worklog")
+	buildWorklog.Dir = backendDir
+	if output, err := buildWorklog.CombinedOutput(); err != nil {
+		t.Fatalf("build isolated Worklog: %v\n%s", err, output)
+	}
 
 	start := func(cloudConfigured bool) (string, func()) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,7 +110,7 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 			"CALDAV_USERNAME=",
 			"CALDAV_APP_PASSWORD=",
 			"COLLECT_INTERVAL=off",
-			"MCP_WORKLOG_COMMAND=nonexistent-worklog-command",
+			"MCP_WORKLOG_COMMAND="+worklogBinary,
 		)
 		if cloudConfigured {
 			cmd.Env = append(cmd.Env, "LITELLM_BASE_URL="+cloud.URL, "LITELLM_API_KEY=test-only-key", "LITELLM_MODEL=cloud-model")
@@ -161,6 +189,39 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 	if status := request(base, http.MethodPost, messagePath, map[string]string{"message": "Оцени экспорт CSV"}, &reply); status != http.StatusOK || reply.Provider != "ollama" || string(reply.Estimate) == "null" {
 		t.Fatalf("local estimate: status=%d reply=%+v", status, reply)
 	}
+	var activityChat struct {
+		ID string `json:"id"`
+	}
+	if status := request(base, http.MethodPost, "/api/agent/chats", map[string]string{"provider": "ollama"}, &activityChat); status != http.StatusCreated {
+		t.Fatalf("create activity probe chat: status=%d", status)
+	}
+	if status := request(base, http.MethodPost, "/api/agent/chats/"+activityChat.ID+"/messages", map[string]string{"message": "Что я делала вчера?"}, &reply); status != http.StatusOK || localRoutingCalls.Load() == 0 {
+		t.Fatalf("activity should still reach Worklog tool routing: status=%d calls=%d", status, localRoutingCalls.Load())
+	}
+	routingBeforeRevision := localRoutingCalls.Load()
+	if status := request(base, http.MethodPost, messagePath, map[string]string{"message": "Добавь проверку прав доступа к CSV-экспорту и обнови оценку."}, &reply); status != http.StatusOK || string(reply.Estimate) == "null" || localRoutingCalls.Load() != routingBeforeRevision {
+		t.Fatalf("estimate revision must not route activity: status=%d reply=%+v routing=%d->%d", status, reply, routingBeforeRevision, localRoutingCalls.Load())
+	}
+	var performance struct {
+		Loaded        bool   `json:"loaded"`
+		Quantization  string `json:"quantization"`
+		ContextLength int    `json:"context_length"`
+	}
+	if status := request(base, http.MethodGet, "/api/llm/performance", nil, &performance); status != http.StatusOK || !performance.Loaded || performance.Quantization != "Q4_K_M" || performance.ContextLength != 4096 {
+		t.Fatalf("local performance: status=%d details=%+v", status, performance)
+	}
+	var withPerformance struct {
+		ContextTokenLimit int `json:"context_token_limit"`
+		Messages          []struct {
+			Performance *struct {
+				Provider   string `json:"provider"`
+				DurationMS int64  `json:"duration_ms"`
+			} `json:"performance"`
+		} `json:"messages"`
+	}
+	if status := request(base, http.MethodGet, "/api/agent/chats/"+created.ID, nil, &withPerformance); status != http.StatusOK || withPerformance.ContextTokenLimit != 4096 || len(withPerformance.Messages) != 4 || withPerformance.Messages[3].Performance == nil || withPerformance.Messages[3].Performance.Provider != "ollama" {
+		t.Fatalf("persisted local performance: status=%d chat=%+v", status, withPerformance)
+	}
 	if localCalls.Load() < 2 || cloudCalls.Load() != 0 {
 		t.Fatalf("local turn: local calls=%d cloud calls=%d", localCalls.Load(), cloudCalls.Load())
 	}
@@ -176,12 +237,15 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 		Messages []json.RawMessage `json:"messages"`
 	}
 	chatPath := "/api/agent/chats/" + created.ID
-	if status := request(base, http.MethodGet, chatPath, nil, &restored); status != http.StatusOK || restored.Provider != "ollama" || len(restored.Messages) != 2 {
+	if status := request(base, http.MethodGet, chatPath, nil, &restored); status != http.StatusOK || restored.Provider != "ollama" || len(restored.Messages) != 4 {
 		t.Fatalf("restored local chat: status=%d chat=%+v", status, restored)
 	}
 	beforeLocal := localCalls.Load()
-	if status := request(base, http.MethodPatch, chatPath+"/provider", map[string]string{"provider": "litellm"}, nil); status != http.StatusOK {
-		t.Fatalf("switch to cloud: status=%d", status)
+	var switched struct {
+		LastContextTokens int `json:"last_context_tokens"`
+	}
+	if status := request(base, http.MethodPatch, chatPath+"/provider", map[string]string{"provider": "litellm"}, &switched); status != http.StatusOK || switched.LastContextTokens != 0 {
+		t.Fatalf("switch to cloud: status=%d context=%d", status, switched.LastContextTokens)
 	}
 	if status := request(base, http.MethodPost, messagePath, map[string]string{"message": "Уточнение"}, &reply); status != http.StatusOK || reply.Provider != "litellm" {
 		t.Fatalf("cloud turn: status=%d reply=%+v", status, reply)

@@ -17,6 +17,7 @@ import { ChatEstimateCard } from '@/components/chat-estimate-card'
 import { ContextPopup } from '@/components/context-popup'
 import { ContextStrategySelect } from '@/components/context-strategy-select'
 import { Markdown } from '@/components/markdown'
+import { PerformancePopup } from '@/components/performance-popup'
 import { CitationList, SourceList } from '@/components/rag-sources'
 import { RunningToolCall, ToolCallCard, ToolCallList } from '@/components/tool-call-card'
 import type { TurnProgress } from '@/lib/turn-progress'
@@ -33,12 +34,14 @@ import type {
   Estimate,
   FanOutStatus,
   LLMProvider,
+  LocalModelPerformance,
   ProviderStatus,
   TaskMemory,
   TaskState,
   TokenUsage,
   UserProfile,
 } from '@/lib/api'
+import { getLocalModelPerformance } from '@/lib/api'
 import { isRealStrategy, STRATEGY_META } from '@/lib/strategy'
 
 const EXAMPLE_TASK =
@@ -93,6 +96,7 @@ const TOKENS_COMMAND = '/tokens'
 const COMPRESS_COMMAND = '/compress'
 const CONTEXT_COMMAND = '/context'
 const ANALYZE_COMMAND = '/analyze'
+const PERF_COMMAND = '/perf'
 
 interface SlashCommand {
   name: string
@@ -215,6 +219,9 @@ export function ChatPanel({
   const [interviewStep, setInterviewStep] = useState<number | null>(null)
   const [tokensPopupOpen, setTokensPopupOpen] = useState(false)
   const [contextPopupOpen, setContextPopupOpen] = useState(false)
+  const [performancePopupOpen, setPerformancePopupOpen] = useState(false)
+  const [localPerformance, setLocalPerformance] = useState<LocalModelPerformance | null>(null)
+  const [localPerformanceError, setLocalPerformanceError] = useState(false)
   const [textareaFocused, setTextareaFocused] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -242,6 +249,7 @@ export function ChatPanel({
     : [
         { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
         { name: CONTEXT_COMMAND, description: 'что сейчас в контексте' },
+        ...(!isLabChat ? [{ name: PERF_COMMAND, description: 'скорость и ресурсы модели' }] : []),
         ...(contextStrategy === 'rolling_summary'
           ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
           : []),
@@ -311,6 +319,15 @@ export function ChatPanel({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [contextPopupOpen])
 
+  useEffect(() => {
+    if (!performancePopupOpen) return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setPerformancePopupOpen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [performancePopupOpen])
+
   function advanceInterview() {
     setInterviewStep((current) => {
       if (current === null) return null
@@ -357,6 +374,15 @@ export function ChatPanel({
     if (trimmed === CONTEXT_COMMAND) {
       setContextPopupOpen(true)
       setDraft('')
+      return
+    }
+
+    if (trimmed === PERF_COMMAND) {
+      setPerformancePopupOpen(true)
+      setLocalPerformance(null)
+      setLocalPerformanceError(false)
+      setDraft('')
+      void getLocalModelPerformance().then(setLocalPerformance).catch(() => setLocalPerformanceError(true))
       return
     }
 
@@ -536,6 +562,15 @@ export function ChatPanel({
             />
           )}
 
+          {performancePopupOpen && (
+            <PerformancePopup
+              messages={messages}
+              runtime={localPerformance}
+              runtimeError={localPerformanceError}
+              onClose={() => setPerformancePopupOpen(false)}
+            />
+          )}
+
           {contextPopupOpen && (
             <ContextPopup
               chatId={chatId}
@@ -656,8 +691,8 @@ export function ChatPanel({
                 size="sm"
                 disabled={
                   !draft.trim() ||
-                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND) ||
-                  (!canSendMessages && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND)
+                  (isSending && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND && draft.trim() !== PERF_COMMAND) ||
+                  (!canSendMessages && draft.trim() !== TOKENS_COMMAND && draft.trim() !== CONTEXT_COMMAND && draft.trim() !== PERF_COMMAND)
                 }
                 className="absolute right-1.5 bottom-1.5"
               >
