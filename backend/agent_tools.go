@@ -257,7 +257,10 @@ func (a *Agent) completeWithTools(ctx context.Context, chatID string, messages [
 		temperature = a.localConfig.Temperature
 	}
 	for attempt := 0; ; attempt++ {
-		completion, err = a.clientFor(ctx).doChatCompletionWithTools(ctx, answerMessages, temperature, maxTokens, answerTools, toolChoice, local)
+		// Ollama's JSON mode can return only {} when the answer contains a
+		// tool-call transcript. Keep JSON mode for ordinary local answers; the
+		// existing envelope parser accepts a plain activity answer as fallback.
+		completion, err = a.clientFor(ctx).doChatCompletionWithTools(ctx, answerMessages, temperature, maxTokens, answerTools, toolChoice, local && len(transcript) == 0)
 		if err != nil {
 			return nil, records, usage, contextTokens, err
 		}
