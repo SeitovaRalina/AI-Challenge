@@ -68,6 +68,17 @@ func (a *Agent) providerClient(provider LLMProvider) (*LiteLLMClient, error) {
 	return nil, ErrProviderUnavailable
 }
 
+// Local CPU inference can spend over a minute on tool routing before the
+// answering call starts. Give it enough time to finish both steps; cloud
+// turns retain the existing shorter budget.
+func (a *Agent) chatTurnTimeout(chatID string) time.Duration {
+	chat, err := a.GetChat(chatID)
+	if err == nil && chat.Provider == ProviderOllama {
+		return 4 * time.Minute
+	}
+	return 120 * time.Second
+}
+
 func cloudOnly(client *LiteLLMClient, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if client == nil {
