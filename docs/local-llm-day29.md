@@ -1,94 +1,48 @@
-# Day 29: local chat optimization
+# День 29: оптимизация локального чата
 
-## Scope
+## Задача
 
-The target is the task-estimation chat using local `qwen2.5:3b` on the Windows
-development PC. The existing LiteLLM chat path is unchanged. The local chat
-still uses the Week 5 RAG index when History is enabled and still routes
-activity questions through MCP tools when they are available.
+Оптимизируем чат для оценки задач с локальной моделью `qwen2.5:3b` на Windows ПК. Чат через LiteLLM работает по прежнему пути. При включённой «Истории» локальный чат использует RAG-индекс недели 5, а вопросы о рабочей активности при доступности инструментов направляет через MCP.
 
-## Changes
+## Что изменилось
 
-- Local answer temperature defaults to `0.1` (`OLLAMA_CHAT_TEMPERATURE`, valid range 0–2); the answer cap defaults to 1024 tokens (`OLLAMA_CHAT_MAX_TOKENS`, valid range 128–8192).
-- The application budgets 4096 context tokens for local chat (`OLLAMA_CHAT_CONTEXT_WINDOW`, valid range 2048–32768). This does not change Ollama's actual `num_ctx`; configure that in an Ollama Modelfile and confirm the running value with `/perf` before increasing the app budget.
-- The local answer request uses Ollama's `response_format: {"type":"json_object"}`. Its prompt also calls out exact JSON keys and forbids invented historical facts. Tool-routing requests remain outside JSON mode.
-- A clear request to estimate or revise a task skips the separate model call that decides whether to use work-activity tools. Ambiguous questions and explicit activity/calendar questions still use the existing router.
-- `/perf` reads the saved provider, model, answer latency, and tokens for this chat's last ten assistant turns. Ollama's `/api/ps` supplies loaded model size, VRAM allocation, quantization, and actual context length. The panel explicitly separates loaded size from host RAM usage.
-- For an explicit question about the hours of a similar past task, a small local model sometimes invents a new estimate, omits the relevant citation, or describes a preliminary estimate as work actually completed. When retrieval contains a preliminary estimate with an hour range, the backend renders that narrow answer from the retrieved range, marks actual hours unknown, and verifies a citation against the source. Other questions keep the model's normal answer.
+- Температура локального ответа по умолчанию — `0.1` (`OLLAMA_CHAT_TEMPERATURE`, допустимо 0–2). Максимальная длина ответа — 1024 токена (`OLLAMA_CHAT_MAX_TOKENS`, допустимо 128–8192).
+- Приложение выделяет для контекста локального чата 4096 токенов (`OLLAMA_CHAT_CONTEXT_WINDOW`, допустимо 2048–32768). Эта настройка не меняет фактический `num_ctx` в Ollama. Чтобы увеличить его, настройте Ollama Modelfile и проверьте запущенное значение через `/perf`, прежде чем увеличивать бюджет в приложении.
+- Запрос локального ответа использует режим Ollama `response_format: {"type":"json_object"}`. Промпт явно перечисляет ключи JSON и запрещает выдумывать исторические факты. Запросы маршрутизации инструментов работают вне этого режима.
+- Если пользователь явно просит оценить задачу или уточнить оценку, приложение пропускает отдельный вызов модели для решения, нужны ли инструменты рабочей активности. Неоднозначные вопросы и явные вопросы об активности или календаре по-прежнему проходят через существующий маршрутизатор.
+- `/perf` показывает сохранённые провайдер, модель, время ответа и токены последних десяти ответов ассистента в текущем чате. Из Ollama `/api/ps` панель получает размер загруженной модели, объём в VRAM, квантование и фактическую длину контекста. Размер загруженной модели и расход оперативной памяти компьютера показаны как разные показатели.
+- На явный вопрос о часах похожей задачи из прошлого небольшая локальная модель иногда придумывает новую оценку, не приводит нужную цитату или выдаёт предварительную оценку за фактически затраченное время. Если среди найденных фрагментов есть предварительная оценка с диапазоном часов, backend формирует узкий ответ из этого диапазона, указывает, что фактические часы неизвестны, и подтверждает цитату по источнику. На другие вопросы модель отвечает обычным образом.
 
-## Reproducing measurements
+## Как проводились измерения
 
-The local-only `demo/w06-d29-benchmark.py` starts its own backend on an unused
-port with a new data directory. It sends the same three prompts through the
-real chat API and samples Ollama process RSS and CPU with `psutil`. It never
-loads or copies existing conversations. First build the binary from the
-revision under test, then run:
+Временный локальный скрипт запускал собственный backend на свободном порту с новым каталогом данных. Он отправлял через настоящий API чата три запроса, одинаковых для обеих версий, и измерял RSS и загрузку CPU процессов Ollama с помощью `psutil`. Существующие переписки не читались и не копировались. После измерений временные скрипт, бинарные файлы и логи удалены из `demo/`; сейчас там остаются только сценарии записи.
 
-```powershell
-cd backend
-go build -o ..\demo\w06-d29-optimized.exe .
-cd ..
-python demo/w06-d29-benchmark.py demo/w06-d29-optimized.exe demo/w06-d29-optimized.json
-```
+CPU — суммарная загрузка процессов Ollama в процентах от одного логического ядра. RSS — сумма измеренных значений для процессов Ollama, включая процесс выполнения модели. Качество ответов оценивалось вручную по сохранённым ответам, оценкам и HTTP-статусам. В изолированном тесте были отключены MCP-серверы и облачные учётные данные, поэтому он не измерял выигрыш от пропуска маршрутизации MCP в основном приложении с подключёнными инструментами.
 
-CPU is the summed Ollama process percentage relative to one logical core;
-RSS is the sum of the sampled Ollama processes, including the model runner.
-The script does not measure response quality automatically; inspect the
-recorded replies, estimates, and HTTP status for each case. The isolated
-benchmark disables MCP servers and cloud credentials, so it cannot quantify
-the benefit of skipping MCP routing in a fully connected main instance.
+## Сравнение
 
-## Comparison
+Все результаты ниже получены на одном Windows ПК с CPU, в отдельных процессах backend и отдельных каталогах данных. Каждая строка — один запуск. Небольшую разницу следует считать наблюдением, а не статистически устойчивым ускорением. Перед возвратом HTTP-ответа приложение дожидалось фонового обновления памяти; `/perf` показывает более короткое время до ответа ассистента.
 
-All results below came from isolated backend processes with separate data
-directories on the same Windows CPU machine. Each row is one run, so small
-differences are observations rather than a statistically stable speedup.
-The application waited for its background memory updates before returning the
-HTTP response; `/perf` reports the earlier assistant-answer time.
-
-| Same prompt, no MCP source | Before: Q4 default | After: Q4 optimized |
+| Одинаковый запрос, без источника MCP | До: Q4 по умолчанию | После: Q4 с настройками |
 | --- | ---: | ---: |
-| New CSV export estimate | 38.4 s, HTTP 200 | 34.6 s, HTTP 200 |
-| Add amount column, revise estimate | 44.1 s, HTTP 200 | 55.0 s, HTTP 200 |
-| Ask about yesterday's activity, with no activity source | 27.6 s, HTTP 200 | 37.5 s, HTTP 200 |
-| Peak sampled Ollama process RSS | 2350 MiB | 2344 MiB |
-| Peak summed CPU use (100% = one logical core) | 815% | 806% |
+| Первичная оценка CSV-экспорта | 38,4 с, HTTP 200 | 34,6 с, HTTP 200 |
+| Добавление колонки суммы и пересмотр оценки | 44,1 с, HTTP 200 | 55,0 с, HTTP 200 |
+| Вопрос о вчерашней активности без источника данных | 27,6 с, HTTP 200 | 37,5 с, HTTP 200 |
+| Пиковый измеренный RSS процессов Ollama | 2350 МиБ | 2344 МиБ |
+| Пиковая суммарная загрузка CPU (100% = одно логическое ядро) | 815% | 806% |
 
-The stricter JSON prompt sometimes increases latency and tokens when no tool
-router is needed. On an earlier baseline run, the activity answer failed with
-HTTP 502 because the model emitted the malformed key `"citations:[]`; the
-optimized run succeeded. The matched run above had no such failure on either
-version, so one observation is not a failure-rate estimate.
+Более строгий промпт для JSON иногда увеличивает время и число токенов, когда маршрутизатор инструментов не нужен. В одном более раннем запуске до оптимизации ответ на вопрос об активности завершился HTTP 502: модель выдала некорректный ключ `"citations:[]`. После оптимизации тот запрос прошёл успешно. В сопоставимом запуске из таблицы ошибок не было ни в одной версии, поэтому один случай не позволяет оценить частоту сбоев.
 
-With an isolated Worklog MCP server available, the *same* estimate request
-gave the same visible 4–7-hour estimate on both versions. Before optimization
-the router and answer consumed 3067 tokens and the HTTP request took 89.1 s;
-after the explicit-estimate routing skip they consumed 861 tokens and took
-36.4 s (59% less elapsed time for this case). Both returned HTTP 200. This
-is the relevant speed improvement for the normal, MCP-connected app.
+Когда изолированный MCP-сервер Worklog был доступен, *одинаковый* запрос на оценку в обеих версиях дал одинаковый видимый диапазон 4–7 часов. До оптимизации маршрутизатор и ответ израсходовали 3067 токенов, а HTTP-запрос занял 89,1 с. После пропуска маршрутизации для явной оценки — 861 токен и 36,4 с (на 59% меньше времени для этого случая). Оба запроса вернули HTTP 200. Это измерение показывает выигрыш для обычного приложения с подключённым MCP.
 
-The installed `qwen2.5:3b` is Q4_K_M. The temporary
-`qwen2.5:3b-instruct-q3_K_M` variant reduced Ollama's reported loaded size
-from 2.02 to 1.70 GiB at the same 4096-token context. Its new-estimate
-answer repeated placeholder text, and its follow-up failed with HTTP 502;
-the variant was removed. Process RSS for that run cannot be compared directly
-because Ollama had both Q3 and Q4 models loaded during sampling.
+Установленная `qwen2.5:3b` использует квантование Q4_K_M. Временный вариант `qwen2.5:3b-instruct-q3_K_M` уменьшил размер загруженной модели, который сообщает Ollama, с 2,02 до 1,70 ГиБ при том же контексте 4096 токенов. В первичной оценке он повторял текст-заглушку, а уточняющий запрос завершился HTTP 502; этот вариант удалён. RSS процессов для данного запуска нельзя напрямую сравнить с Q4, поскольку во время измерений Ollama держала загруженными обе модели.
 
-A temporary Q4 variant with `num_ctx 8192` raised Ollama's loaded size from
-2.02 to 2.25 GiB. On the same short estimate prompt it returned HTTP 200 in
-60.3 s, versus 34.6 s with 4096. The larger window had no visible quality
-benefit for this prompt, so the application keeps 4096 and the temporary
-variant was removed. A longer-history task may justify revisiting this choice.
+Временный вариант Q4 с `num_ctx 8192` увеличил размер загруженной модели с 2,02 до 2,25 ГиБ. На том же коротком запросе на оценку он вернул HTTP 200 за 60,3 с против 34,6 с при контексте 4096. Для этого запроса улучшения качества не было видно, поэтому приложение сохраняет 4096, а временный вариант удалён. Для задачи с более длинной историей это решение может потребовать пересмотра.
 
-An isolated main-chat RAG check reindexed one synthetic conversation, enabled
-History, and asked how many hours a similar CSV task took. The final local
-answer reported the prior **preliminary** 4–7-hour estimate, said actual
-hours were unknown, and returned one server-verified citation to the chunk
-containing those hours (HTTP 200, 20.3 s). The index and chat lived only in
-the benchmark directory; no personal conversations were used.
+При изолированной проверке RAG в основном чате одна тестовая переписка была переиндексирована. Затем мы включили «Историю» и спросили, сколько часов заняла похожая задача с CSV. Итоговый локальный ответ привёл **предварительную** оценку 4–7 часов, сообщил, что фактическое время неизвестно, и вернул одну цитату, подтверждённую сервером по фрагменту с этими часами (HTTP 200, 20,3 с). Индекс и чат находились только в каталоге теста; личные переписки не использовались.
 
-## References
+## Ссылки
 
-- [Ollama Modelfile parameters](https://docs.ollama.com/modelfile)
-- [Ollama OpenAI compatibility, JSON mode](https://docs.ollama.com/api/openai-compatibility)
-- [Ollama running model metadata](https://docs.ollama.com/api/ps)
+- [Параметры Ollama Modelfile](https://docs.ollama.com/modelfile)
+- [Совместимость Ollama с OpenAI API и режим JSON](https://docs.ollama.com/api/openai-compatibility)
+- [Данные о запущенных моделях Ollama](https://docs.ollama.com/api/ps)
