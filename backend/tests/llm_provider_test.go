@@ -215,8 +215,11 @@ func TestChatProviderRoutingAndPersistence(t *testing.T) {
 		t.Fatalf("restored local chat: status=%d chat=%+v", status, restored)
 	}
 	beforeLocal := localCalls.Load()
-	if status := request(base, http.MethodPatch, chatPath+"/provider", map[string]string{"provider": "litellm"}, nil); status != http.StatusOK {
-		t.Fatalf("switch to cloud: status=%d", status)
+	var switched struct {
+		LastContextTokens int `json:"last_context_tokens"`
+	}
+	if status := request(base, http.MethodPatch, chatPath+"/provider", map[string]string{"provider": "litellm"}, &switched); status != http.StatusOK || switched.LastContextTokens != 0 {
+		t.Fatalf("switch to cloud: status=%d context=%d", status, switched.LastContextTokens)
 	}
 	if status := request(base, http.MethodPost, messagePath, map[string]string{"message": "Уточнение"}, &reply); status != http.StatusOK || reply.Provider != "litellm" {
 		t.Fatalf("cloud turn: status=%d reply=%+v", status, reply)

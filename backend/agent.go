@@ -535,7 +535,12 @@ func (a *Agent) SetProvider(chatID string, provider LLMProvider) (*Chat, error) 
 	if chat.LabID != "" {
 		return nil, ErrWrongStrategy
 	}
-	chat.Provider = provider
+	if chat.Provider != provider {
+		chat.Provider = provider
+		// The previous provider's measured context is not this model's input.
+		// In particular, a large cloud context must not block the first local turn.
+		chat.setBranchLastContextTokens(chat.ActiveBranchID, 0)
+	}
 	if err := a.store.Save(chat); err != nil {
 		return nil, err
 	}
