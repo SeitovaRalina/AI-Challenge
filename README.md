@@ -168,6 +168,19 @@ host's total RAM use; CPU and process RAM measurements require an external
 benchmark. See [`docs/local-llm-day29.md`](docs/local-llm-day29.md) for the
 controlled comparison and its limits.
 
+## Private LLM service (Day 30)
+
+Ollama can run on a private Ubuntu VPS while this application's backend and UI
+stay on the development PC. The VPS exposes Ollama and a rate-limited Nginx
+gateway only on its loopback interface. An SSH local forward makes that HTTP API
+available to the backend at `http://127.0.0.1:11435`; no public Ollama port or
+new chat storage is required. Set `OLLAMA_CHAT_URL` to that address and
+`OLLAMA_CHAT_DEPLOYMENT=private_vps` to identify the service in the chat UI.
+`OLLAMA_CHAT_MODEL` selects the tested model installed on the VPS. The separate
+`OLLAMA_URL` continues to use the PC's Ollama for RAG embeddings. Setup,
+security boundaries, and reproducible checks are in
+[`docs/private-llm-day30.md`](docs/private-llm-day30.md).
+
 ## Running the project
 
 ### Backend

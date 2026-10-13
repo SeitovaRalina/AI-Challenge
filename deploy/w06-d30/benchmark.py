@@ -56,7 +56,7 @@ def measure(base_url: str, model: str, prompt: str) -> dict:
 
 def main() -> None:
     base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:11435"
-    models = sys.argv[2:] or ("qwen2.5:3b", "qwen3:4b")
+    models = sys.argv[2:] or ("qwen2.5:3b",)
     for model in models:
         for prompt in PROMPTS:
             try:
