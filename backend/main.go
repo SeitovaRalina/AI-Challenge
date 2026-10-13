@@ -118,6 +118,10 @@ func main() {
 	if strings.HasSuffix(ollamaChatModel, ":cloud") {
 		log.Fatal("OLLAMA_CHAT_MODEL must be a locally installed model")
 	}
+	ollamaDeployment := os.Getenv("OLLAMA_CHAT_DEPLOYMENT")
+	if ollamaDeployment != "" && ollamaDeployment != "local" && ollamaDeployment != "private_vps" {
+		log.Fatal("OLLAMA_CHAT_DEPLOYMENT must be local or private_vps")
+	}
 	localClient := NewLiteLLMClient(ollamaChatURL, "ollama", ollamaChatModel)
 	// Labs and projects get their own sibling directories rather than
 	// sharing dataDir: ChatStore.LoadAll globs every *.json file in its
@@ -132,7 +136,7 @@ func main() {
 	log.Printf("local chat: model=%s temperature=%.2f max_tokens=%d context_budget=%d", ollamaChatModel, agent.localConfig.Temperature, agent.localConfig.MaxTokens, agent.localConfig.ContextWindow)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/llm/providers", providerStatusHandler(client != nil, ollamaChatURL, ollamaChatModel))
+	mux.HandleFunc("GET /api/llm/providers", providerStatusHandler(client != nil, ollamaDeployment == "private_vps", ollamaChatURL, ollamaChatModel))
 	mux.HandleFunc("GET /api/llm/performance", localModelPerformanceHandler(ollamaChatURL, ollamaChatModel, agent.localConfig))
 	mux.HandleFunc("/api/estimate", cloudOnly(client, estimateHandler(client)))
 	mux.HandleFunc("/api/compare", cloudOnly(client, compareHandler(client)))

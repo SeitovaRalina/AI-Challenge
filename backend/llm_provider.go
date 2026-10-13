@@ -90,9 +90,10 @@ func cloudOnly(client *LiteLLMClient, next http.HandlerFunc) http.HandlerFunc {
 }
 
 type providerStatus struct {
-	OllamaAvailable bool   `json:"ollama_available"`
-	OllamaModel     string `json:"ollama_model"`
-	CloudConfigured bool   `json:"cloud_configured"`
+	OllamaAvailable  bool   `json:"ollama_available"`
+	OllamaModel      string `json:"ollama_model"`
+	OllamaPrivateVPS bool   `json:"ollama_private_vps"`
+	CloudConfigured  bool   `json:"cloud_configured"`
 }
 
 type localModelPerformance struct {
@@ -146,9 +147,9 @@ func localModelPerformanceHandler(ollamaURL, model string, cfg LocalLLMConfig) h
 	}
 }
 
-func providerStatusHandler(cloudConfigured bool, ollamaURL, model string) http.HandlerFunc {
+func providerStatusHandler(cloudConfigured, privateVPS bool, ollamaURL, model string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		status := providerStatus{OllamaModel: model, CloudConfigured: cloudConfigured}
+		status := providerStatus{OllamaModel: model, OllamaPrivateVPS: privateVPS, CloudConfigured: cloudConfigured}
 		client := &http.Client{Timeout: 2 * time.Second}
 		resp, err := client.Get(strings.TrimRight(ollamaURL, "/") + "/api/tags")
 		if err == nil {

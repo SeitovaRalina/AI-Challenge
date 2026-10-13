@@ -22,11 +22,13 @@ export function PerformancePopup({
   messages,
   runtime,
   runtimeError,
+  privateVPS,
   onClose,
 }: {
   messages: AgentMessage[]
   runtime: LocalModelPerformance | null
   runtimeError: boolean
+  privateVPS: boolean
   onClose: () => void
 }) {
   const turns = messages.filter((item) => item.role === 'assistant' && item.performance)
@@ -63,7 +65,7 @@ export function PerformancePopup({
         </div>}
 
         <div className="mt-4 space-y-1 border-t border-border pt-3 text-xs">
-          <p className="font-medium">Локальная модель сейчас</p>
+          <p className="font-medium">{privateVPS ? 'Модель на приватном VPS сейчас' : 'Локальная модель сейчас'}</p>
           {runtime ? <>
             <PerfRow name="Модель" value={runtime.model} />
             <PerfRow name="Температура / ответ" value={`${runtime.temperature} / ${runtime.max_tokens} токенов`} />

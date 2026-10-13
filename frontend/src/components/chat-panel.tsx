@@ -567,6 +567,7 @@ export function ChatPanel({
               messages={messages}
               runtime={localPerformance}
               runtimeError={localPerformanceError}
+              privateVPS={providerStatus?.ollama_private_vps ?? false}
               onClose={() => setPerformancePopupOpen(false)}
             />
           )}
@@ -734,7 +735,7 @@ export function ChatPanel({
                     onChange={(event) => onSetProvider(event.target.value as LLMProvider)}
                     className="rounded-md border border-border bg-background px-1 py-0.5 text-foreground"
                   >
-                    <option value="ollama">Локально · Ollama</option>
+                    <option value="ollama">{providerStatus?.ollama_private_vps ? 'Приватный VPS · Ollama' : 'Локально · Ollama'}</option>
                     <option value="litellm" disabled={!providerStatus?.cloud_configured}>
                       Облако · LiteLLM
                     </option>
@@ -755,7 +756,7 @@ export function ChatPanel({
               </>
             )}
             {!isLabChat && provider === 'ollama' && providerStatus && !providerStatus.ollama_available && (
-              <span role="status" className="basis-full text-amber-600">Ollama недоступна или модель не установлена</span>
+              <span role="status" className="basis-full text-amber-600">{providerStatus.ollama_private_vps ? 'Нет связи с приватным сервисом Ollama или модель не установлена' : 'Ollama недоступна или модель не установлена'}</span>
             )}
             {contextTokenLimit > 0 && !isLabCoordinator && (
               <span className="shrink-0 whitespace-nowrap">
