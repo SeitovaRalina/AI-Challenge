@@ -6,6 +6,7 @@ export type LLMProvider = 'ollama' | 'litellm'
 export interface ProviderStatus {
   ollama_available: boolean
   ollama_model: string
+  ollama_private_vps: boolean
   cloud_configured: boolean
 }
 
