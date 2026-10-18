@@ -281,6 +281,29 @@ func main() {
 	mux.HandleFunc("POST /api/rag/eval/run/stream", evalRunStreamHandler(agent, ollamaClient, ragStore, ragEvalPath))
 	mux.HandleFunc("POST /api/rag/eval/retrieval", evalRetrievalHandler(ollamaClient, ragStore, ragEvalPath))
 
+	// Day 31: a separate, much smaller RAG index over this project's own
+	// README+docs grounds the /help chat command (agent_commands.go).
+	// PROJECT_ROOT defaults to the parent of backend/ (how the backend is
+	// documented to run — "cd backend; go run ." — README.md). Built once,
+	// synchronously, at startup: the corpus is static and small enough that
+	// a reindex endpoint, like the chat-history RAG has, isn't needed yet.
+	projectRoot := os.Getenv("PROJECT_ROOT")
+	if projectRoot == "" {
+		projectRoot = ".."
+	}
+	docsRagStore := NewRagStore(filepath.Join(filepath.Dir(dataDir), "docs_rag_index.json"))
+	agent.AddDocsRagSource(docsRagStore, ollamaClient)
+	mux.HandleFunc("GET /api/docs-rag/index", getIndexHandler(docsRagStore))
+	if ollamaEmbedModel == "" {
+		log.Printf("OLLAMA_EMBED_MODEL not set — /help will answer without project-docs grounding until it is")
+	} else if docsIdx, err := BuildDocsIndex(context.Background(), projectRoot, ollamaClient, ollamaEmbedModel); err != nil {
+		log.Printf("docs rag: failed to build project-docs index, /help will answer without grounding until it's rebuilt: %v", err)
+	} else if err := docsRagStore.Save(docsIdx); err != nil {
+		log.Printf("docs rag: failed to save project-docs index: %v", err)
+	} else {
+		log.Printf("docs rag: indexed %d project doc(s) into %d chunk(s)", docsIdx.SourceCount, len(docsIdx.Chunks))
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
