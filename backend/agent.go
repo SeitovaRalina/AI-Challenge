@@ -349,6 +349,14 @@ type Agent struct {
 	// tool use.
 	ragStore  *RagStore
 	ragOllama *OllamaClient
+
+	// docsRagStore/docsRagOllama (day 31) ground the /help command in this
+	// project's own README+docs instead of chat history — see
+	// project_docs_rag.go/AddDocsRagSource. Kept separate from
+	// ragStore/ragOllama above so /help works independently of whether the
+	// chat-history RAG was wired up.
+	docsRagStore  *RagStore
+	docsRagOllama *OllamaClient
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each
