@@ -170,6 +170,27 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	userSentAt := time.Now()
 
+	// Day 31: /help and /work-summary are intercepted before anything else
+	// in this function — each grounds its own reply deterministically
+	// (project docs RAG / a forced MCP call, agent_commands.go) instead of
+	// going through the agentTurn JSON envelope below, which exists for
+	// task estimation and would just add noise (empty estimate/invariant
+	// fields) to these two. Lab chats are excluded, same as every other
+	// non-ContextStrategy addition in this function.
+	if labID == "" {
+		if question, ok := parseHelpCommand(userMessage); ok {
+			reply, sources, citations := a.answerHelp(ctx, providerClient, question)
+			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil, sources, citations)
+		}
+		if days, ok := parseWorkSummaryCommand(userMessage); ok {
+			reply, toolCalls, err := a.answerWorkSummary(ctx, chatID, providerClient, days)
+			if err != nil {
+				return nil, err
+			}
+			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, toolCalls, nil, nil)
+		}
+	}
+
 	// Pre-call overflow guard: the previous turn's prompt_tokens PLUS its own
 	// completion_tokens is what's actually sitting in context right now — the
 	// reply the model just wrote is appended to the conversation and will
