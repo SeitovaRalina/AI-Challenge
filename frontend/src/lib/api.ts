@@ -1077,10 +1077,67 @@ export interface SolidtimeProject {
   id: string
   name: string
   is_archived: boolean
+  is_billable: boolean
 }
 
 export function listSolidtimeProjects(): Promise<{ projects: SolidtimeProject[] }> {
   return request<{ projects: SolidtimeProject[] }>('/api/solidtime/projects')
+}
+
+export interface SolidtimeTask {
+  id: string
+  name: string
+  project_id: string
+  is_done: boolean
+}
+
+export function listSolidtimeTasks(): Promise<{ tasks: SolidtimeTask[] }> {
+  return request<{ tasks: SolidtimeTask[] }>('/api/solidtime/tasks')
+}
+
+export interface TimesheetDraft {
+  id: string
+  session: {
+    start: string
+    end: string
+    kind: string
+    repo?: string
+    title?: string
+    event_count: number
+    flags?: string[]
+    remark?: string
+  }
+  project_id?: string
+  task_id?: string
+  description: string
+  billable: boolean
+  status: 'draft' | 'confirmed' | 'rejected' | 'syncing' | 'synced'
+  solidtime_entry_id?: string
+}
+
+export interface TimesheetPrepareResult {
+  drafts: TimesheetDraft[]
+  warnings?: string[]
+}
+
+export function listTimesheetDrafts(): Promise<{ drafts: TimesheetDraft[] }> {
+  return request<{ drafts: TimesheetDraft[] }>('/api/timesheet/drafts')
+}
+
+export function prepareTimesheet(days: number): Promise<TimesheetPrepareResult> {
+  return request<TimesheetPrepareResult>(`/api/timesheet/prepare?days=${days}`, { method: 'POST' })
+}
+
+export function reviewTimesheetDraft(id: string, action: 'confirm' | 'reject', taskId: string, description: string, billable: boolean): Promise<TimesheetDraft> {
+  return request<TimesheetDraft>(`/api/timesheet/drafts/${id}`, { method: 'PATCH', body: { action, task_id: taskId, description, billable } })
+}
+
+export function syncTimesheetDraft(id: string): Promise<TimesheetDraft> {
+  return request<TimesheetDraft>(`/api/timesheet/drafts/${id}/sync`, { method: 'POST' })
+}
+
+export function reconcileTimesheetDraft(id: string): Promise<TimesheetDraft> {
+  return request<TimesheetDraft>(`/api/timesheet/drafts/${id}/reconcile`, { method: 'POST' })
 }
 
 // ---- Day 20: meetings, day timeline, weekly summary ----
