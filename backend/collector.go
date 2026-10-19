@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aiwork/backend/internal/mcpclient"
+	"aiwork/backend/internal/sessionpipeline"
 )
 
 // Day 18: the background activity collector. The backend (the MCP host) runs
@@ -493,40 +494,16 @@ func (c *Collector) collectCalendar(ctx context.Context, run *CollectorRun, now 
 	return nil
 }
 
-// rebuildSessions runs day 19's composition pipeline: the entire stored
-// history in, work sessions out, replacing whatever was stored before.
+// rebuildSessions records transport steps while the session pipeline owns their order.
 func (c *Collector) rebuildSessions(ctx context.Context, run *CollectorRun) error {
-	var all struct {
-		Events []json.RawMessage `json:"events"`
-	}
-	if err := c.call(ctx, run, c.worklog, "list_events", map[string]any{"from": "1970-01-01", "all": true}, "вся история", &all, func() string {
-		return fmt.Sprintf("%d событий", len(all.Events))
-	}); err != nil {
+	result, err := sessionpipeline.Rebuild(func(tool string, args map[string]any, detail string, out any, summarize func() string) error {
+		return c.call(ctx, run, c.worklog, tool, args, detail, out, summarize)
+	})
+	if err != nil {
 		return err
 	}
-
-	var built struct {
-		Sessions    []json.RawMessage `json:"sessions"`
-		SessionsOut int               `json:"sessions_out"`
-	}
-	if err := c.call(ctx, run, c.worklog, "build_sessions", map[string]any{"events": all.Events}, fmt.Sprintf("%d событий", len(all.Events)), &built, func() string {
-		return fmt.Sprintf("%d сессий", built.SessionsOut)
-	}); err != nil {
-		return err
-	}
-
-	var saved struct {
-		Saved    int `json:"saved"`
-		Replaced int `json:"replaced"`
-	}
-	if err := c.call(ctx, run, c.worklog, "save_sessions", map[string]any{"sessions": built.Sessions}, fmt.Sprintf("%d сессий", len(built.Sessions)), &saved, func() string {
-		return fmt.Sprintf("сохранено %d (было %d)", saved.Saved, saved.Replaced)
-	}); err != nil {
-		return err
-	}
-
 	c.mu.Lock()
-	run.Sessions = &SessionsRebuild{EventsIn: len(all.Events), SessionsOut: saved.Saved, Replaced: saved.Replaced}
+	run.Sessions = &SessionsRebuild{EventsIn: result.EventsIn, SessionsOut: result.SessionsOut, Replaced: result.Replaced}
 	c.mu.Unlock()
 	return nil
 }

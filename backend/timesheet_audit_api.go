@@ -26,7 +26,7 @@ func listSolidtimeProjectsHandler(solidtime *mcpclient.Conn) http.HandlerFunc {
 		var out struct {
 			Projects []ProjectInfoView `json:"projects"`
 		}
-		if err := mcpCallJSON(ctx, solidtime, "list_projects", map[string]any{}, &out); err != nil {
+		if err := mcpclient.CallJSON(ctx, solidtime, "list_projects", map[string]any{}, &out); err != nil {
 			writeError(w, http.StatusBadGateway, "Solidtime MCP недоступен: "+err.Error())
 			return
 		}
@@ -41,6 +41,19 @@ type ProjectInfoView struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsArchived bool   `json:"is_archived"`
+}
+
+func auditMCPCalls(ctx context.Context, worklog, solidtime *mcpclient.Conn) (mcpCall, mcpCall) {
+	callWorklog := func(tool string, args map[string]any, out any) error {
+		return mcpclient.CallJSON(ctx, worklog, tool, args, out)
+	}
+	var callSolidtime mcpCall
+	if solidtime != nil {
+		callSolidtime = func(tool string, args map[string]any, out any) error {
+			return mcpclient.CallJSON(ctx, solidtime, tool, args, out)
+		}
+	}
+	return callWorklog, callSolidtime
 }
 
 // timesheetAuditHandler runs fetchAndAudit directly over conn.Call, with
@@ -64,15 +77,7 @@ func timesheetAuditHandler(worklog, solidtime *mcpclient.Conn) http.HandlerFunc 
 		to := time.Now()
 		from := to.AddDate(0, 0, -days)
 
-		callWorklog := func(tool string, args map[string]any, out any) error {
-			return mcpCallJSON(ctx, worklog, tool, args, out)
-		}
-		var callSolidtime mcpCall
-		if solidtime != nil {
-			callSolidtime = func(tool string, args map[string]any, out any) error {
-				return mcpCallJSON(ctx, solidtime, tool, args, out)
-			}
-		}
+		callWorklog, callSolidtime := auditMCPCalls(ctx, worklog, solidtime)
 
 		result, err := fetchAndAudit(from, to, solidtime != nil, callWorklog, callSolidtime)
 		if err != nil {

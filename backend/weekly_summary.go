@@ -150,18 +150,10 @@ func (g *WeeklySummaryGenerator) factsFor(ctx context.Context, from, to time.Tim
 }
 
 func (g *WeeklySummaryGenerator) call(ctx context.Context, tool string, args map[string]any, out any) error {
-	res, err := g.worklog.Call(ctx, tool, args)
-	if err != nil {
+	if err := mcpclient.CallJSON(ctx, g.worklog, tool, args, out); err != nil {
 		return fmt.Errorf("worklog.%s: %w", tool, err)
 	}
-	if res.IsError {
-		return fmt.Errorf("worklog.%s: %s", tool, res.Text)
-	}
-	raw := res.Structured
-	if len(raw) == 0 {
-		raw = json.RawMessage(res.Text)
-	}
-	return json.Unmarshal(raw, out)
+	return nil
 }
 
 // Generate gathers this week's and last week's facts, asks the model for a

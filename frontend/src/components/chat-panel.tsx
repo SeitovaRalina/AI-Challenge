@@ -107,6 +107,7 @@ const WORK_SUMMARY_COMMAND = '/work-summary'
 // the backend (timesheet_audit.go), never writes to Solidtime.
 const AUDIT_TIMESHEET_COMMAND = '/audit-timesheet'
 const PERSONALIZED_ESTIMATE_COMMAND = '/estimate-personalized'
+const WEEKLY_REPORT_COMMAND = '/weekly-report'
 
 interface SlashCommand {
   name: string
@@ -264,6 +265,7 @@ export function ChatPanel({
         ...(!isLabChat ? [{ name: WORK_SUMMARY_COMMAND, description: 'сводка активности за N дней' }] : []),
         ...(!isLabChat ? [{ name: AUDIT_TIMESHEET_COMMAND, description: 'аудит черновика таймшита за N дней' }] : []),
         ...(!isLabChat ? [{ name: PERSONALIZED_ESTIMATE_COMMAND, description: 'оценка задачи по истории и текущей загрузке' }] : []),
+        ...(!isLabChat ? [{ name: WEEKLY_REPORT_COMMAND, description: 'отчёт и CSV: эта неделя, прошлая неделя или дата' }] : []),
         ...(contextStrategy === 'rolling_summary'
           ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
           : []),
