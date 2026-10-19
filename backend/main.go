@@ -260,6 +260,15 @@ func main() {
 	mux.HandleFunc("GET /api/solidtime/projects", listSolidtimeProjectsHandler(solidtimeConn))
 	mux.HandleFunc("GET /api/solidtime/tasks", listSolidtimeTasksHandler(solidtimeConn))
 	mux.HandleFunc("GET /api/timesheet/audit", timesheetAuditHandler(worklogConn, solidtimeConn))
+	timesheetSync, err := NewTimesheetSyncService(worklogConn, solidtimeConn, client, filepath.Join(filepath.Dir(dataDir), "timesheet_drafts.json"))
+	if err != nil {
+		log.Fatalf("timesheet drafts: %v", err)
+	}
+	mux.HandleFunc("GET /api/timesheet/drafts", timesheetDraftsHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/prepare", prepareTimesheetHandler(timesheetSync))
+	mux.HandleFunc("PATCH /api/timesheet/drafts/{id}", reviewTimesheetDraftHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/drafts/{id}/sync", syncTimesheetDraftHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/drafts/{id}/reconcile", reconcileTimesheetDraftHandler(timesheetSync))
 
 	// Reports live beside this instance's sessions, never in the repository.
 	reports := &ReportService{worklog: worklogConn, solidtime: solidtimeConn, dir: filepath.Join(filepath.Dir(dataDir), "reports")}
