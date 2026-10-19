@@ -97,6 +97,39 @@ func calendarServerConfig() mcpclient.ServerConfig {
 	}
 }
 
+// solidtimeServerConfig describes the product's own Solidtime MCP server
+// (cmd/mcp-solidtime, day 32): one self-hosted Solidtime instance's own
+// projects and already-tracked time entries, read-only. Like calendar,
+// there's no fallback without credentials — callers check
+// solidtimeConfigured first.
+func solidtimeServerConfig() mcpclient.ServerConfig {
+	command := strings.Fields(os.Getenv("MCP_SOLIDTIME_COMMAND"))
+	if len(command) == 0 {
+		command = []string{"go", "run", "./cmd/mcp-solidtime"}
+	}
+	return mcpclient.ServerConfig{
+		ID:        "solidtime",
+		Name:      "Solidtime (свой MCP)",
+		Transport: mcpclient.TransportStdio,
+		Command:   strings.Join(command, " "),
+		NewCommand: func() (*exec.Cmd, error) {
+			cmd := exec.Command(command[0], command[1:]...)
+			cmd.Stderr = os.Stderr
+			return cmd, nil
+		},
+		Own:      true,
+		TokenEnv: "SOLIDTIME_API_TOKEN",
+		ReadOnly: true,
+	}
+}
+
+// solidtimeConfigured is true once both the base URL and the API token are
+// set — the backend registers and starts the Solidtime server (chat
+// tools, timesheet audit) only then.
+func solidtimeConfigured() bool {
+	return strings.TrimSpace(os.Getenv("SOLIDTIME_BASE_URL")) != "" && strings.TrimSpace(os.Getenv("SOLIDTIME_API_TOKEN")) != ""
+}
+
 // calendarConfigured is true once both CalDAV credentials are set — the
 // backend registers and starts the calendar server (chat tools, collector
 // step) only then, rather than spawning a subprocess doomed to fail its
