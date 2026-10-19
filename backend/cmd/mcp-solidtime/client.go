@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -88,12 +89,14 @@ type ProjectInfo struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsArchived bool   `json:"is_archived"`
+	IsBillable bool   `json:"is_billable"`
 }
 
 type apiProject struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsArchived bool   `json:"is_archived"`
+	IsBillable bool   `json:"is_billable"`
 }
 
 type apiProjectsResponse struct {
@@ -108,7 +111,7 @@ func (a *solidtimeAPI) projects(ctx context.Context) ([]ProjectInfo, error) {
 	}
 	out := make([]ProjectInfo, len(resp.Data))
 	for i, p := range resp.Data {
-		out[i] = ProjectInfo{ID: p.ID, Name: p.Name, IsArchived: p.IsArchived}
+		out[i] = ProjectInfo{ID: p.ID, Name: p.Name, IsArchived: p.IsArchived, IsBillable: p.IsBillable}
 	}
 	return out, nil
 }
@@ -121,6 +124,8 @@ type TimeEntryInfo struct {
 	End             time.Time `json:"end"`
 	DurationSeconds int       `json:"duration_seconds"`
 	ProjectID       string    `json:"project_id,omitempty"`
+	TaskID          string    `json:"task_id,omitempty"`
+	Billable        bool      `json:"billable"`
 	Description     string    `json:"description"`
 }
 
@@ -130,29 +135,43 @@ type apiTimeEntry struct {
 	End         *time.Time `json:"end"`
 	Duration    *int       `json:"duration"`
 	ProjectID   string     `json:"project_id"`
+	TaskID      string     `json:"task_id"`
+	Billable    bool       `json:"billable"`
 	Description string     `json:"description"`
 }
 
 type apiTimeEntriesResponse struct {
 	Data []apiTimeEntry `json:"data"`
+	Meta struct {
+		Total int `json:"total"`
+	} `json:"meta"`
 }
 
 // timeEntries lists this member's own time entries in [from, to) — a
 // running timer (no end yet) is skipped, since it has no end to compare
 // intervals against and isn't a "draft vs already-tracked" duplicate risk.
 func (a *solidtimeAPI) timeEntries(ctx context.Context, from, to time.Time) ([]TimeEntryInfo, error) {
-	var resp apiTimeEntriesResponse
 	path := fmt.Sprintf("/api/v1/organizations/%s/time-entries", a.organizationID)
 	query := url.Values{
 		"member_id": {a.memberID},
 		"start":     {from.UTC().Format(time.RFC3339)},
 		"end":       {to.UTC().Format(time.RFC3339)},
+		"limit":     {"500"},
 	}
-	if err := a.get(ctx, path, query, &resp); err != nil {
-		return nil, err
+	var all []apiTimeEntry
+	for offset := 0; ; offset += 500 {
+		query.Set("offset", strconv.Itoa(offset))
+		var page apiTimeEntriesResponse
+		if err := a.get(ctx, path, query, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Data...)
+		if len(page.Data) < 500 || (page.Meta.Total > 0 && len(all) >= page.Meta.Total) {
+			break
+		}
 	}
-	out := make([]TimeEntryInfo, 0, len(resp.Data))
-	for _, e := range resp.Data {
+	out := make([]TimeEntryInfo, 0, len(all))
+	for _, e := range all {
 		if e.End == nil {
 			continue
 		}
@@ -160,9 +179,93 @@ func (a *solidtimeAPI) timeEntries(ctx context.Context, from, to time.Time) ([]T
 		if e.Duration != nil {
 			duration = *e.Duration
 		}
-		out = append(out, TimeEntryInfo{ID: e.ID, Start: e.Start, End: *e.End, DurationSeconds: duration, ProjectID: e.ProjectID, Description: e.Description})
+		out = append(out, TimeEntryInfo{ID: e.ID, Start: e.Start, End: *e.End, DurationSeconds: duration, ProjectID: e.ProjectID, TaskID: e.TaskID, Billable: e.Billable, Description: e.Description})
 	}
 	return out, nil
+}
+
+type TaskInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ProjectID string `json:"project_id"`
+	IsDone    bool   `json:"is_done"`
+}
+
+func (a *solidtimeAPI) tasks(ctx context.Context) ([]TaskInfo, error) {
+	path := fmt.Sprintf("/api/v1/organizations/%s/tasks", a.organizationID)
+	var tasks []TaskInfo
+	for offset := 0; ; offset += 500 {
+		query := url.Values{"limit": {"500"}, "offset": {strconv.Itoa(offset)}}
+		var page struct {
+			Data []TaskInfo `json:"data"`
+			Meta struct {
+				Total int `json:"total"`
+			} `json:"meta"`
+		}
+		if err := a.get(ctx, path, query, &page); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, page.Data...)
+		if len(page.Data) < 500 || (page.Meta.Total > 0 && len(tasks) >= page.Meta.Total) {
+			break
+		}
+	}
+	return tasks, nil
+}
+
+type CreateTimeEntry struct {
+	Start       time.Time
+	End         time.Time
+	ProjectID   string
+	TaskID      string
+	Description string
+	Billable    bool
+}
+
+func (a *solidtimeAPI) createTimeEntry(ctx context.Context, in CreateTimeEntry) (TimeEntryInfo, error) {
+	path := fmt.Sprintf("/api/v1/organizations/%s/time-entries", a.organizationID)
+	payload := map[string]any{
+		"member_id":   a.memberID,
+		"start":       in.Start.UTC().Format("2006-01-02T15:04:05Z"),
+		"end":         in.End.UTC().Format("2006-01-02T15:04:05Z"),
+		"project_id":  in.ProjectID,
+		"task_id":     in.TaskID,
+		"description": in.Description,
+		"billable":    in.Billable,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return TimeEntryInfo{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return TimeEntryInfo{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return TimeEntryInfo{}, fmt.Errorf("create time entry: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return TimeEntryInfo{}, fmt.Errorf("read create response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return TimeEntryInfo{}, fmt.Errorf("create time entry: status %d: %s", resp.StatusCode, truncate(string(responseBody), 300))
+	}
+	var result struct {
+		Data apiTimeEntry `json:"data"`
+	}
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return TimeEntryInfo{}, fmt.Errorf("decode create response: %w", err)
+	}
+	if result.Data.ID == "" {
+		return TimeEntryInfo{}, fmt.Errorf("create response missing entry id")
+	}
+	return TimeEntryInfo{ID: result.Data.ID, Start: result.Data.Start, End: in.End, ProjectID: in.ProjectID, TaskID: in.TaskID, Description: in.Description, Billable: in.Billable}, nil
 }
 
 func (a *solidtimeAPI) get(ctx context.Context, path string, query url.Values, out any) error {

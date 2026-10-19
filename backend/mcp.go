@@ -98,8 +98,8 @@ func calendarServerConfig() mcpclient.ServerConfig {
 }
 
 // solidtimeServerConfig describes the product's own Solidtime MCP server
-// (cmd/mcp-solidtime, day 32): one self-hosted Solidtime instance's own
-// projects and already-tracked time entries, read-only. Like calendar,
+// (cmd/mcp-solidtime): one self-hosted Solidtime instance's own
+// projects, tasks and time entries. Like calendar,
 // there's no fallback without credentials — callers check
 // solidtimeConfigured first.
 func solidtimeServerConfig() mcpclient.ServerConfig {
@@ -119,7 +119,7 @@ func solidtimeServerConfig() mcpclient.ServerConfig {
 		},
 		Own:      true,
 		TokenEnv: "SOLIDTIME_API_TOKEN",
-		ReadOnly: true,
+		ReadOnly: false,
 	}
 }
 
