@@ -168,6 +168,20 @@ func main() {
 	}, s.getAnalytics)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "set_repo_solidtime_project",
+		Title:       "Привязать репозиторий к проекту Solidtime",
+		Description: "Explicit repo -> Solidtime project mapping, used by the timesheet audit to check draft sessions against what's already tracked in Solidtime. Never guessed by matching names (a repo and its Solidtime project name routinely differ) — set once per repository, empty solidtime_project_id clears it.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &notDestructive},
+	}, s.setRepoSolidtimeProjectTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_repo_solidtime_projects",
+		Title:       "Репозитории и их проекты Solidtime",
+		Description: "Every repository with at least one stored event, and its explicit Solidtime project mapping if any. Used to build a repo -> Solidtime project mapping UI.",
+		Annotations: readOnly,
+	}, s.getRepoSolidtimeProjectsTool)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_day_timeline",
 		Title:       "Таймлайн дня",
 		Description: "One day laid out as non-overlapping blocks — work (repository, project) or meeting (title) — ready to draw as a Gantt-style day view, or to answer 'what did I do on <day>' from a single call instead of combining get_sessions results by hand. A meeting always wins any time it shares with work.",

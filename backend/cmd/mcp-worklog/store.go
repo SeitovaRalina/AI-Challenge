@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS repo_projects (
 	repo    TEXT PRIMARY KEY,
 	project TEXT NOT NULL
 );
+
+-- repo_solidtime_projects maps a repository directly to a Solidtime project
+-- (id + its name, for display without a second lookup) — day 32. Separate
+-- from repo_projects above: that one is this product's own internal
+-- grouping label, this one is an external system's own project identity,
+-- and the two rarely share a naming scheme (e.g. repo "Recording-Agent" is
+-- tracked in Solidtime as "Project Internal: Agents") — never guessed by
+-- matching names, always set explicitly.
+CREATE TABLE IF NOT EXISTS repo_solidtime_projects (
+	repo                    TEXT PRIMARY KEY,
+	solidtime_project_id    TEXT NOT NULL,
+	solidtime_project_name  TEXT NOT NULL
+);
 `
 
 func openStore(path string) (*store, error) {
@@ -526,6 +539,55 @@ func (s *store) repoProjects(ctx context.Context) ([]repoProjectRow, error) {
 		}
 		if project.Valid {
 			row.project = project.String
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// setRepoSolidtimeProject upserts a repo's explicit Solidtime project
+// mapping; an empty solidtimeProjectID clears it.
+func (s *store) setRepoSolidtimeProject(ctx context.Context, repo, solidtimeProjectID, solidtimeProjectName string) error {
+	if solidtimeProjectID == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM repo_solidtime_projects WHERE repo = ?`, repo)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repo_solidtime_projects (repo, solidtime_project_id, solidtime_project_name) VALUES (?, ?, ?)
+		ON CONFLICT (repo) DO UPDATE SET solidtime_project_id = excluded.solidtime_project_id, solidtime_project_name = excluded.solidtime_project_name`,
+		repo, solidtimeProjectID, solidtimeProjectName)
+	return err
+}
+
+// repoSolidtimeProjectRow is one repository as known to the worklog, with
+// its explicit Solidtime project mapping if any.
+type repoSolidtimeProjectRow struct {
+	repo                  string
+	solidtimeProjectID    string // "" when unmapped
+	solidtimeProjectName  string
+}
+
+// repoSolidtimeProjects lists every repository seen in events, left-joined
+// with its Solidtime project mapping — mirrors repoProjects above, same
+// reasoning (offer every repo for mapping, not just the mapped ones).
+func (s *store) repoSolidtimeProjects(ctx context.Context) ([]repoSolidtimeProjectRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.repo, rsp.solidtime_project_id, rsp.solidtime_project_name FROM (SELECT DISTINCT repo FROM events) e
+		LEFT JOIN repo_solidtime_projects rsp ON rsp.repo = e.repo ORDER BY e.repo`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []repoSolidtimeProjectRow
+	for rows.Next() {
+		var row repoSolidtimeProjectRow
+		var id, name sql.NullString
+		if err := rows.Scan(&row.repo, &id, &name); err != nil {
+			return nil, err
+		}
+		if id.Valid {
+			row.solidtimeProjectID = id.String
+		}
+		if name.Valid {
+			row.solidtimeProjectName = name.String
 		}
 		out = append(out, row)
 	}
