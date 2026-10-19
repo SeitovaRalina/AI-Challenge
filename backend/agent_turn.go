@@ -170,14 +170,15 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 
 	userSentAt := time.Now()
 
-	// Day 31: /help and /work-summary are intercepted before anything else
-	// in this function — each grounds its own reply deterministically
-	// (project docs RAG / a forced MCP call, agent_commands.go) instead of
-	// going through the agentTurn JSON envelope below, which exists for
-	// task estimation and would just add noise (empty estimate/invariant
-	// fields) to these two. Lab chats are excluded, same as every other
-	// non-ContextStrategy addition in this function.
+	// Explicit chat commands are intercepted before the ordinary estimation turn
+	// in this function — each grounds its own reply with RAG and/or MCP instead of
+	// going through the ordinary routing path. The personalized estimate command
+	// still produces and persists a validated EstimateResponse. Lab chats are
+	// excluded, as with other non-ContextStrategy additions here.
 	if labID == "" {
+		if taskDescription, ok := parsePersonalizedEstimateCommand(userMessage); ok {
+			return a.answerPersonalizedEstimate(ctx, chat, branchID, userMessage, taskDescription, userSentAt, providerClient, ragEnabled)
+		}
 		if question, ok := parseHelpCommand(userMessage); ok {
 			reply, sources, citations := a.answerHelp(ctx, providerClient, question)
 			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, nil, sources, citations)
