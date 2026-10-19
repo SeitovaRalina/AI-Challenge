@@ -357,6 +357,7 @@ type Agent struct {
 	// chat-history RAG was wired up.
 	docsRagStore  *RagStore
 	docsRagOllama *OllamaClient
+	reports       *ReportService
 }
 
 // NewAgent restores every chat and lab persisted so a restart continues each

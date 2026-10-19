@@ -176,6 +176,13 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 	// still produces and persists a validated EstimateResponse. Lab chats are
 	// excluded, as with other non-ContextStrategy additions here.
 	if labID == "" {
+		if week, ok := parseWeeklyReportCommand(userMessage); ok {
+			reply, toolCalls, err := a.answerWeeklyReport(ctx, chatID, week)
+			if err != nil {
+				return nil, err
+			}
+			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, toolCalls, nil, nil)
+		}
 		if taskDescription, ok := parsePersonalizedEstimateCommand(userMessage); ok {
 			return a.answerPersonalizedEstimate(ctx, chat, branchID, userMessage, taskDescription, userSentAt, providerClient, ragEnabled)
 		}

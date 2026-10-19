@@ -258,6 +258,12 @@ func main() {
 	mux.HandleFunc("GET /api/solidtime/projects", listSolidtimeProjectsHandler(solidtimeConn))
 	mux.HandleFunc("GET /api/timesheet/audit", timesheetAuditHandler(worklogConn, solidtimeConn))
 
+	// Reports live beside this instance's sessions, never in the repository.
+	reports := &ReportService{worklog: worklogConn, solidtime: solidtimeConn, dir: filepath.Join(filepath.Dir(dataDir), "reports")}
+	agent.reports = reports
+	mux.HandleFunc("POST /api/reports/weekly", reportGenerateHandler(reports))
+	mux.HandleFunc("GET /api/reports/{name}", reportDownloadHandler(reports))
+
 	// Day 20: the weekly summary — this week vs last, facts only, written by
 	// the model in the user's profile tone. Generated on demand from the
 	// Analytics card, and once more automatically every Friday evening.
