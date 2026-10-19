@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -350,9 +351,14 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	host := os.Getenv("LISTEN_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
 
-	log.Printf("backend listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(withRequestLog(mux))))
+	address := net.JoinHostPort(host, port)
+	log.Printf("backend listening on %s", address)
+	log.Fatal(http.ListenAndServe(address, withCORS(withRequestLog(mux))))
 }
 
 // withRequestLog logs every request's method, path, resulting status, and

@@ -190,7 +190,7 @@ func (s *TimesheetSyncService) prepare(ctx context.Context, days int) (Timesheet
 	}
 	if s.client != nil {
 		if err := writeAuditRemarks(ctx, s.client, &audit); err != nil {
-			result.Warnings = append(result.Warnings, "AI-замечания недоступны: "+err.Error())
+			result.Warnings = append(result.Warnings, "AI-замечания недоступны; проверьте флаги вручную")
 		}
 	} else {
 		result.Warnings = append(result.Warnings, "AI недоступен: описание нужно заполнить вручную")
@@ -205,7 +205,7 @@ func (s *TimesheetSyncService) prepare(ctx context.Context, days int) (Timesheet
 	}
 	if s.client != nil {
 		if err := suggestTrackDescriptions(ctx, s.client, result.Drafts, events.Events, history.Entries); err != nil {
-			result.Warnings = append(result.Warnings, "AI-описания недоступны: "+err.Error())
+			result.Warnings = append(result.Warnings, "AI-описания недоступны; заполните текст вручную")
 		}
 	}
 	s.mu.Lock()
@@ -233,13 +233,18 @@ type trackHistoryExample struct {
 }
 
 func suggestTrackDescriptions(ctx context.Context, client *LiteLLMClient, drafts []TimesheetDraft, events []activity.Event, history []trackHistoryExample) error {
+	if len(drafts) == 0 {
+		return nil
+	}
 	var prompt strings.Builder
+	hasEvidence := make([]bool, len(drafts))
 	for i, d := range drafts {
 		fmt.Fprintf(&prompt, "[%d] repo=%s project_id=%s start=%s end=%s\n", i+1, d.Session.Repo, d.ProjectID, d.Session.Start.Format(time.RFC3339), d.Session.End.Format(time.RFC3339))
 		seen := 0
 		for _, e := range events {
 			if e.Repo == d.Session.Repo && !e.OccurredAt.Before(d.Session.Start) && !e.OccurredAt.After(d.Session.End) && e.Title != "" {
 				fmt.Fprintf(&prompt, "event: %s\n", cleanReportText(e.Title))
+				hasEvidence[i] = true
 				seen++
 				if seen == 8 {
 					break
@@ -270,7 +275,7 @@ func suggestTrackDescriptions(ctx context.Context, client *LiteLLMClient, drafts
 		return fmt.Errorf("decode AI descriptions: %w", err)
 	}
 	for _, row := range suggestions {
-		if row.Index < 1 || row.Index > len(drafts) {
+		if row.Index < 1 || row.Index > len(drafts) || !hasEvidence[row.Index-1] {
 			continue
 		}
 		description := strings.TrimSpace(row.Description)

@@ -25,14 +25,10 @@ personal task estimation
 future workload forecasting
 ```
 
-## Planned data sources
+## Data sources
 
-- GitHub activity
-- AI coding-agent sessions
-- Yandex Calendar meetings
-- manual tasks
-- Solidtime
-- potentially desktop activity collected by a local client
+- GitHub activity, Yandex Calendar meetings and Solidtime entries are connected.
+- AI coding-agent sessions, manual tasks and desktop activity are planned.
 
 ## Product areas (target state)
 
@@ -40,7 +36,8 @@ future workload forecasting
    - reconstruct work sessions
    - detect potentially untracked work
    - let the user edit, merge, split, reject, or accept suggestions
-   - eventually sync approved entries to Solidtime
+   - sync individually confirmed entries to Solidtime (implemented)
+   - edit, merge and split session intervals (planned)
 
 2. **Analytics**
    - time by project
@@ -68,17 +65,16 @@ future workload forecasting
 
 ## Important semantic rule
 
-Until real historical user data exists, any estimate is a **preliminary, generic AI
-estimate** — never framed as personalized ("based on your previous work", "you
-usually need..."). Personalization is introduced later, once historical data and
-retrieval (RAG) are in place.
+An estimate is called personalized only when retrieval finds comparable past
+tasks. If comparable history is missing, the assistant says so and lowers its
+confidence instead of inventing personal experience.
 
 ## Delivery model
 
 The project is built incrementally across a seven-week AI Challenge. Each week adds
 one real capability to the pipeline above — it is not a course-topic showcase:
 
-1. LLM fundamentals — generic task → preliminary AI estimate (current milestone)
+1. LLM fundamentals — generic task → preliminary AI estimate
 2. Agents and context
 3. Agent/state optimization
 4. MCP
@@ -97,13 +93,14 @@ product. Features are not added solely to satisfy a course topic.
   OpenAI-compatible endpoints), via `LITELLM_API_KEY` / `LITELLM_MODEL` env vars,
   never hardcoded, never exposed to the browser
 
-Infrastructure such as PostgreSQL, Redis, Docker, auth, MCP, RAG, background
-workers, desktop tracking, and the Solidtime/GitHub/calendar integrations are
-introduced only in the later weeks listed above — not before they're needed.
+The current product uses local file and SQLite storage, MCP integrations, RAG
+over project documentation and historical estimates, and a background activity
+collector. Its API has no authentication; a future VPS deployment must keep
+the application private behind an SSH tunnel or equivalent access control.
+PostgreSQL, Redis, Docker and desktop tracking are not part of the current
+implementation.
 
 ## Current milestone
 
-See [`../README.md`](../README.md) for the current milestone's implementation
-(Software Task → AI Preliminary Estimate) and
-[`../days/w01-d01-llm-api-request.md`](../days/w01-d01-llm-api-request.md) for
-the original challenge assignment text.
+See [`../README.md`](../README.md) for the implemented workflow and
+[`../days/`](../days/) for the original daily challenge assignments.

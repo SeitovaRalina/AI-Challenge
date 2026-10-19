@@ -102,6 +102,7 @@ function DraftRow({ draft, projects, tasks, onUpdated }: { draft: TimesheetDraft
   const availableTasks = tasks.filter((item) => item.project_id === draft.project_id && !item.is_done)
   const flagged = (draft.session.flags?.length ?? 0) > 0
   const editable = draft.status === 'draft' || draft.status === 'rejected' || draft.status === 'confirmed'
+  const hasUnconfirmedChanges = taskId !== (draft.task_id ?? '') || description !== draft.description || billable !== draft.billable
 
   async function act(action: () => Promise<TimesheetDraft>) {
     setBusy(true)
@@ -143,10 +144,11 @@ function DraftRow({ draft, projects, tasks, onUpdated }: { draft: TimesheetDraft
           <Button variant="outline" disabled={busy || flagged || !taskId || !description.trim()} onClick={() => act(() => reviewTimesheetDraft(draft.id, 'confirm', taskId, description, billable))}>Подтвердить</Button>
           <Button variant="ghost" disabled={busy} onClick={() => act(() => reviewTimesheetDraft(draft.id, 'reject', taskId, description, billable))}>Отклонить</Button>
         </>}
-        {draft.status === 'confirmed' && <Button disabled={busy} onClick={() => act(() => syncTimesheetDraft(draft.id))}>Записать в Solidtime</Button>}
+        {draft.status === 'confirmed' && <Button disabled={busy || hasUnconfirmedChanges} onClick={() => act(() => syncTimesheetDraft(draft.id))}>Записать в Solidtime</Button>}
         {draft.status === 'syncing' && <Button variant="outline" disabled={busy} onClick={() => act(() => reconcileTimesheetDraft(draft.id))}>Сверить с Solidtime</Button>}
         {draft.solidtime_entry_id && <span className="self-center text-xs text-muted-foreground">ID: {draft.solidtime_entry_id}</span>}
       </div>
+      {draft.status === 'confirmed' && hasUnconfirmedChanges && <p className="mt-2 text-xs text-muted-foreground">Подтвердите изменения перед записью.</p>}
     </article>
   )
 }
