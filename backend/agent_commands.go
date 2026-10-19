@@ -158,6 +158,15 @@ func (a *Agent) finishToolGroundedTurn(ctx context.Context, chat *Chat, branchID
 
 	chatID := chat.ID
 	agentReply := a.buildAgentReplyLocked(chat, branchID, reply, nil, userSentAt, assistantSentAt)
+	// buildAgentReplyLocked doesn't set these three (same as the main turn
+	// in PostMessage, agent_turn.go) — without them the immediate response
+	// (and the stream's "done" event) showed no tool calls/sources/
+	// citations at all, even though they were correctly saved on the
+	// stored message; only a reload picked them up, since that reads the
+	// message's own fields instead of this reply.
+	agentReply.ToolCalls = toolCalls
+	agentReply.Sources = sources
+	agentReply.Citations = citations
 	a.mu.Unlock()
 
 	if event := a.compressHistoryIfDue(ctx, chatID); event != nil {
@@ -207,10 +216,24 @@ func parseAuditTimesheetCommand(msg string) (days int, ok bool) {
 // instead since it has no chat message to attach a record to.
 func (a *Agent) callToolAsJSON(ctx context.Context, chatID string, conn *mcpclient.Conn, tool string, args map[string]any, out any) (ToolCallRecord, error) {
 	argsJSON, _ := json.Marshal(args)
-	call := llmToolCall{}
+	call := llmToolCall{ID: tool} // tool name doubles as the SSE event id — each of these commands calls a given tool at most once per turn
 	call.Function.Name = tool
 	call.Function.Arguments = string(argsJSON)
+
+	// Same live-progress events routeTools emits around a model-chosen
+	// call (agent_tools.go) — without these, a forced call like this one
+	// (/work-summary, /audit-timesheet) showed no progress at all while
+	// running, unlike every tool call the model routes itself.
+	var cfg mcpclient.ServerConfig
+	if conn != nil {
+		cfg = conn.Config()
+	}
+	emitTurnEvent(ctx, "tool_call_started", toolCallStartedEvent{
+		ID: call.ID, Server: cfg.ID, ServerName: cfg.Name, Tool: tool,
+		Arguments: argumentsForDisplay(call.Function.Arguments),
+	})
 	record, _ := a.runToolCall(ctx, chatID, conn, call)
+	emitTurnEvent(ctx, "tool_call_finished", toolCallFinishedEvent{ID: call.ID, Record: record})
 	if !record.OK {
 		return record, fmt.Errorf("%s: %s", tool, record.Error)
 	}
