@@ -103,6 +103,9 @@ const PERF_COMMAND = '/perf'
 // here only so the composer's autocomplete suggests them.
 const HELP_COMMAND = '/help'
 const WORK_SUMMARY_COMMAND = '/work-summary'
+// Day 32: same not-intercepted-locally rule as the two above — grounded on
+// the backend (timesheet_audit.go), never writes to Solidtime.
+const AUDIT_TIMESHEET_COMMAND = '/audit-timesheet'
 
 interface SlashCommand {
   name: string
@@ -258,6 +261,7 @@ export function ChatPanel({
         ...(!isLabChat ? [{ name: PERF_COMMAND, description: 'скорость и ресурсы модели' }] : []),
         ...(!isLabChat ? [{ name: HELP_COMMAND, description: 'вопрос о проекте по его документации' }] : []),
         ...(!isLabChat ? [{ name: WORK_SUMMARY_COMMAND, description: 'сводка активности за N дней' }] : []),
+        ...(!isLabChat ? [{ name: AUDIT_TIMESHEET_COMMAND, description: 'аудит черновика таймшита за N дней' }] : []),
         ...(contextStrategy === 'rolling_summary'
           ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
           : []),

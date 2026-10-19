@@ -13,11 +13,16 @@ import {
   getDayTimeline,
   getWeeklySummary,
   listRepoProjects,
+  listRepoSolidtimeProjects,
+  listSolidtimeProjects,
   setRepoProject,
+  setRepoSolidtimeProject,
   type Analytics,
   type AnalyticsPeriod,
   type DayTimeline,
   type RepoProject,
+  type RepoSolidtimeProject,
+  type SolidtimeProject,
   type TimelineBlock,
   type WeeklySummary,
 } from '@/lib/api'
@@ -68,6 +73,13 @@ export function AnalyticsPanel() {
   const [error, setError] = useState<string | null>(null)
   const [repos, setRepos] = useState<RepoProject[] | null>(null)
   const [reposError, setReposError] = useState<string | null>(null)
+  const [solidtimeRepos, setSolidtimeRepos] = useState<RepoSolidtimeProject[] | null>(null)
+  const [solidtimeReposError, setSolidtimeReposError] = useState<string | null>(null)
+  // null = not loaded yet, [] = loaded but Solidtime isn't configured on
+  // this instance (listSolidtimeProjects answers 503) — the mapping section
+  // below just doesn't render rather than showing an error for something
+  // that's genuinely optional (day 32).
+  const [solidtimeProjects, setSolidtimeProjects] = useState<SolidtimeProject[] | null>(null)
 
   const load = useCallback(() => {
     getAnalytics(period)
@@ -87,13 +99,35 @@ export function AnalyticsPanel() {
       .catch((err) => setReposError(err instanceof ApiError ? err.message : 'Не удалось загрузить репозитории'))
   }, [])
 
+  const loadSolidtimeRepos = useCallback(() => {
+    listRepoSolidtimeProjects()
+      .then((r) => {
+        setSolidtimeRepos(r.repos)
+        setSolidtimeReposError(null)
+      })
+      .catch((err) => setSolidtimeReposError(err instanceof ApiError ? err.message : 'Не удалось загрузить репозитории'))
+  }, [])
+
+  const loadSolidtimeProjects = useCallback(() => {
+    listSolidtimeProjects()
+      .then((r) => setSolidtimeProjects(r.projects))
+      .catch(() => setSolidtimeProjects([])) // not configured — section just stays hidden
+  }, [])
+
   useEffect(load, [load])
   useEffect(loadRepos, [loadRepos])
+  useEffect(loadSolidtimeRepos, [loadSolidtimeRepos])
+  useEffect(loadSolidtimeProjects, [loadSolidtimeProjects])
 
   async function handleSetProject(repo: string, project: string) {
     const updated = await setRepoProject(repo, project)
     setRepos((prev) => prev?.map((r) => (r.repo === repo ? updated : r)) ?? [updated])
     load() // projects are resolved at read time — reflected immediately, no rebuild
+  }
+
+  async function handleSetSolidtimeProject(repo: string, solidtimeProjectId: string, solidtimeProjectName: string) {
+    const updated = await setRepoSolidtimeProject(repo, solidtimeProjectId, solidtimeProjectName)
+    setSolidtimeRepos((prev) => prev?.map((r) => (r.repo === repo ? updated : r)) ?? [updated])
   }
 
   if (error && !data) {
@@ -214,6 +248,14 @@ export function AnalyticsPanel() {
       )}
 
       <RepoProjectMapping repos={repos} error={reposError} onSet={handleSetProject} />
+      {solidtimeProjects && solidtimeProjects.length > 0 && (
+        <SolidtimeProjectMapping
+          repos={solidtimeRepos}
+          error={solidtimeReposError}
+          projects={solidtimeProjects}
+          onSet={handleSetSolidtimeProject}
+        />
+      )}
     </div>
   )
 }
@@ -576,6 +618,106 @@ function RepoProjectRow({ repo, onSet }: { repo: RepoProject; onSet: (repo: stri
         placeholder={bareName}
         className="w-40 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-foreground/30"
       />
+      {saving && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />}
+    </li>
+  )
+}
+
+// SolidtimeProjectMapping is day 32's explicit repo -> Solidtime project
+// mapping — a separate section from RepoProjectMapping above, same
+// collapsible-list pattern, because the two mappings answer different
+// questions and routinely disagree (e.g. repo "Recording-Agent" tracked
+// in Solidtime as "Project Internal: Agents"): never guessed by matching
+// names, always set here.
+function SolidtimeProjectMapping({
+  repos,
+  error,
+  projects,
+  onSet,
+}: {
+  repos: RepoSolidtimeProject[] | null
+  error: string | null
+  projects: SolidtimeProject[]
+  onSet: (repo: string, solidtimeProjectId: string, solidtimeProjectName: string) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle />
+        <AlertTitle>{error}</AlertTitle>
+      </Alert>
+    )
+  }
+  if (!repos || repos.length === 0) return null
+
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-medium text-foreground"
+      >
+        <ChevronRight className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-90')} />
+        Привязать репозиторий к проекту Solidtime
+        <span className="ml-auto text-xs font-normal text-muted-foreground">
+          {repos.filter((r) => r.solidtime_project_id).length} из {repos.length} привязано
+        </span>
+      </button>
+      {open && (
+        <>
+          <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+            Название репозитория и название проекта в Solidtime обычно не совпадают — привязка нужна, чтобы аудит
+            черновика таймшита проверял дубли и сопоставление, а не угадывал по именам.
+          </p>
+          <ul className="divide-y divide-border border-t border-border">
+            {repos.map((r) => (
+              <SolidtimeProjectRow key={r.repo} repo={r} projects={projects} onSet={onSet} />
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  )
+}
+
+function SolidtimeProjectRow({
+  repo,
+  projects,
+  onSet,
+}: {
+  repo: RepoSolidtimeProject
+  projects: SolidtimeProject[]
+  onSet: (repo: string, solidtimeProjectId: string, solidtimeProjectName: string) => Promise<void>
+}) {
+  const [saving, setSaving] = useState(false)
+
+  async function commit(projectId: string) {
+    setSaving(true)
+    try {
+      const project = projects.find((p) => p.id === projectId)
+      await onSet(repo.repo, projectId, project?.name ?? '')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <li className="flex items-center gap-3 px-4 py-2.5">
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{repo.repo}</span>
+      <select
+        value={repo.solidtime_project_id ?? ''}
+        onChange={(e) => commit(e.target.value)}
+        className="w-56 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-foreground/30"
+      >
+        <option value="">не привязан</option>
+        {projects.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+            {p.is_archived ? ' (архив)' : ''}
+          </option>
+        ))}
+      </select>
       {saving && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />}
     </li>
   )

@@ -195,7 +195,7 @@ func main() {
 	worklogServer := worklogServerConfig(worklogPath)
 	worklogConn := mcpclient.NewConn(worklogServer)
 	defer worklogConn.Close()
-	agent.AddToolSource(worklogConn, "get_activity_digest", "list_events", "get_analytics", "get_sessions", "get_day_timeline")
+	agent.AddToolSource(worklogConn, "get_activity_digest", "list_events", "get_analytics", "get_sessions", "get_day_timeline", "get_repo_solidtime_projects")
 	agent.AddToolSource(activityConn)
 
 	// Day 20: the Calendar MCP server, over the user's own CalDAV account.
@@ -212,6 +212,20 @@ func main() {
 		registryServers = append(registryServers, calendarServer)
 	} else {
 		log.Printf("calendar: CALDAV_USERNAME/CALDAV_APP_PASSWORD not set, calendar server disabled")
+	}
+
+	// Day 32: the product's own Solidtime MCP server — one self-hosted
+	// instance's own projects and already-tracked time entries, read-only.
+	// Same optional-until-configured pattern as calendar.
+	var solidtimeConn *mcpclient.Conn
+	solidtimeServer := solidtimeServerConfig()
+	if solidtimeConfigured() {
+		solidtimeConn = mcpclient.NewConn(solidtimeServer)
+		defer solidtimeConn.Close()
+		agent.AddToolSource(solidtimeConn)
+		registryServers = append(registryServers, solidtimeServer)
+	} else {
+		log.Printf("solidtime: SOLIDTIME_BASE_URL/SOLIDTIME_API_TOKEN not set, solidtime server disabled")
 	}
 
 	collectorGitHub := mcpclient.NewConn(activityServer)
@@ -234,6 +248,15 @@ func main() {
 	mux.HandleFunc("GET /api/analytics/repos", listRepoProjectsHandler(worklogConn))
 	mux.HandleFunc("PATCH /api/analytics/repos/{repo...}", setRepoProjectHandler(worklogConn))
 	mux.HandleFunc("GET /api/analytics/timeline", getDayTimelineHandler(worklogConn))
+
+	// Day 32: the repo -> Solidtime project mapping (explicit, never
+	// guessed by matching names — see cmd/mcp-worklog/solidtime_mapping.go)
+	// and the timesheet audit itself, over that mapping plus Solidtime's
+	// own already-tracked entries when configured.
+	mux.HandleFunc("GET /api/solidtime/repo-projects", listRepoSolidtimeProjectsHandler(worklogConn))
+	mux.HandleFunc("PATCH /api/solidtime/repo-projects/{repo...}", setRepoSolidtimeProjectHandler(worklogConn))
+	mux.HandleFunc("GET /api/solidtime/projects", listSolidtimeProjectsHandler(solidtimeConn))
+	mux.HandleFunc("GET /api/timesheet/audit", timesheetAuditHandler(worklogConn, solidtimeConn))
 
 	// Day 20: the weekly summary — this week vs last, facts only, written by
 	// the model in the user's profile tone. Generated on demand from the

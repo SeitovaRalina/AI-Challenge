@@ -1047,6 +1047,42 @@ export function setRepoProject(repo: string, project: string): Promise<RepoProje
   })
 }
 
+// ---- Day 32: Solidtime project mapping, read-only Solidtime projects ----
+
+export interface RepoSolidtimeProject {
+  repo: string
+  solidtime_project_id?: string
+  solidtime_project_name?: string
+}
+
+export function listRepoSolidtimeProjects(): Promise<{ repos: RepoSolidtimeProject[] }> {
+  return request<{ repos: RepoSolidtimeProject[] }>('/api/solidtime/repo-projects')
+}
+
+// setRepoSolidtimeProject is explicit, never guessed by matching names —
+// a repo and its Solidtime project name routinely differ. Empty
+// solidtimeProjectId clears the mapping.
+export function setRepoSolidtimeProject(
+  repo: string,
+  solidtimeProjectId: string,
+  solidtimeProjectName: string,
+): Promise<RepoSolidtimeProject> {
+  return request<RepoSolidtimeProject>(`/api/solidtime/repo-projects/${repo}`, {
+    method: 'PATCH',
+    body: { solidtime_project_id: solidtimeProjectId, solidtime_project_name: solidtimeProjectName },
+  })
+}
+
+export interface SolidtimeProject {
+  id: string
+  name: string
+  is_archived: boolean
+}
+
+export function listSolidtimeProjects(): Promise<{ projects: SolidtimeProject[] }> {
+  return request<{ projects: SolidtimeProject[] }>('/api/solidtime/projects')
+}
+
 // ---- Day 20: meetings, day timeline, weekly summary ----
 
 export type TimelineKind = 'work' | 'meeting'
