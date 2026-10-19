@@ -97,6 +97,12 @@ const COMPRESS_COMMAND = '/compress'
 const CONTEXT_COMMAND = '/context'
 const ANALYZE_COMMAND = '/analyze'
 const PERF_COMMAND = '/perf'
+// Day 31: unlike every command above, these two are NOT intercepted
+// locally — they're sent as ordinary chat messages and grounded on the
+// backend (project-docs RAG / a forced MCP call, agent_commands.go). Listed
+// here only so the composer's autocomplete suggests them.
+const HELP_COMMAND = '/help'
+const WORK_SUMMARY_COMMAND = '/work-summary'
 
 interface SlashCommand {
   name: string
@@ -250,6 +256,8 @@ export function ChatPanel({
         { name: TOKENS_COMMAND, description: 'токены и стоимость диалога' },
         { name: CONTEXT_COMMAND, description: 'что сейчас в контексте' },
         ...(!isLabChat ? [{ name: PERF_COMMAND, description: 'скорость и ресурсы модели' }] : []),
+        ...(!isLabChat ? [{ name: HELP_COMMAND, description: 'вопрос о проекте по его документации' }] : []),
+        ...(!isLabChat ? [{ name: WORK_SUMMARY_COMMAND, description: 'сводка активности за N дней' }] : []),
         ...(contextStrategy === 'rolling_summary'
           ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
           : []),
