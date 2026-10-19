@@ -1147,6 +1147,16 @@ export function generateWeeklySummary(): Promise<WeeklySummary> {
   return postJson<WeeklySummary>('/api/analytics/weekly-summary', {})
 }
 
+export interface WeeklyArtifacts {
+  markdown: string
+  csv: string
+}
+
+export function generateWeeklyArtifacts(week?: string): Promise<WeeklyArtifacts> {
+  const query = week ? `?week=${encodeURIComponent(week)}` : ''
+  return postJson<WeeklyArtifacts>(`/api/reports/weekly${query}`, {})
+}
+
 // ---- Day 21: RAG index over historical estimate sessions («Похожие задачи» screen) ----
 
 export type ChunkStrategy = 'fixed_size' | 'structural'

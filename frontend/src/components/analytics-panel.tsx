@@ -9,6 +9,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import {
   ApiError,
   generateWeeklySummary,
+  generateWeeklyArtifacts,
   getAnalytics,
   getDayTimeline,
   getWeeklySummary,
@@ -25,6 +26,7 @@ import {
   type SolidtimeProject,
   type TimelineBlock,
   type WeeklySummary,
+  type WeeklyArtifacts,
 } from '@/lib/api'
 
 // AnalyticsPanel is day 19's «Аналитика» screen, extended in day 20 with
@@ -142,6 +144,7 @@ export function AnalyticsPanel() {
   return (
     <div className="flex max-w-4xl flex-col gap-4">
       <WeeklySummaryCard />
+      <WeeklyArtifactsCard />
 
       <div className="flex items-center justify-end">
         <PeriodTabs period={period} onChange={setPeriod} />
@@ -255,6 +258,46 @@ export function AnalyticsPanel() {
           projects={solidtimeProjects}
           onSet={handleSetSolidtimeProject}
         />
+      )}
+    </div>
+  )
+}
+
+function WeeklyArtifactsCard() {
+  const [artifacts, setArtifacts] = useState<WeeklyArtifacts | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleGenerate() {
+    setGenerating(true)
+    setError(null)
+    try {
+      setArtifacts(await generateWeeklyArtifacts())
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать файлы')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Рабочие файлы за неделю</h3>
+          <p className="text-xs text-muted-foreground">Отчёт и CSV по черновым сессиям. Часы станут окончательными после подтверждения.</p>
+        </div>
+        <Button size="sm" onClick={handleGenerate} disabled={generating}>
+          {generating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Создать файлы
+        </Button>
+      </div>
+      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+      {artifacts && (
+        <div className="mt-3 flex gap-4 text-sm">
+          <a className="text-primary underline" href={`/api/reports/${encodeURIComponent(artifacts.markdown)}`}>Скачать отчёт .md</a>
+          <a className="text-primary underline" href={`/api/reports/${encodeURIComponent(artifacts.csv)}`}>Скачать CSV</a>
+        </div>
       )}
     </div>
   )
