@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,6 +46,7 @@ type reportSnapshot struct {
 	Week       string
 	From       time.Time
 	To         time.Time
+	EndDate    time.Time
 	Analytics  reportAnalytics
 	Events     []reportEvent
 	EventTotal int
@@ -54,27 +54,40 @@ type reportSnapshot struct {
 }
 
 func reportWeek(now time.Time, requested string) (string, time.Time, time.Time, error) {
-	if requested == "" {
+	requested = strings.TrimSpace(requested)
+	switch strings.ToLower(requested) {
+	case "", "this", "current", "эта", "эту", "эта неделя", "эту неделю", "текущая", "текущая неделя":
 		y, w := now.ISOWeek()
 		requested = fmt.Sprintf("%04d-W%02d", y, w)
+	case "last", "previous", "прошлая", "прошлую", "прошлая неделя", "прошлую неделю", "предыдущая", "предыдущая неделя":
+		y, w := now.AddDate(0, 0, -7).ISOWeek()
+		requested = fmt.Sprintf("%04d-W%02d", y, w)
+	default:
+		for _, layout := range []string{"2006-01-02", "02.01.2006"} {
+			if day, err := time.ParseInLocation(layout, requested, time.Local); err == nil {
+				y, w := day.ISOWeek()
+				requested = fmt.Sprintf("%04d-W%02d", y, w)
+				break
+			}
+		}
 	}
 	if len(requested) != 8 || requested[4] != '-' || requested[5] != 'W' {
-		return "", time.Time{}, time.Time{}, fmt.Errorf("week must be YYYY-WW")
+		return "", time.Time{}, time.Time{}, fmt.Errorf("укажите эту или прошлую неделю либо дату внутри нужной недели")
 	}
 	year, yerr := strconv.Atoi(requested[:4])
 	week, werr := strconv.Atoi(requested[6:])
 	if yerr != nil || werr != nil || week < 1 || week > 53 || year < 2000 || year > 2100 {
-		return "", time.Time{}, time.Time{}, fmt.Errorf("invalid ISO week")
+		return "", time.Time{}, time.Time{}, fmt.Errorf("некорректная неделя")
 	}
 	jan4 := time.Date(year, 1, 4, 0, 0, 0, 0, time.Local)
 	from, _ := weekBounds(jan4)
 	from = from.AddDate(0, 0, 7*(week-1))
 	if y, w := from.ISOWeek(); y != year || w != week {
-		return "", time.Time{}, time.Time{}, fmt.Errorf("invalid ISO week")
+		return "", time.Time{}, time.Time{}, fmt.Errorf("некорректная неделя")
 	}
 	to := from.AddDate(0, 0, 7)
 	if from.After(now) {
-		return "", time.Time{}, time.Time{}, fmt.Errorf("future week is unavailable")
+		return "", time.Time{}, time.Time{}, fmt.Errorf("отчёт за будущую неделю пока недоступен")
 	}
 	if to.After(now) {
 		to = now
@@ -92,6 +105,48 @@ func (s *ReportService) collectWithCalls(now time.Time, week string, callWorklog
 	if err != nil {
 		return reportSnapshot{}, err
 	}
+	snapshot, err := s.collectWindowWithCalls(from, to, callWorklog, callSolidtime)
+	snapshot.Week = week
+	return snapshot, err
+}
+
+func reportRange(now time.Time, start, end string) (time.Time, time.Time, time.Time, error) {
+	from, err := time.ParseInLocation("2006-01-02", start, time.Local)
+	if err != nil {
+		return time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("укажите дату начала в формате ГГГГ-ММ-ДД")
+	}
+	endDate, err := time.ParseInLocation("2006-01-02", end, time.Local)
+	if err != nil {
+		return time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("укажите дату окончания в формате ГГГГ-ММ-ДД")
+	}
+	if endDate.Before(from) {
+		return time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("дата окончания раньше даты начала")
+	}
+	if endDate.After(now) {
+		return time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("будущий период недоступен")
+	}
+	if endDate.After(from.AddDate(1, 0, 0)) {
+		return time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("период не должен превышать один год")
+	}
+	to := endDate.AddDate(0, 0, 1)
+	if to.After(now) {
+		to = now
+	}
+	return from, to, endDate, nil
+}
+
+func (s *ReportService) collectRange(ctx context.Context, now time.Time, start, end string) (reportSnapshot, error) {
+	from, to, endDate, err := reportRange(now, start, end)
+	if err != nil {
+		return reportSnapshot{}, err
+	}
+	callWorklog, callSolidtime := auditMCPCalls(ctx, s.worklog, s.solidtime)
+	snapshot, err := s.collectWindowWithCalls(from, to, callWorklog, callSolidtime)
+	snapshot.EndDate = endDate
+	return snapshot, err
+}
+
+func (s *ReportService) collectWindowWithCalls(from, to time.Time, callWorklog, callSolidtime mcpCall) (reportSnapshot, error) {
 	if s.worklog == nil {
 		return reportSnapshot{}, fmt.Errorf("Worklog MCP unavailable")
 	}
@@ -111,7 +166,7 @@ func (s *ReportService) collectWithCalls(now time.Time, week string, callWorklog
 	if err := callWorklog("list_events", map[string]any{"from": args["from"], "to": args["to"], "limit": 500}, &events); err != nil {
 		return reportSnapshot{}, fmt.Errorf("list_events: %w", err)
 	}
-	return reportSnapshot{Week: week, From: from, To: to, Analytics: analytics, Events: events.Events, EventTotal: events.Total, Audit: audit}, nil
+	return reportSnapshot{From: from, To: to, Analytics: analytics, Events: events.Events, EventTotal: events.Total, Audit: audit}, nil
 }
 
 func cleanReportText(s string) string {
@@ -122,7 +177,16 @@ func cleanReportText(s string) string {
 
 func renderWeeklyReport(s reportSnapshot) []byte {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Рабочий отчёт: %s\n\nПериод: %s — %s. Данные из Worklog; часы сессий — черновик до подтверждения.\n\n", s.Week, s.From.Format("2006-01-02"), s.To.Format("2006-01-02"))
+	if s.Week != "" {
+		fmt.Fprintf(&b, "# Рабочий отчёт: %s\n\n", s.Week)
+	} else {
+		b.WriteString("# Рабочий отчёт\n\n")
+	}
+	end := s.EndDate
+	if end.IsZero() {
+		end = s.To
+	}
+	fmt.Fprintf(&b, "Период: %s — %s. Данные из Worklog; часы сессий — черновик до подтверждения.\n\n", s.From.Format("2006-01-02"), end.Format("2006-01-02"))
 	fmt.Fprintf(&b, "## Время\n\n- Всего: %.2f ч\n- Встречи: %.2f ч\n- Активных дней: %d\n\n", s.Analytics.KPI.TotalHours, s.Analytics.KPI.MeetingHours, s.Analytics.KPI.ActiveDays)
 	b.WriteString("## Проекты\n\n")
 	projects := append([]struct {
@@ -220,6 +284,14 @@ func (s *ReportService) generate(ctx context.Context, now time.Time, week string
 	return s.saveSnapshot(snapshot)
 }
 
+func (s *ReportService) generateRange(ctx context.Context, now time.Time, start, end string) (string, string, error) {
+	snapshot, err := s.collectRange(ctx, now, start, end)
+	if err != nil {
+		return "", "", err
+	}
+	return s.saveSnapshot(snapshot)
+}
+
 func (s *ReportService) saveSnapshot(snapshot reportSnapshot) (string, string, error) {
 	markdown := renderWeeklyReport(snapshot)
 	csvData, err := renderAuditedCSV(snapshot)
@@ -229,8 +301,14 @@ func (s *ReportService) saveSnapshot(snapshot reportSnapshot) (string, string, e
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return "", "", err
 	}
-	mdName := "weekly-" + snapshot.Week + ".md"
-	csvName := "timesheet-" + snapshot.Week + ".csv"
+	suffix := snapshot.Week
+	mdPrefix := "weekly-"
+	if suffix == "" {
+		mdPrefix = "report-"
+		suffix = snapshot.From.Format("2006-01-02") + "_to_" + snapshot.EndDate.Format("2006-01-02")
+	}
+	mdName := mdPrefix + suffix + ".md"
+	csvName := "timesheet-" + suffix + ".csv"
 	if err := writeReportFile(filepath.Join(s.dir, mdName), markdown); err != nil {
 		return "", "", err
 	}
@@ -254,44 +332,4 @@ func writeReportFile(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
-}
-
-func reportGenerateHandler(s *ReportService) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		now := time.Now()
-		week, _, _, err := reportWeek(now, r.URL.Query().Get("week"))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "Неверная неделя: "+err.Error())
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-		defer cancel()
-		md, csv, err := s.generate(ctx, now, week)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "Не удалось создать отчёт: "+err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"markdown": md, "csv": csv})
-	}
-}
-
-func reportDownloadHandler(s *ReportService) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
-		if name != filepath.Base(name) || !(strings.HasPrefix(name, "weekly-") && strings.HasSuffix(name, ".md") || strings.HasPrefix(name, "timesheet-") && strings.HasSuffix(name, ".csv")) {
-			writeError(w, http.StatusBadRequest, "Неверное имя файла")
-			return
-		}
-		if _, _, _, err := reportWeek(time.Now(), strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(name, "weekly-"), "timesheet-"), filepath.Ext(name))); err != nil {
-			writeError(w, http.StatusBadRequest, "Неверная неделя")
-			return
-		}
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
-		if strings.HasSuffix(name, ".csv") {
-			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		} else {
-			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		}
-		http.ServeFile(w, r, filepath.Join(s.dir, name))
-	}
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,6 +24,54 @@ func TestReportWeekRejectsInvalidISOWeek(t *testing.T) {
 	week, from, to, err := reportWeek(now, "2026-W43")
 	if err != nil || week != "2026-W43" || from.Day() != 19 || !to.Equal(now) {
 		t.Fatalf("week=%q from=%v to=%v err=%v", week, from, to, err)
+	}
+	for input, expected := range map[string]string{"": "2026-W43", "эту неделю": "2026-W43", "прошлую неделю": "2026-W42", "12.10.2026": "2026-W42", "2026-10-12": "2026-W42"} {
+		got, _, _, err := reportWeek(now, input)
+		if err != nil || got != expected {
+			t.Errorf("input %q: week=%q err=%v, want %q", input, got, err, expected)
+		}
+	}
+}
+
+func TestWeeklyReportCommandAcceptsNaturalWeek(t *testing.T) {
+	week, ok := parseWeeklyReportCommand("/weekly-report прошлую неделю")
+	if !ok || week != "прошлую неделю" {
+		t.Fatalf("week=%q ok=%t", week, ok)
+	}
+}
+
+func TestReportRangeIncludesBothDatesAndRejectsInvalidOrder(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.Local)
+	from, to, endDate, err := reportRange(now, "2026-10-12", "2026-10-18")
+	if err != nil || from.Day() != 12 || to.Day() != 19 || endDate.Day() != 18 {
+		t.Fatalf("from=%v to=%v endDate=%v err=%v", from, to, endDate, err)
+	}
+	_, to, _, err = reportRange(now, "2026-10-19", "2026-10-19")
+	if err != nil || !to.Equal(now) {
+		t.Fatalf("today: to=%v err=%v", to, err)
+	}
+	for _, dates := range [][2]string{{"2026-10-20", "2026-10-20"}, {"2026-10-19", "2026-10-18"}, {"bad", "2026-10-19"}, {"2025-01-01", "2026-10-19"}} {
+		if _, _, _, err := reportRange(now, dates[0], dates[1]); err == nil {
+			t.Errorf("accepted range %v", dates)
+		}
+	}
+}
+
+func TestReportRangeFilesUseBothDates(t *testing.T) {
+	svc := &ReportService{dir: t.TempDir()}
+	snapshot := reportSnapshot{From: time.Date(2026, 10, 12, 0, 0, 0, 0, time.Local), To: time.Date(2026, 10, 19, 0, 0, 0, 0, time.Local), EndDate: time.Date(2026, 10, 18, 0, 0, 0, 0, time.Local)}
+	md, csv, err := svc.saveSnapshot(snapshot)
+	if err != nil || md != "report-2026-10-12_to_2026-10-18.md" || csv != "timesheet-2026-10-12_to_2026-10-18.csv" {
+		t.Fatalf("md=%q csv=%q err=%v", md, csv, err)
+	}
+	for _, name := range []string{md, csv} {
+		req := httptest.NewRequest(http.MethodGet, "/api/reports/"+name, nil)
+		req.SetPathValue("name", name)
+		response := httptest.NewRecorder()
+		reportDownloadHandler(svc)(response, req)
+		if response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Fatalf("download %s: status=%d body=%q", name, response.Code, response.Body.String())
+		}
 	}
 }
 

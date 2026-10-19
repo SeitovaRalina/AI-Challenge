@@ -265,7 +265,7 @@ export function ChatPanel({
         ...(!isLabChat ? [{ name: WORK_SUMMARY_COMMAND, description: 'сводка активности за N дней' }] : []),
         ...(!isLabChat ? [{ name: AUDIT_TIMESHEET_COMMAND, description: 'аудит черновика таймшита за N дней' }] : []),
         ...(!isLabChat ? [{ name: PERSONALIZED_ESTIMATE_COMMAND, description: 'оценка задачи по истории и текущей загрузке' }] : []),
-        ...(!isLabChat ? [{ name: WEEKLY_REPORT_COMMAND, description: 'создать отчёт и CSV за неделю YYYY-WW' }] : []),
+        ...(!isLabChat ? [{ name: WEEKLY_REPORT_COMMAND, description: 'отчёт и CSV: эта неделя, прошлая неделя или дата' }] : []),
         ...(contextStrategy === 'rolling_summary'
           ? [{ name: COMPRESS_COMMAND, description: 'сжать историю сейчас' }]
           : []),

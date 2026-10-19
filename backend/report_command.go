@@ -13,7 +13,7 @@ func parseWeeklyReportCommand(message string) (string, bool) {
 		return "", false
 	}
 	if len(parts) > 1 {
-		return parts[1], true
+		return strings.Join(parts[1:], " "), true
 	}
 	return "", true
 }
@@ -44,5 +44,6 @@ func (a *Agent) answerWeeklyReport(ctx context.Context, chatID, week string) (st
 	if err != nil {
 		return "", calls, err
 	}
-	return fmt.Sprintf("Готово. Недельный отчёт: [%s](/api/reports/%s). CSV с черновыми записями и статусом аудита: [%s](/api/reports/%s). Файлы сохранены в каталоге reports этого профиля.", md, md, csv, csv), calls, nil
+	weekEnd := snapshot.From.AddDate(0, 0, 6)
+	return fmt.Sprintf("Готово: неделя %s–%s. Отчёт: [%s](/api/reports/%s). CSV с черновыми записями и статусом аудита: [%s](/api/reports/%s). Файлы сохранены в каталоге reports этого профиля.", snapshot.From.Format("02.01.2006"), weekEnd.Format("02.01.2006"), md, md, csv, csv), calls, nil
 }

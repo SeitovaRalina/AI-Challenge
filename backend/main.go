@@ -262,6 +262,7 @@ func main() {
 	reports := &ReportService{worklog: worklogConn, solidtime: solidtimeConn, dir: filepath.Join(filepath.Dir(dataDir), "reports")}
 	agent.reports = reports
 	mux.HandleFunc("POST /api/reports/weekly", reportGenerateHandler(reports))
+	mux.HandleFunc("POST /api/reports/generate", reportGenerateHandler(reports))
 	mux.HandleFunc("GET /api/reports/{name}", reportDownloadHandler(reports))
 
 	// Day 20: the weekly summary — this week vs last, facts only, written by

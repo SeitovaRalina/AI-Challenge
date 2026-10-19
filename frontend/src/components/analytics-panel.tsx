@@ -9,7 +9,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import {
   ApiError,
   generateWeeklySummary,
-  generateWeeklyArtifacts,
+  generateReportArtifacts,
   getAnalytics,
   getDayTimeline,
   getWeeklySummary,
@@ -26,7 +26,7 @@ import {
   type SolidtimeProject,
   type TimelineBlock,
   type WeeklySummary,
-  type WeeklyArtifacts,
+  type ReportArtifacts,
 } from '@/lib/api'
 
 // AnalyticsPanel is day 19's «Аналитика» screen, extended in day 20 with
@@ -144,7 +144,7 @@ export function AnalyticsPanel() {
   return (
     <div className="flex max-w-4xl flex-col gap-4">
       <WeeklySummaryCard />
-      <WeeklyArtifactsCard />
+      <ReportArtifactsCard />
 
       <div className="flex items-center justify-end">
         <PeriodTabs period={period} onChange={setPeriod} />
@@ -263,16 +263,27 @@ export function AnalyticsPanel() {
   )
 }
 
-function WeeklyArtifactsCard() {
-  const [artifacts, setArtifacts] = useState<WeeklyArtifacts | null>(null)
+function localDateValue(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function ReportArtifactsCard() {
+  const [artifacts, setArtifacts] = useState<ReportArtifacts | null>(null)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [from, setFrom] = useState(() => {
+    const today = new Date()
+    today.setDate(today.getDate() - ((today.getDay() + 6) % 7))
+    return localDateValue(today)
+  })
+  const [to, setTo] = useState(() => localDateValue(new Date()))
+  const today = localDateValue(new Date())
 
   async function handleGenerate() {
     setGenerating(true)
     setError(null)
     try {
-      setArtifacts(await generateWeeklyArtifacts())
+      setArtifacts(await generateReportArtifacts(from, to))
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось создать файлы')
     } finally {
@@ -284,14 +295,21 @@ function WeeklyArtifactsCard() {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold">Рабочие файлы за неделю</h3>
+          <h3 className="text-sm font-semibold">Рабочие файлы за период</h3>
           <p className="text-xs text-muted-foreground">Отчёт и CSV по черновым сессиям. Часы станут окончательными после подтверждения.</p>
         </div>
-        <Button size="sm" onClick={handleGenerate} disabled={generating}>
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="report-from" className="text-xs text-muted-foreground">С</label>
+          <input id="report-from" aria-label="Начало периода" type="date" value={from} max={today} onChange={(event) => { setFrom(event.target.value); setArtifacts(null) }} className="h-8 rounded-md border border-input bg-background px-2 text-sm" />
+          <label htmlFor="report-to" className="text-xs text-muted-foreground">По</label>
+          <input id="report-to" aria-label="Конец периода включительно" type="date" value={to} min={from} max={today} onChange={(event) => { setTo(event.target.value); setArtifacts(null) }} className="h-8 rounded-md border border-input bg-background px-2 text-sm" />
+        <Button size="sm" onClick={handleGenerate} disabled={generating || !from || !to || from > to || to > today}>
           {generating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Создать файлы
         </Button>
+        </div>
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">Обе даты включены. По умолчанию — с понедельника текущей недели по сегодня.</p>
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       {artifacts && (
         <div className="mt-3 flex gap-4 text-sm">
