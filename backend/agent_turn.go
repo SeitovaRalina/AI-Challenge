@@ -189,6 +189,13 @@ func (a *Agent) PostMessage(ctx context.Context, chatID, userMessage string, int
 			}
 			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, toolCalls, nil, nil)
 		}
+		if days, ok := parseAuditTimesheetCommand(userMessage); ok {
+			reply, toolCalls, err := a.answerAuditTimesheet(ctx, chatID, providerClient, days)
+			if err != nil {
+				return nil, err
+			}
+			return a.finishToolGroundedTurn(ctx, chat, branchID, userMessage, reply, userSentAt, toolCalls, nil, nil)
+		}
 	}
 
 	// Pre-call overflow guard: the previous turn's prompt_tokens PLUS its own
