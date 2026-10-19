@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -222,7 +223,9 @@ func main() {
 	if solidtimeConfigured() {
 		solidtimeConn = mcpclient.NewConn(solidtimeServer)
 		defer solidtimeConn.Close()
-		agent.AddToolSource(solidtimeConn)
+		// Keep the write tool outside model-routed chat turns. Only the
+		// user-confirmed timesheet service may invoke it.
+		agent.AddToolSource(solidtimeConn, "list_projects", "list_time_entries", "list_tasks")
 		registryServers = append(registryServers, solidtimeServer)
 	} else {
 		log.Printf("solidtime: SOLIDTIME_BASE_URL/SOLIDTIME_API_TOKEN not set, solidtime server disabled")
@@ -256,7 +259,17 @@ func main() {
 	mux.HandleFunc("GET /api/solidtime/repo-projects", listRepoSolidtimeProjectsHandler(worklogConn))
 	mux.HandleFunc("PATCH /api/solidtime/repo-projects/{repo...}", setRepoSolidtimeProjectHandler(worklogConn))
 	mux.HandleFunc("GET /api/solidtime/projects", listSolidtimeProjectsHandler(solidtimeConn))
+	mux.HandleFunc("GET /api/solidtime/tasks", listSolidtimeTasksHandler(solidtimeConn))
 	mux.HandleFunc("GET /api/timesheet/audit", timesheetAuditHandler(worklogConn, solidtimeConn))
+	timesheetSync, err := NewTimesheetSyncService(worklogConn, solidtimeConn, client, filepath.Join(filepath.Dir(dataDir), "timesheet_drafts.json"))
+	if err != nil {
+		log.Fatalf("timesheet drafts: %v", err)
+	}
+	mux.HandleFunc("GET /api/timesheet/drafts", timesheetDraftsHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/prepare", prepareTimesheetHandler(timesheetSync))
+	mux.HandleFunc("PATCH /api/timesheet/drafts/{id}", reviewTimesheetDraftHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/drafts/{id}/sync", syncTimesheetDraftHandler(timesheetSync))
+	mux.HandleFunc("POST /api/timesheet/drafts/{id}/reconcile", reconcileTimesheetDraftHandler(timesheetSync))
 
 	// Reports live beside this instance's sessions, never in the repository.
 	reports := &ReportService{worklog: worklogConn, solidtime: solidtimeConn, dir: filepath.Join(filepath.Dir(dataDir), "reports")}
@@ -338,9 +351,14 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	host := os.Getenv("LISTEN_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
 
-	log.Printf("backend listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(withRequestLog(mux))))
+	address := net.JoinHostPort(host, port)
+	log.Printf("backend listening on %s", address)
+	log.Fatal(http.ListenAndServe(address, withCORS(withRequestLog(mux))))
 }
 
 // withRequestLog logs every request's method, path, resulting status, and

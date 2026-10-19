@@ -41,6 +41,33 @@ type ProjectInfoView struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsArchived bool   `json:"is_archived"`
+	IsBillable bool   `json:"is_billable"`
+}
+
+type TaskInfoView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ProjectID string `json:"project_id"`
+	IsDone    bool   `json:"is_done"`
+}
+
+func listSolidtimeTasksHandler(solidtime *mcpclient.Conn) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if solidtime == nil {
+			writeError(w, http.StatusServiceUnavailable, "Solidtime не настроен")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		var out struct {
+			Tasks []TaskInfoView `json:"tasks"`
+		}
+		if err := mcpclient.CallJSON(ctx, solidtime, "list_tasks", map[string]any{}, &out); err != nil {
+			writeError(w, http.StatusBadGateway, "Solidtime MCP недоступен: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
 }
 
 func auditMCPCalls(ctx context.Context, worklog, solidtime *mcpclient.Conn) (mcpCall, mcpCall) {

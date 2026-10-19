@@ -16,7 +16,18 @@ Challenge details: https://mobiledeveloper.tech/ai_advent_9
 
 # AI Work Intelligence Assistant
 
-Software Task → AI Preliminary Estimate.
+Work activity → reviewed timesheet → analytics → personalized estimate.
+
+The current application collects GitHub activity and calendar meetings through
+MCP, builds work sessions, compares them with existing Solidtime entries, and
+shows time analytics. A reviewer can map a repository to a Solidtime project,
+prepare draft entries with AI-written descriptions, select a task within that
+project, edit each description and billable setting, then explicitly confirm
+and send each entry. Overlaps and uncertain write outcomes block repeat sends.
+The chat also answers questions using project documentation and past estimates;
+its personalized estimates include workload and an explicit confidence level.
+Forecasting, richer timesheet editing, and private VPS deployment remain
+future work.
 
 The user describes a development task in a chat interface; a Go-side `Agent`
 entity (`backend/agent.go`) owns the conversation, calls the selected local
@@ -203,8 +214,10 @@ Run:
 go run .
 ```
 
-The API listens on `http://localhost:8080` (override via `PORT`). The LiteLLM
-key is used server-side only and never reaches the browser.
+The API listens on `http://127.0.0.1:8080` (override via `PORT`; `LISTEN_HOST`
+controls the bind address). Keep it on loopback: the personal API has no
+authentication and can create Solidtime entries after in-app confirmation.
+The LiteLLM key is used server-side only and never reaches the browser.
 
 For the «Источники» screen, also set `GITHUB_TOKEN` in `backend/.env` — a
 fine-grained GitHub personal access token with read-only Metadata, Contents,
@@ -240,6 +253,18 @@ account password. `CALDAV_URL` defaults to Yandex's endpoint
 collection to specific calendars by name (comma-separated), defaulting to
 every calendar on the account. Same `go run ./cmd/mcp-calendar` /
 `MCP_CALENDAR_COMMAND` pattern as the other two servers.
+
+For the timesheet flow, set `SOLIDTIME_BASE_URL` and `SOLIDTIME_API_TOKEN` in
+`backend/.env`. The Solidtime MCP server resolves the organization and current
+member from the token, then exposes projects, project tasks and tracked time.
+On **Analytics**, assign each repository to its real Solidtime project; names
+are never matched automatically. **Prepare** reads the Worklog and Solidtime,
+and uses LiteLLM to propose descriptions from recorded events in the style of
+past entries. Select an active task in that project, edit the text and billable
+setting, confirm the draft, then click **Write to Solidtime** separately.
+Flagged sessions cannot be confirmed. If the write response is lost, the draft
+stays blocked until **Reconcile with Solidtime** finds the exact entry. No
+automatic retry sends another entry.
 
 ### Frontend
 

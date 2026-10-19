@@ -4,6 +4,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, XAxis, YAxis } fro
 import { cn } from 'cn'
 
 import { Alert, AlertTitle } from '@/components/ui/alert'
+import { TimesheetSyncCard } from '@/components/timesheet-sync-card'
 import { Button } from '@/components/ui/button'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
 import {
@@ -145,6 +146,7 @@ export function AnalyticsPanel() {
     <div className="flex max-w-4xl flex-col gap-4">
       <WeeklySummaryCard />
       <ReportArtifactsCard />
+      {solidtimeProjects && solidtimeProjects.length > 0 && <TimesheetSyncCard projects={solidtimeProjects} />}
 
       <div className="flex items-center justify-end">
         <PeriodTabs period={period} onChange={setPeriod} />
