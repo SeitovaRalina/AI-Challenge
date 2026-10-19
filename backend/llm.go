@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -194,44 +195,64 @@ func (c *LiteLLMClient) complete(ctx context.Context, req chatCompletionRequest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	for attempt := 0; attempt < 2; attempt++ {
+		completion, retry, err := c.completeAttempt(ctx, reqBody)
+		if !retry || attempt > 0 {
+			return completion, err
+		}
+		log.Printf("litellm: temporary gateway error, retrying completion once: %v", err)
+		timer := time.NewTimer(750 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("%w: retry loop exhausted", ErrUpstreamUnavailable)
+}
 
+// completeAttempt builds a fresh HTTP request for each attempt. A transient
+// gateway response can be retried without reusing a consumed request body.
+func (c *LiteLLMClient) completeAttempt(ctx context.Context, reqBody []byte) (*chatCompletionResponse, bool, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, false, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+		return nil, false, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
+		return nil, false, fmt.Errorf("%w: reading response: %v", ErrUpstreamUnavailable, err)
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
+		return nil, false, fmt.Errorf("%w: status %d", ErrUpstreamAuth, resp.StatusCode)
 	case resp.StatusCode != http.StatusOK && isContextOverflow(string(body)):
-		return nil, fmt.Errorf("%w: status %d: %s", ErrContextOverflow, resp.StatusCode, truncate(string(body), 300))
+		return nil, false, fmt.Errorf("%w: status %d: %s", ErrContextOverflow, resp.StatusCode, truncate(string(body), 300))
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
+		retry := resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout
+		return nil, retry, fmt.Errorf("%w: status %d: %s", ErrUpstreamUnavailable, resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var completion chatCompletionResponse
 	if err := json.Unmarshal(body, &completion); err != nil {
-		return nil, fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
+		return nil, false, fmt.Errorf("%w: decoding completion: %v", ErrUpstreamUnavailable, err)
 	}
 	if len(completion.Choices) == 0 {
-		return nil, fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
+		return nil, false, fmt.Errorf("%w: no choices in completion", ErrInvalidOutput)
 	}
 
-	return &completion, nil
+	return &completion, false, nil
 }
 
 // chatComplete sends a chat-completion request to LiteLLM using the app's
