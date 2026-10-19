@@ -257,6 +257,12 @@ func formatAuditReply(result AuditResult) string {
 	if result.FlaggedCount == 0 {
 		return b.String()
 	}
+	// Chat messages render as markdown (components/markdown.tsx, no
+	// remark-breaks) — a single "\n" is not a line break there, only a
+	// real markdown list ("- " at the start of each line) is. A blank
+	// line separates the list from the summary paragraph above, same
+	// CommonMark reason.
+	b.WriteString("\n\n")
 	shown := 0
 	for _, s := range result.Sessions {
 		if len(s.Flags) == 0 {
@@ -278,7 +284,10 @@ func formatAuditReply(result AuditResult) string {
 			}
 			remark = strings.Join(labels, "; ")
 		}
-		fmt.Fprintf(&b, "\n• %s, %s–%s (%s) — %s", s.Start.Format("02.01"), s.Start.Format("15:04"), s.End.Format("15:04"), label, remark)
+		if shown > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "- %s, %s–%s (%s) — %s", s.Start.Format("02.01"), s.Start.Format("15:04"), s.End.Format("15:04"), label, remark)
 		shown++
 	}
 	return b.String()
