@@ -80,3 +80,38 @@ func setRepoProjectHandler(worklog *mcpclient.Conn) http.HandlerFunc {
 		})
 	}
 }
+
+// Day 32: the repo -> Solidtime project mapping — same pass-through style
+// as the repo -> internal project mapping above, but a separate tool pair
+// (cmd/mcp-worklog/solidtime_mapping.go) since the two mappings answer
+// different questions and routinely disagree (e.g. repo "Recording-Agent"
+// tracked in Solidtime as "Project Internal: Agents").
+
+func listRepoSolidtimeProjectsHandler(worklog *mcpclient.Conn) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		callWorklog(w, r.Context(), worklog, "get_repo_solidtime_projects", map[string]any{})
+	}
+}
+
+type setRepoSolidtimeProjectRequest struct {
+	SolidtimeProjectID   string `json:"solidtime_project_id"`
+	SolidtimeProjectName string `json:"solidtime_project_name,omitempty"`
+}
+
+func setRepoSolidtimeProjectHandler(worklog *mcpclient.Conn) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repo := strings.TrimSpace(r.PathValue("repo"))
+		if repo == "" {
+			writeError(w, http.StatusBadRequest, "не указан репозиторий")
+			return
+		}
+		var req setRepoSolidtimeProjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "некорректное тело запроса")
+			return
+		}
+		callWorklog(w, r.Context(), worklog, "set_repo_solidtime_project", map[string]any{
+			"repo": repo, "solidtime_project_id": strings.TrimSpace(req.SolidtimeProjectID), "solidtime_project_name": strings.TrimSpace(req.SolidtimeProjectName),
+		})
+	}
+}
